@@ -1,0 +1,7 @@
+{
+  "name": "Database Query & UI Performance Optimizer",
+  "description": "An interactive diagnostics and optimization platform demonstrating resolved database query bottlenecks, indexing, and high-performance virtualized UI rendering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
