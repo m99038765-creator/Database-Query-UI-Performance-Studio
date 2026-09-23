@@ -1,1 +1,20 @@
 @import "tailwindcss";
+
+@keyframes indeterminate-progress {
+  0% {
+    transform: translateX(-100%);
+    width: 40%;
+  }
+  50% {
+    transform: translateX(100%);
+    width: 60%;
+  }
+  100% {
+    transform: translateX(250%);
+    width: 40%;
+  }
+}
+
+.animate-indeterminate {
+  animation: indeterminate-progress 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}

@@ -11,7 +11,8 @@ import {
   BulkImportResult,
   BulkImportProgress,
   DatabaseStats,
-  DatabaseUpdateEvent
+  DatabaseUpdateEvent,
+  DatabaseMutationHistoryEntry
 } from '../types';
 
 // Event bus for notifying external auditing / Queue Auto-Save subscribers
@@ -33,6 +34,220 @@ export function notifyDatabaseUpdate(event: DatabaseUpdateEvent): void {
       console.error('Error dispatching database update event:', err);
     }
   });
+}
+
+// Event bus for LRU cache invalidations caused by database mutations
+export type CacheInvalidationListener = (reason?: string, lastRefreshedAt?: number) => void;
+const CACHE_INVALIDATION_LISTENERS = new Set<CacheInvalidationListener>();
+let LAST_CACHE_REFRESH_TIMESTAMP: number = Date.now();
+
+export function getLastCacheRefreshTimestamp(): number {
+  return LAST_CACHE_REFRESH_TIMESTAMP;
+}
+
+export function subscribeCacheInvalidation(listener: CacheInvalidationListener): () => void {
+  CACHE_INVALIDATION_LISTENERS.add(listener);
+  return () => {
+    CACHE_INVALIDATION_LISTENERS.delete(listener);
+  };
+}
+
+export function notifyCacheInvalidation(reason?: string, lastRefreshedAt?: number): void {
+  const refreshTime = lastRefreshedAt ?? LAST_CACHE_REFRESH_TIMESTAMP;
+  CACHE_INVALIDATION_LISTENERS.forEach((listener) => {
+    try {
+      listener(reason, refreshTime);
+    } catch (err) {
+      console.error('Error dispatching cache invalidation event:', err);
+    }
+  });
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('db:cache-invalidated', {
+        detail: {
+          reason: reason || 'database_mutation',
+          lastRefreshedAt: refreshTime,
+          timestamp: Date.now()
+        }
+      })
+    );
+  }
+}
+
+// In-Flight Database Mutation State Tracking & Consistency Lock Bus
+export interface InFlightMutationState {
+  id: string;
+  type: string;
+  description: string;
+  startedAt: number;
+  targetRows?: number;
+  estimatedDurationMs?: number;
+}
+
+export type MutationStateListener = (
+  isMutating: boolean,
+  activeMutation: InFlightMutationState | null,
+  pendingCount: number,
+  allPending: InFlightMutationState[]
+) => void;
+
+const MUTATION_STATE_LISTENERS = new Set<MutationStateListener>();
+const ACTIVE_IN_FLIGHT_MUTATIONS = new Map<string, InFlightMutationState>();
+
+export function isDatabaseMutating(): boolean {
+  return ACTIVE_IN_FLIGHT_MUTATIONS.size > 0;
+}
+
+export function getActivePendingMutationsCount(): number {
+  return ACTIVE_IN_FLIGHT_MUTATIONS.size;
+}
+
+export function getActiveInFlightMutation(): InFlightMutationState | null {
+  if (ACTIVE_IN_FLIGHT_MUTATIONS.size === 0) return null;
+  const values = Array.from(ACTIVE_IN_FLIGHT_MUTATIONS.values());
+  return values[values.length - 1];
+}
+
+export function getAllActiveInFlightMutations(): InFlightMutationState[] {
+  return Array.from(ACTIVE_IN_FLIGHT_MUTATIONS.values());
+}
+
+export function subscribeMutationState(listener: MutationStateListener): () => void {
+  MUTATION_STATE_LISTENERS.add(listener);
+  const pending = Array.from(ACTIVE_IN_FLIGHT_MUTATIONS.values());
+  const active = pending.length > 0 ? pending[pending.length - 1] : null;
+  try {
+    listener(pending.length > 0, active, pending.length, pending);
+  } catch (err) {
+    console.error('Error delivering initial mutation state:', err);
+  }
+  return () => {
+    MUTATION_STATE_LISTENERS.delete(listener);
+  };
+}
+
+export function notifyMutationState(): void {
+  const pending = Array.from(ACTIVE_IN_FLIGHT_MUTATIONS.values());
+  const isMutating = pending.length > 0;
+  const active = isMutating ? pending[pending.length - 1] : null;
+  const count = pending.length;
+
+  MUTATION_STATE_LISTENERS.forEach((listener) => {
+    try {
+      listener(isMutating, active, count, pending);
+    } catch (err) {
+      console.error('Error dispatching mutation state event:', err);
+    }
+  });
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('db:mutation-state-change', {
+        detail: {
+          isMutating,
+          activeMutation: active,
+          pendingCount: count,
+          allPending: pending
+        }
+      })
+    );
+  }
+}
+
+// History of executed and in-flight mutation events for telemetry and frequency analysis
+const MUTATION_HISTORY_LOG: DatabaseMutationHistoryEntry[] = [
+  // Seed mutation events corresponding to the seed bulk ingestion spike (seed-3 at now - 36s)
+  {
+    id: 'seed-mut-1',
+    type: 'bulk_ingestion',
+    description: 'Bulk Ingest Catalog Sync (120 rows)',
+    startedAt: Date.now() - 36000,
+    completedAt: Date.now() - 30200,
+    targetRows: 120,
+    durationMs: 5800
+  },
+  {
+    id: 'seed-mut-2',
+    type: 'status_transition',
+    description: 'Batch Status Transition (50 orders in-flight)',
+    startedAt: Date.now() - 37500,
+    completedAt: Date.now() - 35100,
+    targetRows: 50,
+    durationMs: 2400
+  },
+  {
+    id: 'seed-mut-3',
+    type: 'high_risk_flag',
+    description: 'High-Risk Audit Flag Update (50 orders)',
+    startedAt: Date.now() - 34000,
+    completedAt: Date.now() - 32000,
+    targetRows: 50,
+    durationMs: 2000
+  },
+  {
+    id: 'seed-mut-4',
+    type: 'bulk_ingestion',
+    description: 'Live Ingest Append (+50 orders)',
+    startedAt: Date.now() - 38000,
+    completedAt: Date.now() - 36200,
+    targetRows: 50,
+    durationMs: 1800
+  }
+];
+
+export function getDatabaseMutationHistory(): DatabaseMutationHistoryEntry[] {
+  return [...MUTATION_HISTORY_LOG];
+}
+
+export function recordDatabaseMutationEvent(entry: DatabaseMutationHistoryEntry): void {
+  MUTATION_HISTORY_LOG.push(entry);
+  if (MUTATION_HISTORY_LOG.length > 200) {
+    MUTATION_HISTORY_LOG.splice(0, MUTATION_HISTORY_LOG.length - 200);
+  }
+}
+
+export function beginDatabaseMutation(
+  type: string,
+  description: string,
+  targetRows?: number,
+  estimatedDurationMs?: number
+): () => void {
+  const mutationId = `mut-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  // Default estimated duration based on operation complexity (e.g. bulk ingest ~3.5s, batch status ~2.5s)
+  const defaultDuration =
+    estimatedDurationMs ||
+    (type === 'bulk_ingestion' ? 3500 : type === 'status_transition' ? 2400 : 2000);
+
+  const mutationObj: InFlightMutationState = {
+    id: mutationId,
+    type,
+    description,
+    startedAt: Date.now(),
+    targetRows,
+    estimatedDurationMs: defaultDuration
+  };
+
+  const historyEntry: DatabaseMutationHistoryEntry = {
+    id: mutationId,
+    type,
+    description,
+    startedAt: Date.now(),
+    targetRows,
+    durationMs: defaultDuration
+  };
+  recordDatabaseMutationEvent(historyEntry);
+
+  ACTIVE_IN_FLIGHT_MUTATIONS.set(mutationId, mutationObj);
+  notifyMutationState();
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    historyEntry.completedAt = Date.now();
+    historyEntry.durationMs = historyEntry.completedAt - historyEntry.startedAt;
+    ACTIVE_IN_FLIGHT_MUTATIONS.delete(mutationId);
+    notifyMutationState();
+  };
 }
 
 // Deterministic seed data generator for 50,000 realistic records
@@ -379,14 +594,17 @@ export function executeQuery(
       const firstKey = QUERY_CACHE.keys().next().value;
       if (firstKey) QUERY_CACHE.delete(firstKey);
     }
-    QUERY_CACHE.set(cacheKey, { result, timestamp: Date.now() });
+    LAST_CACHE_REFRESH_TIMESTAMP = Date.now();
+    QUERY_CACHE.set(cacheKey, { result, timestamp: LAST_CACHE_REFRESH_TIMESTAMP });
   }
 
   return result;
 }
 
-export function clearDatabaseCache() {
+export function clearDatabaseCache(reason?: string) {
+  const previousRefreshTime = LAST_CACHE_REFRESH_TIMESTAMP;
   QUERY_CACHE.clear();
+  notifyCacheInvalidation(reason, previousRefreshTime);
 }
 
 /**
@@ -421,8 +639,15 @@ export async function performBulkDataImport(
   initializeDatabase();
 
   const { recordCount, mode, chunkSize = 500 } = options;
-  const startCount = DB_RECORDS.length;
-  const targetTotal = startCount + recordCount;
+  const releaseMutation = beginDatabaseMutation(
+    'bulk_ingestion',
+    `Bulk Data Ingestion (${recordCount.toLocaleString()} rows, ${mode === 'raw_bulk_unindexed' ? 'Unindexed' : 'Indexed'})`,
+    recordCount
+  );
+
+  try {
+    const startCount = DB_RECORDS.length;
+    const targetTotal = startCount + recordCount;
 
   // Probe read query latency BEFORE ingestion (with indexing active and cache off for clean baseline)
   const probeFilters: QueryFilters = {
@@ -616,6 +841,9 @@ export async function performBulkDataImport(
   });
 
   return result;
+  } finally {
+    releaseMutation();
+  }
 }
 
 /**
@@ -844,5 +1072,62 @@ export function executeBatchMutation(
   });
 
   return { affectedCount: updatedCount, description, totalRecords: DB_RECORDS.length };
+}
+
+/**
+ * Deletes transactions by their unique ID array.
+ * Cleans up item maps, rebuilds secondary indexes, clears query cache,
+ * and broadcasts an audit update event.
+ */
+export function deleteRecordsByIds(recordIds: string[]): {
+  deletedCount: number;
+  totalRecords: number;
+} {
+  initializeDatabase();
+  const idSet = new Set(recordIds);
+  const initialLength = DB_RECORDS.length;
+
+  DB_RECORDS = DB_RECORDS.filter((r) => {
+    if (idSet.has(r.id)) {
+      DB_ITEMS_MAP.delete(r.id);
+      return false;
+    }
+    return true;
+  });
+
+  const deletedCount = initialLength - DB_RECORDS.length;
+
+  // Rebuild secondary indexes to keep index pointers in sync
+  INDEX_STATUS_CATEGORY.clear();
+  INDEX_CUSTOMER.clear();
+
+  for (let i = 0; i < DB_RECORDS.length; i++) {
+    const r = DB_RECORDS[i];
+    const statusCatKey = `${r.status}::${r.category}`;
+    const catList = INDEX_STATUS_CATEGORY.get(statusCatKey) || [];
+    catList.push(i);
+    INDEX_STATUS_CATEGORY.set(statusCatKey, catList);
+
+    const custList = INDEX_CUSTOMER.get(r.customerId) || [];
+    custList.push(i);
+    INDEX_CUSTOMER.set(r.customerId, custList);
+  }
+
+  IS_INDEX_SYNCHRONIZED = true;
+  clearDatabaseCache();
+
+  const description = `Batch Deletion (-${deletedCount.toLocaleString()} records removed)`;
+  notifyDatabaseUpdate({
+    type: 'batch_mutation',
+    description,
+    recordsModified: deletedCount,
+    totalRecords: DB_RECORDS.length,
+    timestamp: Date.now()
+  });
+
+  return {
+    deletedCount,
+    totalRecords: DB_RECORDS.length
+  };
 }
 

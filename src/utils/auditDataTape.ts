@@ -1,5 +1,5 @@
 import { TransactionRecord, DataTapeEntry, DataTapeFilterSummary } from '../types';
-import { ExportFormat, exportRecords, sampleCurrentCpuUsage } from './csvExporter';
+import { ExportFormat, exportRecords, ExportPerformanceResult } from './csvExporter';
 
 /**
  * Computes a SHA-256 cryptographic checksum of a string payload.
@@ -42,8 +42,17 @@ export async function createDataTapeEntry(params: {
   databaseTotalRecords: number;
   filterSummary: DataTapeFilterSummary;
   sequenceNumber: number;
-}): Promise<DataTapeEntry> {
-  const { records, format, triggerEvent, databaseTotalRecords, filterSummary, sequenceNumber } = params;
+  includeHeaders?: boolean;
+}): Promise<{ entry: DataTapeEntry; stats: ExportPerformanceResult }> {
+  const {
+    records,
+    format,
+    triggerEvent,
+    databaseTotalRecords,
+    filterSummary,
+    sequenceNumber,
+    includeHeaders = true
+  } = params;
   const tapeId = `TAPE-${sequenceNumber.toString().padStart(3, '0')}`;
   const now = new Date();
   const timeFormatted = now.toTimeString().split(' ')[0];
@@ -51,7 +60,7 @@ export async function createDataTapeEntry(params: {
 
   // Perform serialization and performance measurement
   const exportPrefix = `audit_tape_${sequenceNumber.toString().padStart(3, '0')}`;
-  const { blob, filename, stats } = exportRecords(records, format, exportPrefix);
+  const { blob, filename, stats } = exportRecords(records, format, exportPrefix, { includeHeaders });
   const textContent = await blob.text();
 
   // Calculate cryptographic SHA-256 checksum of the exported slice
@@ -69,7 +78,7 @@ export async function createDataTapeEntry(params: {
       : textContent;
   }
 
-  return {
+  const entry: DataTapeEntry = {
     tapeId,
     sequenceNumber,
     timestamp: now.getTime(),
@@ -91,6 +100,8 @@ export async function createDataTapeEntry(params: {
     content: textContent,
     payloadPreview
   };
+
+  return { entry, stats };
 }
 
 /**

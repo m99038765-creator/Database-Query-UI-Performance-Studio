@@ -95,6 +95,26 @@ export interface LatencyTrendPoint {
   flagToggledState?: boolean;
   deltaMs?: number; // negative means improved (faster)
   simulatedError: string | null;
+  isHighDurationMutation?: boolean;
+  mutationFrequencyPerMin?: number;
+  correlatedThresholdViolation?: {
+    id?: string;
+    mutationId?: string;
+    mutationDescription?: string;
+    thresholdSeconds?: number;
+    elapsedSeconds?: number;
+    timestamp?: number;
+  };
+}
+
+export interface DatabaseMutationHistoryEntry {
+  id: string;
+  type: string;
+  description: string;
+  startedAt: number;
+  completedAt?: number;
+  targetRows?: number;
+  durationMs?: number;
 }
 
 export type BulkImportMode = 'realtime_indexed' | 'raw_bulk_unindexed' | 'single_row_unbatched';
@@ -185,4 +205,60 @@ export interface DataTapeEntry {
   filename: string;
   content: string; // In-memory full text payload for instant slice download
   payloadPreview: string; // Snippet preview for auditor inspection
+}
+
+export type SerializationLogSeverity = 'error' | 'warning' | 'anomaly';
+
+export type SerializationAnomalyType =
+  | 'SERIALIZATION_EXCEPTION'
+  | 'THROUGHPUT_DEGRADATION'
+  | 'LATENCY_SPIKE'
+  | 'LATENCY_ANOMALY'
+  | 'CPU_CONTENTION'
+  | 'PAYLOAD_BLOAT'
+  | 'CORRUPTED_ENCODING';
+
+export type SerializationLogFormat = 'csv' | 'json' | 'engine' | 'query';
+
+export interface SerializationLogEntry {
+  id: string;
+  timestamp: number;
+  timeFormatted: string;
+  severity: SerializationLogSeverity;
+  type: SerializationAnomalyType;
+  format: SerializationLogFormat;
+  recordCount: number;
+  message: string;
+  details?: {
+    throughputRowsPerSec?: number;
+    baselineThroughput?: number;
+    durationMs?: number;
+    baselineDurationMs?: number;
+    varianceMs?: number;
+    anomalyThresholdMs?: number;
+    activeQueriesCount?: number;
+    cpuUsagePercent?: number;
+    fileSizeBytes?: number;
+    cause?: string;
+    stackTrace?: string;
+    triggerSource?: string;
+  };
+}
+
+export interface ExportCpuCorrelationPoint {
+  id: string;
+  bucketIndex: number;
+  timestamp: number;
+  timeFormatted: string;
+  minutesAgo: number;
+  exportCount: number;
+  exportFrequencyOpsPerMin: number;
+  avgCpuLoadPercent: number;
+  baselineCpuPercent: number;
+  peakCpuPercent: number;
+  csvExportCount: number;
+  jsonExportCount: number;
+  totalBytes: number;
+  isHighFrequency: boolean;
+  responsivenessImpact: 'minimal' | 'moderate' | 'elevated';
 }

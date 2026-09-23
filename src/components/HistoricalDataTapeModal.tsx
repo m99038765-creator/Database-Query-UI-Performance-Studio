@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { DataTapeEntry } from '../types';
 import {
   generateAuditLedgerCsv,
@@ -28,8 +28,10 @@ import {
   AlertCircle,
   FileText,
   Play,
-  RotateCcw
+  RotateCcw,
+  GitCompare
 } from 'lucide-react';
+import { TapeSliceDiffOverlay } from './TapeSliceDiffOverlay';
 
 interface HistoricalDataTapeModalProps {
   isOpen: boolean;
@@ -39,7 +41,7 @@ interface HistoricalDataTapeModalProps {
   onToggleAutoSave: () => void;
   onClearTape: () => void;
   onTriggerManualSlice: () => void;
-  onMutateDatabase: (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => void;
+  onMutateDatabase: (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => void | Promise<void>;
 }
 
 export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = ({
@@ -55,9 +57,44 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [inspectedEntry, setInspectedEntry] = useState<DataTapeEntry | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [triggerEventFilter, setTriggerEventFilter] = useState('');
   const [isMutating, setIsMutating] = useState(false);
+  const [isDiffOpen, setIsDiffOpen] = useState<boolean>(false);
+  const [selectedForDiffIds, setSelectedForDiffIds] = useState<string[]>([]);
+
+  // Unique trigger events for quick-filtering pills
+  const uniqueTriggerEvents = useMemo(() => {
+    const set = new Set<string>();
+    entries.forEach((e) => {
+      if (e.triggerEvent && e.triggerEvent.trim()) {
+        set.add(e.triggerEvent.trim());
+      }
+    });
+    return Array.from(set);
+  }, [entries]);
 
   if (!isOpen) return null;
+
+  const handleToggleSelectForDiff = (tapeId: string) => {
+    setSelectedForDiffIds((prev) => {
+      if (prev.includes(tapeId)) {
+        return prev.filter((id) => id !== tapeId);
+      }
+      if (prev.length === 0) {
+        return [tapeId];
+      }
+      if (prev.length === 1) {
+        // Auto-launch diff with the two selected slices
+        const next = [prev[0], tapeId];
+        setIsDiffOpen(true);
+        return next;
+      }
+      // If 2 already selected, replace the second one and open diff
+      const next = [prev[1], tapeId];
+      setIsDiffOpen(true);
+      return next;
+    });
+  };
 
   const handleCopyHash = (hash: string) => {
     navigator.clipboard.writeText(hash);
@@ -84,25 +121,39 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   const handleSimulateMutation = async (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => {
     setIsMutating(true);
     try {
-      onMutateDatabase(type);
+      await onMutateDatabase(type);
     } finally {
-      setTimeout(() => setIsMutating(false), 400);
+      setIsMutating(false);
     }
   };
 
-  // Filter entries based on search term
-  const filteredEntries = entries.filter((e) => {
-    if (!searchTerm.trim()) return true;
-    const term = searchTerm.toLowerCase();
-    return (
-      e.tapeId.toLowerCase().includes(term) ||
-      e.triggerEvent.toLowerCase().includes(term) ||
-      e.format.toLowerCase().includes(term) ||
-      e.checksumSha256.toLowerCase().includes(term) ||
-      e.filterSummary.status.toLowerCase().includes(term) ||
-      e.filterSummary.category.toLowerCase().includes(term)
-    );
-  });
+  // Filter entries based on Trigger Event description filter and general search term
+  const filteredEntries = useMemo(() => {
+    return entries.filter((e) => {
+      // 1. Dedicated 'Trigger Event' description filter
+      if (triggerEventFilter.trim()) {
+        const eventQuery = triggerEventFilter.toLowerCase().trim();
+        if (!e.triggerEvent.toLowerCase().includes(eventQuery)) {
+          return false;
+        }
+      }
+
+      // 2. General search term across multiple fields
+      if (searchTerm.trim()) {
+        const term = searchTerm.toLowerCase().trim();
+        const matchesGeneral =
+          e.tapeId.toLowerCase().includes(term) ||
+          e.triggerEvent.toLowerCase().includes(term) ||
+          e.format.toLowerCase().includes(term) ||
+          e.checksumSha256.toLowerCase().includes(term) ||
+          e.filterSummary.status.toLowerCase().includes(term) ||
+          e.filterSummary.category.toLowerCase().includes(term);
+        if (!matchesGeneral) return false;
+      }
+
+      return true;
+    });
+  }, [entries, triggerEventFilter, searchTerm]);
 
   const totalRecordsAudited = entries.reduce((acc, curr) => acc + curr.recordCount, 0);
   const totalBytesAudited = entries.reduce((acc, curr) => acc + curr.fileSizeBytes, 0);
@@ -279,8 +330,25 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
             </button>
           </div>
 
-          {/* Export Bundle Actions */}
+          {/* Export Bundle & Comparison Actions */}
           <div className="flex items-center gap-2">
+            <button
+              id="btn-open-tape-compare-modal"
+              type="button"
+              onClick={() => setIsDiffOpen(true)}
+              disabled={entries.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-950 text-xs font-semibold shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+              title="Compare metadata, record counts, and SHA-256 checksums between two tape slices"
+            >
+              <GitCompare className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Compare</span>
+              {selectedForDiffIds.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-indigo-200 text-indigo-900 font-mono">
+                  {selectedForDiffIds.length}/2
+                </span>
+              )}
+            </button>
+
             <button
               id="btn-export-audit-ledger-csv"
               type="button"
@@ -324,23 +392,141 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
           </div>
         </div>
 
-        {/* Search & Filter Bar */}
-        <div className="px-6 py-2.5 bg-zinc-50/70 border-b border-zinc-200 flex items-center justify-between gap-4">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              id="data-tape-search-input"
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by Tape ID, trigger event, SHA-256 hash..."
-              className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-zinc-300 bg-white text-xs text-zinc-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-            />
+        {/* Filter & Search Bar above the Historical Data Tape Modal List */}
+        <div id="historical-data-tape-filters" className="px-6 py-3 bg-zinc-50 border-b border-zinc-200 space-y-2.5">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            {/* Dedicated Text Input: Filter tape slices by 'Trigger Event' description */}
+            <div className="flex-1 relative">
+              <label
+                htmlFor="tape-trigger-event-filter-input"
+                className="block text-[10px] font-bold text-zinc-700 uppercase tracking-wider mb-1 flex items-center gap-1.5"
+              >
+                <Filter className="w-3 h-3 text-emerald-600" />
+                <span>Filter by 'Trigger Event' Description</span>
+                {triggerEventFilter && (
+                  <span className="text-[10px] font-mono font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded border border-emerald-200">
+                    Active Filter
+                  </span>
+                )}
+              </label>
+              <div className="relative">
+                <Filter className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="tape-trigger-event-filter-input"
+                  type="text"
+                  value={triggerEventFilter}
+                  onChange={(e) => setTriggerEventFilter(e.target.value)}
+                  placeholder="Filter by 'Trigger Event' description (e.g. Status Transition, Live Ingest, Manual Cut)..."
+                  className="w-full pl-8.5 pr-8 py-1.5 rounded-lg border border-zinc-300 bg-white text-xs text-zinc-900 placeholder:text-zinc-400 focus:outline-hidden focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 shadow-2xs transition-all"
+                />
+                {triggerEventFilter && (
+                  <button
+                    id="btn-clear-trigger-event-filter"
+                    type="button"
+                    onClick={() => setTriggerEventFilter('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 rounded transition-colors cursor-pointer"
+                    title="Clear Trigger Event filter"
+                    aria-label="Clear Trigger Event filter"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* General Multi-field Search Input */}
+            <div className="md:w-60 relative">
+              <label
+                htmlFor="data-tape-search-input"
+                className="block text-[10px] font-bold text-zinc-700 uppercase tracking-wider mb-1 flex items-center gap-1.5"
+              >
+                <Search className="w-3 h-3 text-zinc-400" />
+                <span>Search ID, Hash, Format</span>
+              </label>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="data-tape-search-input"
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Tape ID, hash, or format..."
+                  className="w-full pl-8 pr-7 py-1.5 rounded-lg border border-zinc-300 bg-white text-xs text-zinc-900 placeholder:text-zinc-400 focus:outline-hidden focus:ring-2 focus:ring-zinc-400/20 focus:border-zinc-400 shadow-2xs transition-all"
+                />
+                {searchTerm && (
+                  <button
+                    id="btn-clear-tape-search-input"
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-zinc-400 hover:text-zinc-700 rounded transition-colors cursor-pointer"
+                    title="Clear search"
+                    aria-label="Clear search"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Results Count & Reset Button */}
+            <div className="flex md:flex-col items-center md:items-end justify-between md:justify-end shrink-0 pt-1 md:pt-4 text-[11px] text-zinc-500">
+              <div className="flex items-center gap-1.5">
+                <span>
+                  Showing <strong>{filteredEntries.length}</strong> of {entries.length} slices
+                </span>
+                {(triggerEventFilter || searchTerm) && (
+                  <button
+                    id="btn-reset-all-tape-filters"
+                    type="button"
+                    onClick={() => {
+                      setTriggerEventFilter('');
+                      setSearchTerm('');
+                    }}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors cursor-pointer ml-1 shadow-2xs"
+                    title="Reset all filters"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="text-[11px] text-zinc-500">
-            Showing <strong>{filteredEntries.length}</strong> of {entries.length} tape slices
-          </div>
+          {/* Quick-Filter Pills for detected Trigger Events */}
+          {uniqueTriggerEvents.length > 0 && (
+            <div className="pt-2 border-t border-zinc-200/70 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1 shrink-0">
+                <Layers className="w-3 h-3 text-zinc-400" />
+                Quick Filter by Event:
+              </span>
+              {uniqueTriggerEvents.map((evt) => {
+                const isExact = triggerEventFilter.toLowerCase().trim() === evt.toLowerCase().trim();
+                const isPartial =
+                  !isExact &&
+                  triggerEventFilter.trim() !== '' &&
+                  evt.toLowerCase().includes(triggerEventFilter.toLowerCase().trim());
+
+                return (
+                  <button
+                    key={evt}
+                    type="button"
+                    onClick={() => setTriggerEventFilter(isExact ? '' : evt)}
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono transition-all cursor-pointer flex items-center gap-1 ${
+                      isExact
+                        ? 'bg-emerald-600 text-white font-bold shadow-2xs ring-1 ring-emerald-600'
+                        : isPartial
+                        ? 'bg-emerald-50 text-emerald-900 border border-emerald-300 font-semibold'
+                        : 'bg-white text-zinc-700 border border-zinc-200 hover:bg-zinc-100 hover:border-zinc-300'
+                    }`}
+                    title={`Click to filter by "${evt}"`}
+                  >
+                    <span>{evt}</span>
+                    {isExact && <X className="w-2.5 h-2.5" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Ledger Table Container */}
@@ -349,12 +535,29 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
             <div className="text-center py-16 text-zinc-500">
               <ShieldCheck className="w-12 h-12 mx-auto text-zinc-300 mb-2" />
               <h3 className="text-sm font-semibold text-zinc-800">No Data Tape Entries Found</h3>
-              <p className="text-xs text-zinc-500 mt-1 max-w-sm mx-auto">
-                {searchTerm
-                  ? 'No tape entries match your search criteria.'
+              <p className="text-xs text-zinc-500 mt-1 max-w-md mx-auto">
+                {triggerEventFilter && searchTerm
+                  ? `No tape slices match trigger event "${triggerEventFilter}" and search "${searchTerm}".`
+                  : triggerEventFilter
+                  ? `No tape slices match Trigger Event description "${triggerEventFilter}".`
+                  : searchTerm
+                  ? `No tape entries match your search criteria "${searchTerm}".`
                   : 'Enable "Queue Auto-Save" in the Export menu and trigger a database update to record incremental audit tape slices.'}
               </p>
-              {!searchTerm && (
+              {(triggerEventFilter || searchTerm) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTriggerEventFilter('');
+                    setSearchTerm('');
+                  }}
+                  className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 text-zinc-700 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Clear Filters</span>
+                </button>
+              )}
+              {!searchTerm && !triggerEventFilter && (
                 <button
                   type="button"
                   onClick={onTriggerManualSlice}
@@ -399,10 +602,15 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
                         </td>
 
                         {/* Trigger Event & DB Rows */}
-                        <td className="py-2.5 px-3 max-w-[220px]">
-                          <div className="font-medium text-zinc-900 truncate" title={entry.triggerEvent}>
+                        <td className="py-2.5 px-3 max-w-[240px]">
+                          <button
+                            type="button"
+                            onClick={() => setTriggerEventFilter(entry.triggerEvent)}
+                            className="font-medium text-left text-zinc-900 truncate max-w-full block hover:text-emerald-700 hover:underline cursor-pointer group-hover:text-zinc-950 transition-colors"
+                            title={`Click to filter tape slices by Trigger Event: "${entry.triggerEvent}"`}
+                          >
                             {entry.triggerEvent}
-                          </div>
+                          </button>
                           <div className="text-[10px] text-zinc-500 mt-0.5">
                             DB Total: <strong>{entry.databaseTotalRecords.toLocaleString()}</strong> rows
                           </div>
@@ -473,6 +681,23 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
                         {/* Actions */}
                         <td className="py-2.5 px-3 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleSelectForDiff(entry.tapeId)}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
+                                selectedForDiffIds.includes(entry.tapeId)
+                                  ? 'bg-indigo-600 text-white font-semibold'
+                                  : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200'
+                              }`}
+                              title={
+                                selectedForDiffIds.includes(entry.tapeId)
+                                  ? 'Deselect from diff comparison'
+                                  : 'Select for side-by-side diff'
+                              }
+                            >
+                              <GitCompare className="w-3 h-3" />
+                              <span>{selectedForDiffIds.includes(entry.tapeId) ? 'Selected' : 'Compare'}</span>
+                            </button>
                             <button
                               type="button"
                               onClick={() => setInspectedEntry(entry)}
@@ -587,6 +812,16 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
           </div>
         </div>
       </div>
+
+      {/* Side-by-Side Diff Overlay */}
+      <TapeSliceDiffOverlay
+        isOpen={isDiffOpen}
+        onClose={() => setIsDiffOpen(false)}
+        entries={entries}
+        initialSliceAId={selectedForDiffIds[0] || null}
+        initialSliceBId={selectedForDiffIds[1] || null}
+        onTriggerNewSlice={onTriggerManualSlice}
+      />
     </div>
   );
 };

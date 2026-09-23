@@ -6,6 +6,7 @@ export type ExportFormat = 'csv' | 'json';
 export interface ExportPerformanceResult {
   format: ExportFormat;
   formatName: string;
+  includeHeaders?: boolean; // Whether CSV column headers were serialized
   recordCount: number;
   itemCount: number;
   durationMs: number;
@@ -23,6 +24,15 @@ export interface ExportPerformanceResult {
   estimatedGzipRatio: number;
   encodingStandard: string;
   structureType: string;
+}
+
+export interface CsvExportOptions {
+  includeHeaders?: boolean;
+}
+
+export interface ExportOptions extends CsvExportOptions {
+  pretty?: boolean;
+  enableCompression?: boolean;
 }
 
 export interface ExportHistoryPoint {
@@ -148,8 +158,8 @@ export function generateInitialExportHistory(): ExportHistoryPoint[] {
     {
       id: 'exp-hist-7',
       runIndex: 7,
-      timestamp: now - 20000,
-      timeFormatted: formatTime(20000),
+      timestamp: now - 35000,
+      timeFormatted: formatTime(35000),
       format: 'csv',
       formatName: 'Standard CSV',
       recordCount: 100,
@@ -159,6 +169,51 @@ export function generateInitialExportHistory(): ExportHistoryPoint[] {
       fileSizeBytes: 25100,
       throughputRowsPerSec: 24300,
       compressionRatio: 2.16
+    },
+    {
+      id: 'exp-hist-8',
+      runIndex: 8,
+      timestamp: now - 22000,
+      timeFormatted: formatTime(22000),
+      format: 'json',
+      formatName: 'Structured JSON',
+      recordCount: 250,
+      itemCount: 615,
+      durationMs: 19.4,
+      cpuUsagePercent: 51,
+      fileSizeBytes: 133200,
+      throughputRowsPerSec: 12900,
+      compressionRatio: 2.17
+    },
+    {
+      id: 'exp-hist-9',
+      runIndex: 9,
+      timestamp: now - 12000,
+      timeFormatted: formatTime(12000),
+      format: 'csv',
+      formatName: 'Standard CSV',
+      recordCount: 500,
+      itemCount: 1240,
+      durationMs: 13.8,
+      cpuUsagePercent: 32,
+      fileSizeBytes: 122500,
+      throughputRowsPerSec: 36200,
+      compressionRatio: 2.22
+    },
+    {
+      id: 'exp-hist-10',
+      runIndex: 10,
+      timestamp: now - 4000,
+      timeFormatted: formatTime(4000),
+      format: 'csv',
+      formatName: 'Standard CSV',
+      recordCount: 250,
+      itemCount: 610,
+      durationMs: 8.2,
+      cpuUsagePercent: 25,
+      fileSizeBytes: 61200,
+      throughputRowsPerSec: 30500,
+      compressionRatio: 2.19
     }
   ];
 }
@@ -178,7 +233,11 @@ function escapeCsvCell(value: string | number | undefined | null): string {
 /**
  * Generates raw CSV content string for TransactionRecord array.
  */
-function buildCsvString(records: TransactionRecord[]): { csvString: string; totalItemsCount: number } {
+export function buildCsvString(
+  records: TransactionRecord[],
+  options: CsvExportOptions = {}
+): { csvString: string; totalItemsCount: number } {
+  const includeHeaders = options.includeHeaders ?? true;
   const headers = [
     'Order Number',
     'Created At',
@@ -194,7 +253,7 @@ function buildCsvString(records: TransactionRecord[]): { csvString: string; tota
     'Item Details (SKUs & Quantities)'
   ];
 
-  const rows: string[] = [headers.join(',')];
+  const rows: string[] = includeHeaders ? [headers.join(',')] : [];
   let totalItemsCount = 0;
 
   for (let i = 0; i < records.length; i++) {
@@ -243,11 +302,13 @@ function buildCsvString(records: TransactionRecord[]): { csvString: string; tota
  */
 export function exportRecordsToCsv(
   records: TransactionRecord[],
-  filenamePrefix = 'filtered_transactions'
+  filenamePrefix = 'filtered_transactions',
+  options: CsvExportOptions = {}
 ): { blob: Blob; filename: string; stats: ExportPerformanceResult } {
   const startTime = performance.now();
+  const includeHeaders = options.includeHeaders ?? true;
 
-  const { csvString, totalItemsCount } = buildCsvString(records);
+  const { csvString, totalItemsCount } = buildCsvString(records, { includeHeaders });
   const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
   
   const endTime = performance.now();
@@ -278,7 +339,10 @@ export function exportRecordsToCsv(
     filename,
     stats: {
       format: 'csv',
-      formatName: 'Standard CSV (RFC 4180)',
+      formatName: includeHeaders
+        ? 'Standard CSV (RFC 4180)'
+        : 'Standard CSV (Headerless, RFC 4180)',
+      includeHeaders,
       recordCount: records.length,
       itemCount: totalItemsCount,
       durationMs,
@@ -292,8 +356,12 @@ export function exportRecordsToCsv(
       comparisonPayloadSizeBytes: jsonSizeBytes,
       estimatedGzipSizeBytes,
       estimatedGzipRatio,
-      encodingStandard: 'RFC 4180 • UTF-8 BOM',
-      structureType: 'Flat 2D Tabular Delimited'
+      encodingStandard: includeHeaders
+        ? 'RFC 4180 • UTF-8 BOM'
+        : 'RFC 4180 • UTF-8 BOM (Headerless)',
+      structureType: includeHeaders
+        ? 'Flat 2D Tabular Delimited'
+        : 'Flat 2D Tabular Delimited (Raw Rows, No Headers)'
     }
   };
 }
@@ -373,12 +441,15 @@ export function exportRecordsToJson(
 export function exportRecords(
   records: TransactionRecord[],
   format: ExportFormat,
-  filenamePrefix = 'filtered_transactions'
+  filenamePrefix = 'filtered_transactions',
+  options: ExportOptions = {}
 ): { blob: Blob; filename: string; stats: ExportPerformanceResult } {
   if (format === 'json') {
-    return exportRecordsToJson(records, filenamePrefix);
+    return exportRecordsToJson(records, filenamePrefix, options.pretty ?? true);
   }
-  return exportRecordsToCsv(records, filenamePrefix);
+  return exportRecordsToCsv(records, filenamePrefix, {
+    includeHeaders: options.includeHeaders ?? true
+  });
 }
 
 /**
@@ -399,4 +470,26 @@ export function triggerFileDownload(blob: Blob, filename: string): void {
     URL.revokeObjectURL(url);
   }, 200);
 }
+
+/**
+ * Compresses a Blob using gzip CompressionStream if available in the browser.
+ */
+export async function compressBlobGzip(blob: Blob): Promise<{ blob: Blob; isCompressed: boolean }> {
+  if (typeof CompressionStream !== 'undefined') {
+    try {
+      const cs = new CompressionStream('gzip');
+      const stream = blob.stream().pipeThrough(cs);
+      const res = new Response(stream);
+      const compressedBlob = await res.blob();
+      return {
+        blob: new Blob([await compressedBlob.arrayBuffer()], { type: 'application/gzip' }),
+        isCompressed: true
+      };
+    } catch (err) {
+      console.warn('CompressionStream error, falling back to uncompressed blob:', err);
+    }
+  }
+  return { blob, isCompressed: false };
+}
+
 

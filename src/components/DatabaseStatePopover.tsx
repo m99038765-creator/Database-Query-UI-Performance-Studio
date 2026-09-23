@@ -106,7 +106,10 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
         activeQueriesCount: point.activeQueriesCount,
         connectionPool: connectionPoolUsage.text,
         cacheStatus: point.cacheHit ? 'HIT' : 'MISS',
-        simulatedError: point.simulatedError || 'None'
+        simulatedError: point.simulatedError || 'None',
+        mutationFrequencyPerMin: point.mutationFrequencyPerMin ?? 0,
+        isHighDurationMutation: point.isHighDurationMutation || false,
+        correlatedThresholdViolation: point.correlatedThresholdViolation || null
       },
       optimizationFlags: point.flags
     };
@@ -177,6 +180,21 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
           </button>
         </div>
       </div>
+
+      {/* High-Duration Mutation Correlation Alert Banner */}
+      {point.isHighDurationMutation && (
+        <div className="px-3.5 py-2 bg-rose-950 border-b border-rose-800 text-rose-200 flex items-center justify-between text-xs font-mono">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping inline-block" />
+            <span className="font-bold text-rose-300">High-Duration Mutation Correlated</span>
+          </div>
+          <span className="text-[11px] text-rose-300 font-semibold">
+            {point.correlatedThresholdViolation
+              ? `${point.correlatedThresholdViolation.elapsedSeconds}s > ${point.correlatedThresholdViolation.thresholdSeconds}s threshold`
+              : 'Threshold Exceeded'}
+          </span>
+        </div>
+      )}
 
       {/* Latency & SLA Hero Summary */}
       <div className="px-4 py-3 bg-zinc-900 text-white flex items-center justify-between">
@@ -329,6 +347,15 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
                 {point.cacheHit ? 'CACHE HIT (0.15ms)' : 'CACHE MISS'}
               </span>
             </div>
+
+            {point.mutationFrequencyPerMin !== undefined && (
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500">Mutation Frequency:</span>
+                <span className="font-mono text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                  {point.mutationFrequencyPerMin} events/min
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

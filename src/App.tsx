@@ -10,6 +10,7 @@ import { ExplainPlanViewer } from './components/ExplainPlanViewer';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { PerformanceTrendsView } from './components/PerformanceTrendsView';
 import { BulkImportModal } from './components/BulkImportModal';
+import { DiagnosticPdfPreviewModal } from './components/DiagnosticPdfPreviewModal';
 import { ExportLatencyCpuSparkline } from './components/ExportLatencyCpuSparkline';
 import { CpuPerformanceGlowBadge } from './components/CpuPerformanceGlowBadge';
 import { useSystemCpuMonitor, sampleCurrentCpuUsage } from './utils/systemCpuMonitor';
@@ -23,19 +24,40 @@ import {
   ExportHistoryPoint,
   generateInitialExportHistory
 } from './utils/csvExporter';
+import { exportDiagnosticCorrelationReportJson } from './utils/diagnosticCorrelationReportGenerator';
+import { exportDiagnosticCorrelationPdf } from './utils/diagnosticCorrelationPdfGenerator';
 import {
   DataTapeEntry,
-  DatabaseUpdateEvent
+  DatabaseUpdateEvent,
+  SerializationLogEntry
 } from './types';
 import {
   subscribeDatabaseUpdate,
-  executeBatchMutation
+  subscribeCacheInvalidation,
+  getLastCacheRefreshTimestamp,
+  executeBatchMutation,
+  deleteRecordsByIds,
+  isDatabaseMutating,
+  getActiveInFlightMutation,
+  getActivePendingMutationsCount,
+  getAllActiveInFlightMutations,
+  subscribeMutationState,
+  beginDatabaseMutation,
+  InFlightMutationState,
+  getDatabaseMutationHistory
 } from './db/databaseEngine';
 import {
   createDataTapeEntry,
   getInitialDataTapeEntries
 } from './utils/auditDataTape';
 import { HistoricalDataTapeModal } from './components/HistoricalDataTapeModal';
+import { ExportSavingsSummaryChart } from './components/ExportSavingsSummaryChart';
+import { SerializationErrorLogPanel } from './components/SerializationErrorLogPanel';
+import {
+  detectSerializationAnomaly,
+  createSimulatedLog,
+  getInitialSerializationLogs
+} from './utils/serializationLogger';
 import {
   CheckCircle2,
   AlertTriangle,
@@ -52,8 +74,252 @@ import {
   Layers,
   Zap,
   ExternalLink,
-  X
+  X,
+  Keyboard,
+  RefreshCw,
+  Pause,
+  Lock,
+  Copy,
+  ClipboardCheck,
+  Activity,
+  Bell,
+  AlertCircle,
+  Trash2,
+  FileText,
+  SlidersHorizontal,
+  Eye
 } from 'lucide-react';
+
+interface InvalidationTriggerEntry {
+  id: string;
+  reason: string;
+  label: string;
+  timestamp: number;
+  isBulk: boolean;
+  details?: string;
+}
+
+function formatTriggerLabel(reason?: string): string {
+  if (!reason) return 'General Database Mutation';
+  switch (reason) {
+    case 'bulk_ingestion':
+      return 'Bulk Ingestion (Sync)';
+    case 'status_transition':
+      return 'Batch Status Transition';
+    case 'high_risk_flag':
+      return 'Batch Risk Flag Update';
+    case 'live_ingest_mutation':
+      return 'Live Ingest Append';
+    case 'bulk_add_transactions':
+      return 'Bulk Add Ingestion';
+    case 'delete_records':
+      return 'Batch Delete Purge';
+    case 'batch_mutation':
+      return 'Concurrent Batch Mutation';
+    case 'record_added':
+      return 'Single Record Insert';
+    case 'record_updated':
+      return 'Single Record Update';
+    default:
+      return reason.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
+
+function isBulkTrigger(reason?: string): boolean {
+  if (!reason) return true;
+  return (
+    reason.includes('bulk') ||
+    reason.includes('batch') ||
+    reason.includes('ingest') ||
+    reason.includes('delete') ||
+    reason === 'database_mutation'
+  );
+}
+
+function getTriggerDetails(reason?: string): string {
+  if (!reason) return 'Query cache evicted for data consistency';
+  switch (reason) {
+    case 'bulk_ingestion':
+      return '5,000+ records written with page splits';
+    case 'status_transition':
+      return '50 orders transitioned in bulk';
+    case 'high_risk_flag':
+      return 'Batch security risk recomputation';
+    case 'live_ingest_mutation':
+      return '50 real-time telemetry records appended';
+    case 'bulk_add_transactions':
+      return 'Multi-row transaction batch ingestion';
+    case 'delete_records':
+      return 'Purged from storage & B-Tree indexes';
+    default:
+      return 'All query cache entries invalidated';
+  }
+}
+
+function formatTriggerTimeAgo(timestamp: number): string {
+  const diffSec = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (diffSec < 5) return 'just now';
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  return `${diffHr}h ago`;
+}
+
+interface BTreeResourceImpact {
+  level: 'minor' | 'moderate' | 'bulk';
+  label: string;
+  badgeLabel: string;
+  iconColor: string;
+  badgeBg: string;
+  badgeText: string;
+  badgeBorder: string;
+  tooltipText: string;
+  estimatedPageSplits: string;
+}
+
+function getBTreeResourceImpact(mutation: InFlightMutationState): BTreeResourceImpact {
+  const rows = mutation.targetRows ?? (mutation.type === 'bulk_ingestion' ? 5000 : 1);
+  const typeLower = (mutation.type || '').toLowerCase();
+  const descLower = (mutation.description || '').toLowerCase();
+
+  const isBulk =
+    typeLower.includes('bulk') ||
+    descLower.includes('bulk') ||
+    descLower.includes('5,000') ||
+    rows >= 100;
+
+  if (isBulk) {
+    const splits = Math.max(8, Math.floor(rows / 128));
+    return {
+      level: 'bulk',
+      label: 'Bulk B-Tree Impact',
+      badgeLabel: 'Bulk Impact',
+      iconColor: 'text-rose-400',
+      badgeBg: 'bg-rose-500/20',
+      badgeText: 'text-rose-300',
+      badgeBorder: 'border-rose-500/40',
+      tooltipText: `Bulk Impact (Red): Heavy B-Tree page splits (~${splits} splits), tree rebalancing & WAL flush`,
+      estimatedPageSplits: `~${splits} splits`
+    };
+  }
+
+  const isModerate =
+    rows >= 15 ||
+    typeLower.includes('batch') ||
+    descLower.includes('batch') ||
+    descLower.includes('status');
+
+  if (isModerate) {
+    return {
+      level: 'moderate',
+      label: 'Moderate B-Tree Impact',
+      badgeLabel: 'Mod Impact',
+      iconColor: 'text-amber-400',
+      badgeBg: 'bg-amber-500/20',
+      badgeText: 'text-amber-300',
+      badgeBorder: 'border-amber-500/40',
+      tooltipText: 'Moderate Impact (Amber): Localized leaf-node splits & key re-indexing (~1-3 page splits)',
+      estimatedPageSplits: '~2 splits'
+    };
+  }
+
+  return {
+    level: 'minor',
+    label: 'Minor B-Tree Impact',
+    badgeLabel: 'Minor Impact',
+    iconColor: 'text-emerald-400',
+    badgeBg: 'bg-emerald-500/20',
+    badgeText: 'text-emerald-300',
+    badgeBorder: 'border-emerald-500/40',
+    tooltipText: 'Minor Impact (Green): In-place leaf pointer update, 0 page splits',
+    estimatedPageSplits: '0 splits'
+  };
+}
+
+function formatInvalidationLogsForClipboard(
+  triggers: InvalidationTriggerEntry[],
+  isMutating: boolean,
+  pendingCount: number,
+  recurrentBulk: number
+): string {
+  const now = new Date();
+  const divider = '='.repeat(64);
+  const subDivider = '-'.repeat(64);
+
+  const lines: string[] = [
+    divider,
+    'CACHE INVALIDATION & CHURN AUDIT LOGS',
+    `Timestamp: ${now.toISOString()} (${now.toLocaleTimeString()})`,
+    `Database State: ${
+      isMutating
+        ? `PAUSED (${pendingCount} active pending mutation${pendingCount === 1 ? '' : 's'})`
+        : 'READY (Cache Invalidated / Fresh Read)'
+    }`,
+    `Bulk Operations Churn: ${recurrentBulk}/3 triggers in recent inspection window`,
+    divider,
+    '',
+    'LAST 3 INVALIDATION TRIGGERS:',
+    subDivider
+  ];
+
+  if (triggers.length === 0) {
+    lines.push('No recent invalidation triggers recorded.');
+  } else {
+    triggers.forEach((trigger, idx) => {
+      const timeStr = new Date(trigger.timestamp).toISOString();
+      const timeAgo = formatTriggerTimeAgo(trigger.timestamp);
+      lines.push(`[#${idx + 1}] ${trigger.label}`);
+      lines.push(`  Time    : ${timeStr} (${timeAgo})`);
+      lines.push(`  Reason  : ${trigger.reason}`);
+      lines.push(`  Bulk Op : ${trigger.isBulk ? 'YES' : 'NO'}`);
+      if (trigger.details) {
+        lines.push(`  Details : ${trigger.details}`);
+      }
+      if (idx < triggers.length - 1) {
+        lines.push('');
+      }
+    });
+  }
+
+  lines.push(subDivider);
+  if (recurrentBulk >= 2) {
+    lines.push('DIAGNOSTIC NOTE: High cache churn detected. Consecutive bulk writes invalidate cached export snapshots.');
+  }
+  if (isMutating) {
+    lines.push(`CONSISTENCY NOTE: ${pendingCount} active in-flight mutation(s) held consistency lock; serialization deferred.`);
+  }
+  lines.push(divider);
+
+  return lines.join('\n');
+}
+
+const INITIAL_INVALIDATION_TRIGGERS: InvalidationTriggerEntry[] = [
+  {
+    id: 'inv-init-1',
+    reason: 'bulk_ingestion',
+    label: 'Bulk Ingestion (Sync)',
+    timestamp: Date.now() - 38000,
+    isBulk: true,
+    details: '5,000+ records written with page splits'
+  },
+  {
+    id: 'inv-init-2',
+    reason: 'status_transition',
+    label: 'Batch Status Transition',
+    timestamp: Date.now() - 110000,
+    isBulk: true,
+    details: '50 orders transitioned in bulk'
+  },
+  {
+    id: 'inv-init-3',
+    reason: 'live_ingest_mutation',
+    label: 'Live Ingest Append',
+    timestamp: Date.now() - 215000,
+    isBulk: true,
+    details: '50 real-time telemetry records appended'
+  }
+];
 
 export default function App() {
   // All optimizations enabled by default to resolve errors and rendering lag
@@ -84,9 +350,718 @@ export default function App() {
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
 
+  // CSV Column Headers Inclusion / Exclusion state (dynamically updates serialization logic)
+  const [includeCsvHeaders, setIncludeCsvHeaders] = useState<boolean>(true);
+  const includeCsvHeadersRef = useRef(includeCsvHeaders);
+  useEffect(() => {
+    includeCsvHeadersRef.current = includeCsvHeaders;
+  }, [includeCsvHeaders]);
+
   // Export operations history (last 10) correlated with system CPU usage for the sparkline
   const [exportHistory, setExportHistory] = useState<ExportHistoryPoint[]>(() => generateInitialExportHistory());
   const systemCpu = useSystemCpuMonitor();
+
+  // Power-user keyboard shortcut state & OS detection
+  const [isShortcutFlashing, setIsShortcutFlashing] = useState<boolean>(false);
+  const [shortcutToast, setShortcutToast] = useState<{
+    key: string;
+    format: ExportFormat;
+    rows: number;
+    isEmpty?: boolean;
+  } | null>(null);
+
+  const isMac = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return /Mac|iPod|iPhone|iPad/.test(window.navigator?.platform || window.navigator?.userAgent || '');
+  }, []);
+  const shortcutKeyLabel = isMac ? '⌘E' : 'Ctrl+E';
+  const altShortcutKeyLabel = isMac ? '⇧⌘E' : 'Ctrl+Shift+E';
+
+  // Visual feedback pulse effect on #btn-header-export-csv when LRU cache is invalidated by a database mutation
+  const [isCacheInvalidatedPulsing, setIsCacheInvalidatedPulsing] = useState<boolean>(false);
+  const [cacheInvalidationReason, setCacheInvalidationReason] = useState<string>('database mutation');
+  const [lastCacheRefreshedAt, setLastCacheRefreshedAt] = useState<number>(() => getLastCacheRefreshTimestamp());
+  const [isExportHovered, setIsExportHovered] = useState<boolean>(false);
+  const [invalidationHistory, setInvalidationHistory] = useState<InvalidationTriggerEntry[]>(INITIAL_INVALIDATION_TRIGGERS);
+
+  // In-flight database mutation state & deferred serialization consistency lock
+  const [isDatabaseMutatingState, setIsDatabaseMutatingState] = useState<boolean>(() => isDatabaseMutating());
+  const [activeInFlightMutation, setActiveInFlightMutation] = useState<InFlightMutationState | null>(() =>
+    getActiveInFlightMutation()
+  );
+  const [pendingMutationsCount, setPendingMutationsCount] = useState<number>(() =>
+    getActivePendingMutationsCount()
+  );
+  const [activeMutationsList, setActiveMutationsList] = useState<InFlightMutationState[]>(() =>
+    getAllActiveInFlightMutations()
+  );
+  const [mutationHistory, setMutationHistory] = useState(() => getDatabaseMutationHistory());
+  const [mutationClock, setMutationClock] = useState<number>(() => Date.now());
+  const [exportPausedToast, setExportPausedToast] = useState<string | null>(null);
+
+  // Live countdown ticker while database is mutating
+  useEffect(() => {
+    if (!isDatabaseMutatingState) return;
+    const interval = setInterval(() => {
+      setMutationClock(Date.now());
+    }, 250);
+    return () => clearInterval(interval);
+  }, [isDatabaseMutatingState]);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout | null = null;
+    const unsubscribeCache = subscribeCacheInvalidation((reason, lastRefreshed) => {
+      setIsCacheInvalidatedPulsing(true);
+      if (reason) setCacheInvalidationReason(reason);
+      if (lastRefreshed) {
+        setLastCacheRefreshedAt(lastRefreshed);
+      } else {
+        setLastCacheRefreshedAt(getLastCacheRefreshTimestamp());
+      }
+
+      const newEntry: InvalidationTriggerEntry = {
+        id: `inv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        reason: reason || 'database_mutation',
+        label: formatTriggerLabel(reason),
+        timestamp: Date.now(),
+        isBulk: isBulkTrigger(reason),
+        details: getTriggerDetails(reason)
+      };
+      setInvalidationHistory((prev) => [newEntry, ...prev].slice(0, 10));
+
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        setIsCacheInvalidatedPulsing(false);
+      }, 3500);
+    });
+
+    const unsubscribeMutation = subscribeMutationState((isMutating, mutation, count, allPending) => {
+      setIsDatabaseMutatingState(isMutating);
+      setActiveInFlightMutation(mutation);
+      setPendingMutationsCount(count);
+      setActiveMutationsList(allPending);
+      setMutationHistory(getDatabaseMutationHistory());
+    });
+
+    return () => {
+      unsubscribeCache();
+      unsubscribeMutation();
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  // Compute estimated wait time based on active pending mutations
+  const estimatedWaitTimeText = useMemo(() => {
+    if (!isDatabaseMutatingState || pendingMutationsCount === 0 || activeMutationsList.length === 0) {
+      return 'Resuming shortly...';
+    }
+    const now = mutationClock;
+    let maxRemainingMs = 0;
+    activeMutationsList.forEach((m) => {
+      const elapsed = Math.max(0, now - m.startedAt);
+      const estDuration = m.estimatedDurationMs || 2500;
+      const remaining = Math.max(250, estDuration - elapsed);
+      if (remaining > maxRemainingMs) {
+        maxRemainingMs = remaining;
+      }
+    });
+
+    // Buffer 500ms per additional pending mutation for WAL flush & index re-sync
+    const queueBuffer = Math.max(0, pendingMutationsCount - 1) * 500;
+    const totalRemainingSeconds = Math.max(0.4, (maxRemainingMs + queueBuffer) / 1000);
+
+    if (totalRemainingSeconds < 1) {
+      return `~${totalRemainingSeconds.toFixed(1)}s (<1s remaining)`;
+    }
+    return `~${totalRemainingSeconds.toFixed(1)}s remaining`;
+  }, [isDatabaseMutatingState, pendingMutationsCount, activeMutationsList, mutationClock]);
+
+  // Compute total estimated completion percentage across all active pending database mutations
+  const mutationProgressPercent = useMemo(() => {
+    if (!isDatabaseMutatingState || pendingMutationsCount === 0) {
+      return 100;
+    }
+    const mutations =
+      activeMutationsList.length > 0
+        ? activeMutationsList
+        : activeInFlightMutation
+        ? [activeInFlightMutation]
+        : [];
+    if (mutations.length === 0) return 100;
+
+    const now = mutationClock;
+    let totalDuration = 0;
+    let totalElapsed = 0;
+
+    mutations.forEach((m) => {
+      const estDuration = m.estimatedDurationMs || 2500;
+      const elapsed = Math.max(0, now - m.startedAt);
+      totalDuration += estDuration;
+      totalElapsed += Math.min(estDuration * 0.95, elapsed);
+    });
+
+    if (totalDuration === 0) return 10;
+    const pct = Math.min(96, Math.max(6, Math.round((totalElapsed / totalDuration) * 100)));
+    return pct;
+  }, [isDatabaseMutatingState, pendingMutationsCount, activeMutationsList, activeInFlightMutation, mutationClock]);
+
+  // Live Monitoring state: forces tooltip to auto-update every 1s instead of relying on standard hover state
+  const [isLiveMonitoring, setIsLiveMonitoring] = useState<boolean>(false);
+  const [liveMonitoringClock, setLiveMonitoringClock] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!isLiveMonitoring) return;
+
+    const updateLiveContent = () => {
+      const now = Date.now();
+      setLiveMonitoringClock(now);
+      setMutationClock(now);
+      const active = getAllActiveInFlightMutations();
+      setActiveMutationsList(active);
+      setPendingMutationsCount(active.length);
+      setIsDatabaseMutatingState(active.length > 0 || isDatabaseMutating());
+    };
+
+    updateLiveContent();
+    const interval = setInterval(updateLiveContent, 1000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [isLiveMonitoring]);
+
+  // Custom Mutation Threshold (default: 5s) and notification tracking
+  const [mutationThreshold, setMutationThreshold] = useState<number>(5);
+  const [isThresholdInputFocused, setIsThresholdInputFocused] = useState<boolean>(false);
+  const [thresholdAlert, setThresholdAlert] = useState<{
+    id: string;
+    mutationId: string;
+    mutationDescription: string;
+    thresholdSeconds: number;
+    elapsedSeconds: number;
+    timestamp: number;
+  } | null>(null);
+  const alertedMutationIdsRef = useRef<Set<string>>(new Set());
+
+  // Active Threshold Alerts history (last 5 threshold violations)
+  const [thresholdViolationsHistory, setThresholdViolationsHistory] = useState<
+    Array<{
+      id: string;
+      mutationId: string;
+      mutationDescription: string;
+      thresholdSeconds: number;
+      elapsedSeconds: number;
+      timestamp: number;
+    }>
+  >([
+    {
+      id: 'viol-sample-1',
+      mutationId: 'mut-sample-1',
+      mutationDescription: 'Bulk Ingest Catalog Sync (120 rows)',
+      thresholdSeconds: 5,
+      elapsedSeconds: 5.8,
+      timestamp: Date.now() - 36000
+    },
+    {
+      id: 'viol-sample-2',
+      mutationId: 'mut-sample-2',
+      mutationDescription: 'Category Price Multiplier Batch Recalculation',
+      thresholdSeconds: 5,
+      elapsedSeconds: 6.4,
+      timestamp: Date.now() - 95000
+    }
+  ]);
+  const [copiedAlertItemId, setCopiedAlertItemId] = useState<string | null>(null);
+
+  const handleCopyAlertItem = (item: {
+    id: string;
+    mutationDescription: string;
+    thresholdSeconds: number;
+    elapsedSeconds: number;
+    timestamp: number;
+  }) => {
+    const formatted = `[Active Threshold Alert]
+Mutation: ${item.mutationDescription}
+Duration: ${item.elapsedSeconds}s (Threshold: ${item.thresholdSeconds}s)
+Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
+
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(formatted).catch(() => {});
+    }
+    setCopiedAlertItemId(item.id);
+    setTimeout(() => {
+      setCopiedAlertItemId((curr) => (curr === item.id ? null : curr));
+    }, 2000);
+  };
+
+  const [isAlertHistoryCleared, setIsAlertHistoryCleared] = useState(false);
+
+  // Clears the active threshold alert history array and resets alert tracking state
+  const handleClearAlertHistory = () => {
+    // Delete the history array
+    setThresholdViolationsHistory([]);
+    // Reset active alert tracking state
+    setThresholdAlert(null);
+    alertedMutationIdsRef.current.clear();
+    setCopiedAlertItemId(null);
+    setIsAlertHistoryCleared(true);
+    setTimeout(() => {
+      setIsAlertHistoryCleared(false);
+    }, 2000);
+  };
+
+  const [isGeneratingDiagnosticReport, setIsGeneratingDiagnosticReport] = useState(false);
+  const [isDiagnosticReportSuccess, setIsDiagnosticReportSuccess] = useState(false);
+
+  const [isGeneratingDiagnosticPdf, setIsGeneratingDiagnosticPdf] = useState(false);
+  const [isDiagnosticPdfSuccess, setIsDiagnosticPdfSuccess] = useState(false);
+  const [diagnosticPdfError, setDiagnosticPdfError] = useState<string | null>(null);
+  const [showPdfExportSettings, setShowPdfExportSettings] = useState(false);
+  const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
+  const [pdfExportSections, setPdfExportSections] = useState({
+    includeSparklines: true,
+    includeMutationHistory: true,
+    includeRecommendations: true,
+    includeExecutiveSummary: true
+  });
+
+  // Generate Diagnostic Correlation Report as a non-technical Visual PDF with sparklines
+  const handleGenerateDiagnosticCorrelationPdf = async () => {
+    setIsGeneratingDiagnosticPdf(true);
+    setDiagnosticPdfError(null);
+    try {
+      await exportDiagnosticCorrelationPdf({
+        thresholdViolations: thresholdViolationsHistory,
+        mutationHistory,
+        trendHistory,
+        mutationThreshold,
+        currentFlags: flags,
+        options: {
+          sections: pdfExportSections
+        }
+      });
+      setIsDiagnosticPdfSuccess(true);
+      setDiagnosticPdfError(null);
+      setTimeout(() => {
+        setIsDiagnosticPdfSuccess(false);
+      }, 2500);
+    } catch (err: any) {
+      console.error('Failed to generate diagnostic correlation PDF report:', err);
+      const errorMessage =
+        err?.message ||
+        'Failed to generate visual PDF report. Please verify diagnostic history and try again.';
+      setDiagnosticPdfError(errorMessage);
+    } finally {
+      setIsGeneratingDiagnosticPdf(false);
+    }
+  };
+
+  // Generate Diagnostic Correlation Report as JSON summarizing mutation clusters & latency spikes
+  const handleGenerateDiagnosticCorrelationReport = () => {
+    setIsGeneratingDiagnosticReport(true);
+    try {
+      exportDiagnosticCorrelationReportJson({
+        thresholdViolations: thresholdViolationsHistory,
+        mutationHistory,
+        trendHistory,
+        mutationThreshold,
+        currentFlags: flags
+      });
+      setIsDiagnosticReportSuccess(true);
+      setTimeout(() => {
+        setIsDiagnosticReportSuccess(false);
+      }, 2500);
+    } catch (err) {
+      console.error('Failed to generate diagnostic correlation report:', err);
+    } finally {
+      setIsGeneratingDiagnosticReport(false);
+    }
+  };
+
+  // Check if any active database mutation exceeds the user-defined threshold duration
+  useEffect(() => {
+    if (!isDatabaseMutatingState || activeMutationsList.length === 0) {
+      return;
+    }
+    const currentThreshold = mutationThreshold > 0 ? mutationThreshold : 5;
+    const thresholdMs = currentThreshold * 1000;
+    const now = Date.now();
+
+    activeMutationsList.forEach((m) => {
+      const elapsedMs = now - m.startedAt;
+      if (elapsedMs >= thresholdMs) {
+        const alertKey = `${m.id}-${currentThreshold}`;
+        if (!alertedMutationIdsRef.current.has(alertKey)) {
+          alertedMutationIdsRef.current.add(alertKey);
+          const elapsedSec = Math.round((elapsedMs / 1000) * 10) / 10;
+          const newAlertItem = {
+            id: `alert-${m.id}-${Date.now()}`,
+            mutationId: m.id,
+            mutationDescription: m.description,
+            thresholdSeconds: currentThreshold,
+            elapsedSeconds: elapsedSec,
+            timestamp: Date.now()
+          };
+          setThresholdAlert(newAlertItem);
+          setThresholdViolationsHistory((prev) => [newAlertItem, ...prev].slice(0, 5));
+
+          // Automatically mark correlating latency data points as 'High-Duration Mutation' in the Performance Trends view
+          setTrendHistory((prevTrend) => {
+            if (prevTrend.length === 0) return prevTrend;
+            const updated = prevTrend.map((pt, idx) => {
+              // Correlate the latest point or any points within the mutation duration window
+              const withinWindow = Math.abs(pt.timestamp - newAlertItem.timestamp) <= (newAlertItem.elapsedSeconds + 10) * 1000;
+              const isLatest = idx === prevTrend.length - 1;
+              if (withinWindow || isLatest) {
+                return {
+                  ...pt,
+                  isHighDurationMutation: true,
+                  correlatedThresholdViolation: {
+                    id: newAlertItem.id,
+                    mutationId: newAlertItem.mutationId,
+                    mutationDescription: newAlertItem.mutationDescription,
+                    thresholdSeconds: newAlertItem.thresholdSeconds,
+                    elapsedSeconds: newAlertItem.elapsedSeconds,
+                    timestamp: newAlertItem.timestamp
+                  }
+                };
+              }
+              return pt;
+            });
+            return updated;
+          });
+
+          // Also trigger system browser notification if enabled
+          if (
+            typeof window !== 'undefined' &&
+            'Notification' in window &&
+            Notification.permission === 'granted'
+          ) {
+            try {
+              new Notification('Mutation Threshold Exceeded', {
+                body: `${m.description} has exceeded your ${currentThreshold}s threshold (${elapsedSec}s elapsed).`,
+                icon: '/favicon.ico'
+              });
+            } catch {
+              // Notification API error handled gracefully
+            }
+          }
+        }
+      }
+    });
+  }, [mutationClock, isDatabaseMutatingState, activeMutationsList, mutationThreshold]);
+
+  // Reset alert tracking history when all active mutations have completed
+  useEffect(() => {
+    if (activeMutationsList.length === 0) {
+      alertedMutationIdsRef.current.clear();
+    }
+  }, [activeMutationsList]);
+
+  const isExportPulsing =
+    isCacheInvalidatedPulsing || isDatabaseMutatingState || isLiveMonitoring || Boolean(thresholdAlert);
+
+  const last3Triggers = useMemo(() => {
+    return invalidationHistory.slice(0, 3);
+  }, [invalidationHistory]);
+
+  const recurrentBulkCount = useMemo(() => {
+    return last3Triggers.filter((t) => t.isBulk).length;
+  }, [last3Triggers]);
+
+  const formattedCacheRefreshTime = useMemo(() => {
+    if (!lastCacheRefreshedAt) return 'Just now';
+    const date = new Date(lastCacheRefreshedAt);
+    return date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3,
+      hour12: true
+    });
+  }, [lastCacheRefreshedAt]);
+
+  const formattedCacheRefreshDate = useMemo(() => {
+    if (!lastCacheRefreshedAt) return '';
+    return new Date(lastCacheRefreshedAt).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  }, [lastCacheRefreshedAt]);
+
+  const cacheRefreshSecondsAgo = useMemo(() => {
+    if (!lastCacheRefreshedAt) return '0.0s';
+    const diff = Math.max(0, (Date.now() - lastCacheRefreshedAt) / 1000);
+    return `${diff.toFixed(1)}s`;
+  }, [lastCacheRefreshedAt, isExportHovered, liveMonitoringClock]);
+
+  // Copy Logs state and export tooltip interaction helpers
+  const [isCopiedLogs, setIsCopiedLogs] = useState<boolean>(false);
+  const exportHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleExportMouseEnter = () => {
+    if (exportHoverTimeoutRef.current) {
+      clearTimeout(exportHoverTimeoutRef.current);
+      exportHoverTimeoutRef.current = null;
+    }
+    setIsExportHovered(true);
+  };
+
+  const handleExportMouseLeave = () => {
+    if (isLiveMonitoring) return;
+    if (exportHoverTimeoutRef.current) {
+      clearTimeout(exportHoverTimeoutRef.current);
+    }
+    exportHoverTimeoutRef.current = setTimeout(() => {
+      if (!isLiveMonitoring) {
+        setIsExportHovered(false);
+      }
+    }, 250);
+  };
+
+  const handleCopyInvalidationLogs = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const formatted = formatInvalidationLogsForClipboard(
+      last3Triggers,
+      isDatabaseMutatingState,
+      pendingMutationsCount,
+      recurrentBulkCount
+    );
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(formatted);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = formatted;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setIsCopiedLogs(true);
+      setTimeout(() => setIsCopiedLogs(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy invalidation triggers to clipboard:', err);
+    }
+  };
+
+  const [isCopiedSummary, setIsCopiedSummary] = useState<boolean>(false);
+
+  const handleCopyLogSummary = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const summary = [
+      `*Database Mutation & Cache Performance Summary*`,
+      `• Pending Mutation Queue Count: ${pendingMutationsCount} active ${pendingMutationsCount === 1 ? 'mutation' : 'mutations'}`,
+      `• Estimated Wait Time: ${estimatedWaitTimeText}`,
+      `• Total Est. Completion: ${mutationProgressPercent}%`,
+      `• Serialization Status: ${isDatabaseMutatingState ? 'PAUSED (Serialization Deferred)' : 'READY (Fresh Read Active)'}`,
+      `• Lock Scope: Heap Rows & B-Tree Indexes (Snapshot Isolation)`,
+      `• Timestamp: ${new Date().toISOString()}`
+    ].join('\n');
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(summary);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = summary;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setIsCopiedSummary(true);
+      setTimeout(() => setIsCopiedSummary(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy log summary to clipboard:', err);
+    }
+  };
+
+  const [isCopiedJson, setIsCopiedJson] = useState<boolean>(false);
+
+  const handleCopyInvalidationJson = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const minifiedPayload = JSON.stringify({
+      triggers: last3Triggers.map((t, idx) => ({
+        index: idx + 1,
+        id: t.id,
+        label: t.label,
+        reason: t.reason,
+        bulk: t.isBulk,
+        timestamp: t.timestamp,
+        iso: new Date(t.timestamp).toISOString(),
+        details: t.details || null
+      })),
+      recurrentBulkCount,
+      databaseState: {
+        isMutating: isDatabaseMutatingState,
+        status: isDatabaseMutatingState ? 'PAUSED' : 'READY',
+        pendingMutationsCount
+      },
+      lastCacheRefreshedAt,
+      exportedAt: Date.now()
+    });
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(minifiedPayload);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = minifiedPayload;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setIsCopiedJson(true);
+      setTimeout(() => setIsCopiedJson(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy minified invalidation triggers JSON to clipboard:', err);
+    }
+  };
+
+  const [isDownloadedJson, setIsDownloadedJson] = useState<boolean>(false);
+
+  const handleDownloadInvalidationLogsJson = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const payload = {
+      exportType: 'cache_invalidation_triggers_audit',
+      exportedAt: new Date().toISOString(),
+      databaseState: {
+        isMutating: isDatabaseMutatingState,
+        status: isDatabaseMutatingState ? 'PAUSED' : 'READY',
+        pendingMutationsCount: pendingMutationsCount,
+        activeMutations: activeMutationsList.map((m) => ({
+          id: m.id,
+          type: m.type,
+          description: m.description,
+          startedAt: new Date(m.startedAt).toISOString(),
+          targetRows: m.targetRows,
+          estimatedDurationMs: m.estimatedDurationMs
+        }))
+      },
+      metrics: {
+        recurrentBulkCount,
+        recurrentBulkThreshold: 2,
+        isHighChurn: recurrentBulkCount >= 2,
+        totalRecentTriggers: last3Triggers.length
+      },
+      last3Triggers: last3Triggers.map((t, idx) => ({
+        index: idx + 1,
+        id: t.id,
+        label: t.label,
+        reason: t.reason,
+        isBulk: t.isBulk,
+        timestamp: t.timestamp,
+        isoTimestamp: new Date(t.timestamp).toISOString(),
+        timeAgo: formatTriggerTimeAgo(t.timestamp),
+        details: t.details || null
+      })),
+      diagnostics: {
+        cacheStatus: isDatabaseMutatingState
+          ? 'Consistency lock active: Serialization deferred to prevent partial snapshot tearing.'
+          : 'Cache invalidated: Next export queries fresh table snapshot.',
+        churnRecommendation:
+          recurrentBulkCount >= 2
+            ? 'High churn rate detected: Consecutive bulk operations frequently evict cached query records.'
+            : 'Normal mutation cadence: Cache invalidation overhead is nominal.'
+      }
+    };
+
+    try {
+      const jsonStr = JSON.stringify(payload, null, 2);
+      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cache-invalidation-triggers-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setIsDownloadedJson(true);
+      setTimeout(() => setIsDownloadedJson(false), 2000);
+    } catch (err) {
+      console.error('Failed to download invalidation triggers JSON:', err);
+    }
+  };
+
+  const [isExportedAllCsv, setIsExportedAllCsv] = useState<boolean>(false);
+
+  const handleExportAllInvalidationLogsCsv = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    try {
+      const escapeCsvValue = (val: unknown): string => {
+        if (val === null || val === undefined) return '""';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return `"${str}"`;
+      };
+
+      const headers = [
+        'id',
+        'timestamp',
+        'iso_timestamp',
+        'local_timestamp',
+        'reason',
+        'label',
+        'isBulk',
+        'bulk_operation',
+        'details'
+      ];
+
+      const rows = invalidationHistory.map((item) => {
+        const iso = new Date(item.timestamp).toISOString();
+        const local = new Date(item.timestamp).toLocaleString();
+        return [
+          escapeCsvValue(item.id),
+          escapeCsvValue(item.timestamp),
+          escapeCsvValue(iso),
+          escapeCsvValue(local),
+          escapeCsvValue(item.reason),
+          escapeCsvValue(item.label),
+          escapeCsvValue(item.isBulk ? 'true' : 'false'),
+          escapeCsvValue(item.isBulk ? 'YES' : 'NO'),
+          escapeCsvValue(item.details || '')
+        ].join(',');
+      });
+
+      const csvContent = [headers.join(','), ...rows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `invalidation-history-all-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setIsExportedAllCsv(true);
+      setTimeout(() => setIsExportedAllCsv(false), 2000);
+    } catch (err) {
+      console.error('Failed to export all invalidation triggers CSV:', err);
+    }
+  };
 
   // Queue Auto-Save & External Audit Data Tape State
   const [isQueueAutoSaveEnabled, setIsQueueAutoSaveEnabled] = useState<boolean>(false);
@@ -98,6 +1073,38 @@ export default function App() {
     rows: number;
     checksum: string;
   } | null>(null);
+
+  // Serialization Error & Throughput Anomaly Log state
+  const [serializationLogs, setSerializationLogs] = useState<SerializationLogEntry[]>(() =>
+    getInitialSerializationLogs()
+  );
+
+  const handleClearSerializationLogs = () => {
+    setSerializationLogs([]);
+  };
+
+  const handleDismissLog = (id: string) => {
+    setSerializationLogs((prev) => prev.filter((l) => l.id !== id));
+  };
+
+  const handleSimulateFault = (
+    mode: 'failure' | 'throughput_anomaly' | 'cpu_spike' | 'latency_anomaly'
+  ) => {
+    const simulated = createSimulatedLog(
+      mode,
+      selectedExportFormat,
+      queryResult.records.length
+    );
+    setSerializationLogs((prev) => [simulated, ...prev].slice(0, 50));
+  };
+
+  const handleLogLatencyAnomaly = (log: SerializationLogEntry) => {
+    setSerializationLogs((prev) => {
+      if (prev.some((entry) => entry.id === log.id)) return prev;
+      return [log, ...prev].slice(0, 50);
+    });
+  };
+
 
   // Close export dropdown on outside click
   useEffect(() => {
@@ -186,8 +1193,8 @@ export default function App() {
       },
       {
         id: 'seed-3',
-        timestamp: now - 3000,
-        timeFormatted: formatTime(3000),
+        timestamp: now - 36000,
+        timeFormatted: formatTime(36000),
         executionTimeMs: 92.4,
         rowsScanned: 65000,
         activeQueriesCount: 1,
@@ -199,9 +1206,18 @@ export default function App() {
           virtualizedDOM: true,
           deferredRendering: true
         },
-        triggerEvent: 'Bulk Ingest +15,000 (Unindexed Raw Bulk)',
+        triggerEvent: 'Bulk Ingest Catalog Sync (120 rows)',
         deltaMs: 90.55,
-        simulatedError: null
+        simulatedError: null,
+        isHighDurationMutation: true,
+        correlatedThresholdViolation: {
+          id: 'viol-sample-1',
+          mutationId: 'mut-sample-1',
+          mutationDescription: 'Bulk Ingest Catalog Sync (120 rows)',
+          thresholdSeconds: 5,
+          elapsedSeconds: 5.8,
+          timestamp: now - 36000
+        }
       },
       {
         id: 'seed-4',
@@ -458,8 +1474,27 @@ export default function App() {
   };
 
   const handleAppendTrendPoint = (newPoint: LatencyTrendPoint) => {
+    let pointToAppend = { ...newPoint };
+    if (!pointToAppend.isHighDurationMutation && thresholdViolationsHistory.length > 0) {
+      const match = thresholdViolationsHistory.find((v) => {
+        const timeDiff = Math.abs(pointToAppend.timestamp - v.timestamp);
+        return timeDiff <= (v.elapsedSeconds + 15) * 1000;
+      });
+      if (match) {
+        pointToAppend.isHighDurationMutation = true;
+        pointToAppend.correlatedThresholdViolation = {
+          id: match.id,
+          mutationId: match.mutationId,
+          mutationDescription: match.mutationDescription,
+          thresholdSeconds: match.thresholdSeconds,
+          elapsedSeconds: match.elapsedSeconds,
+          timestamp: match.timestamp
+        };
+      }
+    }
+
     setTrendHistory((prev) => {
-      const updated = [...prev, newPoint];
+      const updated = [...prev, pointToAppend];
       return updated.slice(-60);
     });
   };
@@ -495,6 +1530,15 @@ export default function App() {
       };
       return [...prev, newPoint].slice(-10); // keep the last 10 export operations
     });
+
+    // Detect throughput degradation, latency spikes, or CPU contention anomalies
+    const triggerSource = auditMeta?.isAutoSave
+      ? `Queue Auto-Save [${auditMeta.tapeId || 'Tape'}]`
+      : 'Table & Plan Export';
+    const anomaly = detectSerializationAnomaly(stats, format, triggerSource);
+    if (anomaly) {
+      setSerializationLogs((prev) => [anomaly, ...prev].slice(0, 50));
+    }
   };
 
   // Synchronized refs to avoid stale closures in event subscriptions
@@ -535,7 +1579,7 @@ export default function App() {
         const filters = filterParamsRef.current;
         const seq = dataTapeEntriesRef.current.length + 1;
 
-        const newEntry = await createDataTapeEntry({
+        const { entry: newEntry, stats } = await createDataTapeEntry({
           records: recordsToExport,
           format,
           triggerEvent: event.description,
@@ -546,25 +1590,12 @@ export default function App() {
             category: filters.categoryFilter,
             pageSize: filters.pageSize
           },
-          sequenceNumber: seq
+          sequenceNumber: seq,
+          includeHeaders: includeCsvHeadersRef.current
         });
 
         // Prepend new entry to the audit tape ledger
         setDataTapeEntries((prev) => [newEntry, ...prev]);
-
-        // Construct performance stats for banner and history
-        const stats: ExportPerformanceResult = {
-          format,
-          formatName: newEntry.formatName,
-          recordCount: newEntry.recordCount,
-          itemCount: newEntry.itemCount,
-          fileSizeBytes: newEntry.fileSizeBytes,
-          durationMs: newEntry.durationMs,
-          cpuUsagePercent: newEntry.cpuUsagePercent,
-          throughputRowsPerSec: newEntry.throughputRowsPerSec,
-          compressionRatio: newEntry.recordCount > 0 ? Number(((newEntry.fileSizeBytes / (newEntry.recordCount * 180)) * 100).toFixed(1)) : 100,
-          structureType: format === 'json' ? 'RFC 8259 JSON' : 'RFC 4180 CSV'
-        };
 
         setHeaderExportStats(stats);
         recordExportOperation(stats, format, {
@@ -595,32 +1626,138 @@ export default function App() {
     };
   }, []);
 
-  const handleHeaderExport = (formatToExport?: ExportFormat) => {
-    if (queryResult.records.length === 0 || isHeaderExporting) return;
-    const format = formatToExport || selectedExportFormat;
+  const handleHeaderExport = (formatToExport?: ExportFormat, isFromShortcut?: boolean) => {
+    // If a database mutation is currently mid-process, defer serialization to ensure data consistency
+    if (isDatabaseMutatingState) {
+      setExportPausedToast(
+        `Export Paused: ${pendingMutationsCount} database mutation${pendingMutationsCount === 1 ? ' is' : 's are'} mid-process. Serialization is deferred to ensure data consistency.`
+      );
+      setTimeout(() => setExportPausedToast(null), 4500);
+      return;
+    }
+
+    const format = formatToExport || selectedExportFormatRef.current;
+    const recordsToExport = queryResultRef.current.records;
+    if (recordsToExport.length === 0) {
+      if (isFromShortcut) {
+        setShortcutToast({
+          key: shortcutKeyLabel,
+          format,
+          rows: 0,
+          isEmpty: true
+        });
+        setTimeout(() => setShortcutToast(null), 3500);
+      }
+      return;
+    }
+    if (isHeaderExporting) return;
+
     setSelectedExportFormat(format);
     setIsExportDropdownOpen(false);
     setIsHeaderExporting(true);
+    if (isCacheInvalidatedPulsing) {
+      setIsCacheInvalidatedPulsing(false);
+    }
+
+    if (isFromShortcut) {
+      setIsShortcutFlashing(true);
+      setTimeout(() => setIsShortcutFlashing(false), 800);
+      setShortcutToast({
+        key: shortcutKeyLabel,
+        format,
+        rows: recordsToExport.length,
+        isEmpty: false
+      });
+      setTimeout(() => setShortcutToast(null), 3500);
+    }
+
     setTimeout(() => {
       try {
-        const { blob, filename, stats } = exportRecords(queryResult.records, format);
+        const { blob, filename, stats } = exportRecords(
+          recordsToExport,
+          format,
+          'filtered_transactions',
+          { includeHeaders: includeCsvHeadersRef.current }
+        );
         triggerFileDownload(blob, filename);
         setHeaderExportStats(stats);
         recordExportOperation(stats, format);
-      } catch (err) {
+      } catch (err: unknown) {
         console.error(`Failed to export ${format.toUpperCase()} from Table & Explain Plan header:`, err);
+        const errorLog: SerializationLogEntry = {
+          id: `err-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: Date.now(),
+          timeFormatted: new Date().toTimeString().split(' ')[0],
+          severity: 'error',
+          type: 'SERIALIZATION_EXCEPTION',
+          format,
+          recordCount: recordsToExport.length,
+          message: `Fatal serialization abort: ${err instanceof Error ? err.message : 'Unknown serialization failure'}`,
+          details: {
+            cause: err instanceof Error ? err.stack || err.message : String(err),
+            stackTrace: err instanceof Error ? err.stack : undefined,
+            triggerSource: isFromShortcut ? 'Keyboard Shortcut Export' : 'Manual Header Export'
+          }
+        };
+        setSerializationLogs((prev) => [errorLog, ...prev].slice(0, 50));
       } finally {
         setIsHeaderExporting(false);
       }
     }, 10);
   };
 
+  // Power-user keyboard shortcut: Ctrl+E (or ⌘E on Mac) to trigger Export CSV/JSON directly from Table view
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+
+      // Check for Ctrl+E (Windows/Linux) or Cmd+E (Mac)
+      const isModifier = e.ctrlKey || e.metaKey;
+      if (!isModifier || e.altKey) return;
+      if (e.key.toLowerCase() !== 'e') return;
+
+      // Prevent default browser action (e.g. focusing search/URL bar in Chrome/Edge or find-selection)
+      e.preventDefault();
+
+      // Do not trigger export if a modal is currently open
+      if (isBulkImportOpen || isDataTapeModalOpen || isBenchmarkOpen) {
+        return;
+      }
+
+      // If currently in Trends view, automatically switch to Table view
+      if (activeView !== 'grid') {
+        setActiveView('grid');
+      }
+
+      // If Shift is pressed (Ctrl+Shift+E), export in the alternate format; otherwise export selected format
+      const targetFormat: ExportFormat = e.shiftKey
+        ? selectedExportFormat === 'csv'
+          ? 'json'
+          : 'csv'
+        : selectedExportFormat;
+
+      handleHeaderExport(targetFormat, true);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    activeView,
+    selectedExportFormat,
+    queryResult.records,
+    isHeaderExporting,
+    isBulkImportOpen,
+    isDataTapeModalOpen,
+    isBenchmarkOpen,
+    shortcutKeyLabel
+  ]);
+
   // Trigger on-demand manual tape slice
   const handleTriggerManualTapeSlice = async () => {
     try {
       const format = selectedExportFormat;
       const seq = dataTapeEntries.length + 1;
-      const newEntry = await createDataTapeEntry({
+      const { entry: newEntry, stats } = await createDataTapeEntry({
         records: queryResult.records,
         format,
         triggerEvent: 'Manual Audit Snapshot Cut',
@@ -635,19 +1772,6 @@ export default function App() {
       });
 
       setDataTapeEntries((prev) => [newEntry, ...prev]);
-
-      const stats: ExportPerformanceResult = {
-        format,
-        formatName: newEntry.formatName,
-        recordCount: newEntry.recordCount,
-        itemCount: newEntry.itemCount,
-        fileSizeBytes: newEntry.fileSizeBytes,
-        durationMs: newEntry.durationMs,
-        cpuUsagePercent: newEntry.cpuUsagePercent,
-        throughputRowsPerSec: newEntry.throughputRowsPerSec,
-        compressionRatio: newEntry.recordCount > 0 ? Number(((newEntry.fileSizeBytes / (newEntry.recordCount * 180)) * 100).toFixed(1)) : 100,
-        structureType: format === 'json' ? 'RFC 8259 JSON' : 'RFC 4180 CSV'
-      };
 
       setHeaderExportStats(stats);
       recordExportOperation(stats, format, {
@@ -672,10 +1796,65 @@ export default function App() {
   };
 
   // Simulate database mutation (e.g. status transition, risk flag, live ingest)
-  const handleMutateDatabase = (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => {
-    const result = executeBatchMutation(type, 50);
+  const handleMutateDatabase = async (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => {
+    const desc =
+      type === 'status_transition'
+        ? 'Batch Status Transition (50 orders)'
+        : type === 'high_risk_flag'
+        ? 'High-Risk Audit Flag Update (50 orders)'
+        : 'Live Ingest Append (+50 orders)';
+    const releaseMutation = beginDatabaseMutation(type, desc, 50);
+    try {
+      // Simulate realistic mid-process commit window (2.2s) so the paused state and consistency lock are visible in UI & tooltip
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+      const result = executeBatchMutation(type, 50);
+      setTotalDatabaseRecords(result.totalRecords);
+      setQueryVersion((v) => v + 1);
+    } finally {
+      releaseMutation();
+    }
+  };
+
+  // Explicit simulation of concurrent mutation lock to test Export Paused state in real-time
+  const handleSimulateMidProcessMutation = async () => {
+    setIsExportDropdownOpen(false);
+    setIsExportHovered(true);
+    const releaseMutation = beginDatabaseMutation(
+      'status_transition',
+      'Batch Status Transition (50 orders in-flight)',
+      50
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const result = executeBatchMutation('status_transition', 50);
+      setTotalDatabaseRecords(result.totalRecords);
+      setQueryVersion((v) => v + 1);
+    } finally {
+      releaseMutation();
+    }
+  };
+
+  // Batch deletion of transactions by selected IDs
+  const handleDeleteRecords = (idsToDelete: string[]) => {
+    const result = deleteRecordsByIds(idsToDelete);
     setTotalDatabaseRecords(result.totalRecords);
     setQueryVersion((v) => v + 1);
+
+    const now = new Date();
+    const timeFormatted = now.toTimeString().split(' ')[0];
+    const newPoint: LatencyTrendPoint = {
+      id: `pt-del-${Date.now()}`,
+      timestamp: Date.now(),
+      timeFormatted,
+      executionTimeMs: queryResult.executionTimeMs,
+      rowsScanned: queryResult.rowsScanned,
+      activeQueriesCount: queryResult.activeQueriesCount,
+      cacheHit: false,
+      flags: { ...flags },
+      triggerEvent: `Batch Delete (${result.deletedCount.toLocaleString()} rows removed)`,
+      simulatedError: queryResult.simulatedError
+    };
+    setTrendHistory((prev) => [...prev, newPoint].slice(-60));
   };
 
   const activeErrorsCount =
@@ -858,9 +2037,32 @@ export default function App() {
                     id="btn-header-export-csv"
                     type="button"
                     onClick={() => handleHeaderExport(selectedExportFormat)}
+                    onMouseEnter={handleExportMouseEnter}
+                    onMouseLeave={handleExportMouseLeave}
+                    onFocus={handleExportMouseEnter}
+                    onBlur={handleExportMouseLeave}
+                    aria-describedby={isExportPulsing ? 'tooltip-cache-invalidation-fresh-read' : undefined}
                     disabled={isHeaderExporting || queryResult.records.length === 0}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-r-0 border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-800 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                    title={`Export query results as ${selectedExportFormat === 'json' ? 'JSON' : 'CSV'} to evaluate data serialization efficiency`}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-r-0 border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-800 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                      isShortcutFlashing
+                        ? 'ring-2 ring-emerald-500 bg-emerald-50 text-emerald-950 shadow-md scale-102'
+                        : isExportPulsing
+                        ? 'ring-2 ring-amber-500 bg-amber-50/90 text-amber-950 border-amber-400 shadow-md shadow-amber-500/20 animate-pulse'
+                        : ''
+                    }`}
+                    title={
+                      isDatabaseMutatingState
+                        ? `Export Paused (${pendingMutationsCount} active pending database mutation${pendingMutationsCount === 1 ? '' : 's'}): Serialization is deferred to ensure data consistency`
+                        : isCacheInvalidatedPulsing
+                        ? 'Cache invalidated: Next export will perform a fresh database read'
+                        : `Export query results as ${
+                            selectedExportFormat === 'json'
+                              ? 'JSON'
+                              : includeCsvHeaders
+                              ? 'CSV (with headers)'
+                              : 'CSV (headerless)'
+                          } (Shortcut: ${shortcutKeyLabel}, ${altShortcutKeyLabel} for alternate)`
+                    }
                   >
                     {isHeaderExporting ? (
                       <>
@@ -870,17 +2072,1447 @@ export default function App() {
                     ) : (
                       <>
                         {selectedExportFormat === 'json' ? (
-                          <FileCode className="w-3.5 h-3.5 text-amber-600" />
+                          <FileCode className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-amber-600'}`} />
                         ) : (
-                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                          <FileSpreadsheet className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-emerald-600'}`} />
                         )}
-                        <span>{selectedExportFormat === 'json' ? 'Export JSON' : 'Export CSV'}</span>
-                        <span className="font-mono text-[10px] bg-zinc-100 text-zinc-700 px-1.5 py-0.2 rounded font-bold border border-zinc-200">
+                        <span>
+                          {selectedExportFormat === 'json'
+                            ? 'Export JSON'
+                            : includeCsvHeaders
+                            ? 'Export CSV'
+                            : 'Export CSV (No Headers)'}
+                        </span>
+                        <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded font-bold border transition-colors ${
+                          isExportPulsing
+                            ? 'bg-amber-100 text-amber-900 border-amber-300'
+                            : 'bg-zinc-100 text-zinc-700 border-zinc-200'
+                        }`}>
                           {queryResult.records.length}
                         </span>
+
+                        {isDatabaseMutatingState ? (
+                          <span
+                            id="badge-export-paused"
+                            data-testid="badge-export-paused"
+                            className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-300 text-amber-950 border border-amber-500/90 shadow-2xs animate-pulse ml-0.5"
+                            title={`Database mutation is mid-process (${pendingMutationsCount} active pending): Serialization deferred to ensure data consistency`}
+                          >
+                            <Pause className="w-2.5 h-2.5 fill-amber-900 text-amber-900" />
+                            <span>Export Paused ({pendingMutationsCount})</span>
+                          </span>
+                        ) : isCacheInvalidatedPulsing ? (
+                          <span
+                            id="badge-export-cache-invalidation"
+                            data-testid="badge-export-cache-invalidation"
+                            className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-200/90 text-amber-900 border border-amber-400/80 shadow-2xs animate-pulse ml-0.5"
+                            title="Cache entry invalidated: Next export will perform a fresh database read"
+                          >
+                            <RefreshCw className="w-2.5 h-2.5 animate-spin text-amber-700" />
+                            <span>Fresh Read</span>
+                          </span>
+                        ) : (
+                          <kbd
+                            className="hidden sm:inline-flex items-center text-[10px] font-mono px-1 py-0.2 rounded bg-zinc-100 text-zinc-600 border border-zinc-300 font-semibold group-hover:border-zinc-400 ml-0.5"
+                            title={`Press ${shortcutKeyLabel} to export`}
+                          >
+                            {shortcutKeyLabel}
+                          </kbd>
+                        )}
                       </>
                     )}
                   </button>
+
+                  {/* Custom Tooltip: includes 'Export Paused' state during mid-process mutations & Last 3 Invalidation Triggers */}
+                  {isExportPulsing && (
+                    <div
+                      id="tooltip-cache-invalidation-fresh-read"
+                      data-testid="tooltip-cache-invalidation-fresh-read"
+                      role="tooltip"
+                      onMouseEnter={handleExportMouseEnter}
+                      onMouseLeave={handleExportMouseLeave}
+                      className={`absolute bottom-full mb-2.5 left-0 z-50 w-80 sm:w-96 max-h-[85vh] overflow-y-auto p-3 rounded-lg bg-zinc-900/95 backdrop-blur-xs text-zinc-100 text-xs shadow-2xl border ${
+                        thresholdAlert
+                          ? 'border-rose-500/90 shadow-rose-500/20 ring-1 ring-rose-500/40'
+                          : isDatabaseMutatingState
+                          ? 'border-amber-400/90 shadow-amber-500/20 ring-1 ring-amber-400/30'
+                          : 'border-amber-500/60'
+                      } transition-all duration-150 ${
+                        isExportHovered || isLiveMonitoring || isThresholdInputFocused
+                          ? 'opacity-100 translate-y-0 visible pointer-events-auto'
+                          : 'opacity-0 translate-y-1 invisible pointer-events-none'
+                      }`}
+                    >
+                      {/* Live Monitoring Toggle Bar */}
+                      <div
+                        id="control-live-monitoring"
+                        data-testid="control-live-monitoring"
+                        className="flex items-center justify-between gap-2 px-2.5 py-1.5 mb-2 rounded bg-zinc-950/80 border border-zinc-700/80 text-[11px]"
+                      >
+                        <label
+                          htmlFor="checkbox-live-monitoring"
+                          className="flex items-center gap-2 cursor-pointer select-none text-zinc-300 hover:text-white"
+                        >
+                          <input
+                            id="checkbox-live-monitoring"
+                            data-testid="checkbox-live-monitoring"
+                            aria-label="Live Monitoring"
+                            type="checkbox"
+                            checked={isLiveMonitoring}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setIsLiveMonitoring(checked);
+                              if (checked) {
+                                setIsExportHovered(true);
+                              }
+                            }}
+                            className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 text-amber-500 focus:ring-amber-400 focus:ring-offset-zinc-900 cursor-pointer accent-amber-500"
+                          />
+                          <span className="flex items-center gap-1.5 font-semibold text-zinc-100">
+                            <Activity className={`w-3 h-3 ${isLiveMonitoring ? 'text-amber-400 animate-pulse' : 'text-zinc-400'}`} />
+                            <span>Live Monitoring</span>
+                          </span>
+                        </label>
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          {isLiveMonitoring ? (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                              Auto-updating (1s)
+                            </span>
+                          ) : (
+                            <span className="text-zinc-400 font-mono">1s interval</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Custom Mutation Threshold Setting */}
+                      <div
+                        id="control-mutation-threshold"
+                        data-testid="control-mutation-threshold"
+                        className="px-2.5 py-2 mb-2.5 rounded bg-zinc-950/80 border border-zinc-700/80 text-[11px] space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <label
+                            htmlFor="input-mutation-threshold"
+                            className="flex items-center gap-1.5 font-semibold text-zinc-200 cursor-pointer"
+                          >
+                            <Bell className="w-3 h-3 text-amber-400" />
+                            <span>Mutation Threshold</span>
+                          </label>
+                          <span className="text-[10px] text-zinc-400 font-mono">
+                            Alert if &gt; {mutationThreshold || 5}s
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="relative flex-1">
+                            <input
+                              id="input-mutation-threshold"
+                              data-testid="input-mutation-threshold"
+                              aria-label="Mutation Threshold"
+                              type="number"
+                              min="0.5"
+                              max="120"
+                              step="0.5"
+                              value={mutationThreshold || ''}
+                              onFocus={() => setIsThresholdInputFocused(true)}
+                              onBlur={() => setIsThresholdInputFocused(false)}
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                if (!isNaN(val) && val > 0) {
+                                  setMutationThreshold(val);
+                                } else if (e.target.value === '') {
+                                  setMutationThreshold(0);
+                                }
+                              }}
+                              className="w-full bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs font-mono text-zinc-100 focus:border-amber-400 focus:ring-1 focus:ring-amber-400/40 focus:outline-none pr-8"
+                              placeholder="5"
+                            />
+                            <span className="absolute right-2 top-1 text-[10px] text-zinc-400 font-mono pointer-events-none">
+                              sec
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {[2, 5, 10].map((preset) => (
+                              <button
+                                key={preset}
+                                type="button"
+                                onClick={() => setMutationThreshold(preset)}
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors cursor-pointer border ${
+                                  mutationThreshold === preset
+                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 font-bold'
+                                    : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white border-zinc-700'
+                                }`}
+                                title={`Set threshold to ${preset}s`}
+                              >
+                                {preset}s
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between pt-1 border-t border-zinc-800/80 text-[10px]">
+                          <span className="text-zinc-400 truncate">
+                            {thresholdAlert ? (
+                              <span className="text-rose-400 font-semibold flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+                                Alert: {thresholdAlert.elapsedSeconds}s ({thresholdAlert.thresholdSeconds}s limit)
+                              </span>
+                            ) : (
+                              <span>Notify if mutation exceeds duration</span>
+                            )}
+                          </span>
+                          <button
+                            id="btn-simulate-long-mutation"
+                            data-testid="btn-simulate-long-mutation"
+                            type="button"
+                            disabled={isDatabaseMutatingState}
+                            onClick={() => {
+                              const targetDuration = Math.max(3000, ((mutationThreshold || 5) + 1) * 1000);
+                              const release = beginDatabaseMutation(
+                                'bulk_ingestion',
+                                `Simulated Bulk Ingest (${(targetDuration / 1000).toFixed(0)}s)`,
+                                100,
+                                targetDuration
+                              );
+                              setTimeout(() => {
+                                release();
+                              }, targetDuration);
+                            }}
+                            className="text-amber-400 hover:text-amber-300 font-medium underline underline-offset-2 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shrink-0 ml-1"
+                            title="Simulate a long mutation to test notifications"
+                          >
+                            Simulate Long Op
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Threshold Exceeded Notification Alert Banner inside Tooltip */}
+                      {thresholdAlert && (
+                        <div
+                          id="alert-mutation-threshold-exceeded"
+                          data-testid="alert-mutation-threshold-exceeded"
+                          role="alert"
+                          aria-live="assertive"
+                          className="flex items-start gap-2 p-2 mb-2.5 rounded bg-rose-950/80 border border-rose-500/80 text-[11px] text-rose-200 animate-in fade-in"
+                        >
+                          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 animate-pulse" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-bold text-rose-300 text-xs flex items-center gap-1">
+                                <Bell className="w-3 h-3 text-rose-400" />
+                                Mutation Threshold Exceeded!
+                              </span>
+                              <button
+                                id="btn-dismiss-threshold-alert"
+                                data-testid="btn-dismiss-threshold-alert"
+                                onClick={() => setThresholdAlert(null)}
+                                className="text-rose-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+                                aria-label="Dismiss alert"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                            <p className="text-[10.5px] text-zinc-200 font-medium mt-0.5 truncate">
+                              {thresholdAlert.mutationDescription}
+                            </p>
+                            <div className="flex items-center justify-between text-[9.5px] text-rose-300 mt-1">
+                              <span>Exceeded threshold of {thresholdAlert.thresholdSeconds}s</span>
+                              <span className="font-mono font-bold">{thresholdAlert.elapsedSeconds}s elapsed</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {isDatabaseMutatingState ? (
+                        <>
+                          {/* Export Paused Header */}
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+                            <div className="flex items-center gap-1.5 font-semibold text-amber-400">
+                              <Pause className="w-3.5 h-3.5 fill-amber-400 text-amber-400 animate-pulse" />
+                              <span className="font-bold text-amber-300">Export Paused</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                id="badge-pending-mutations-count"
+                                data-testid="badge-pending-mutations-count"
+                                className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-500/25 text-amber-200 border border-amber-500/50 flex items-center gap-1"
+                                title={`${pendingMutationsCount} active database mutation${pendingMutationsCount === 1 ? '' : 's'} pending completion`}
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                                <span>{pendingMutationsCount} Pending</span>
+                              </span>
+                              <span
+                                id="badge-serialization-deferred-pill"
+                                data-testid="badge-serialization-deferred-pill"
+                                className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-zinc-800 text-amber-300 border border-zinc-700 flex items-center gap-1"
+                              >
+                                <Lock className="w-2.5 h-2.5 text-amber-400" />
+                                Lock
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="mt-2.5 space-y-2.5">
+                            {/* Explicit Data Consistency & Deferred Serialization Callout */}
+                            <div
+                              id="notice-export-paused-consistency"
+                              data-testid="notice-export-paused-consistency"
+                              className="bg-amber-950/60 rounded-md p-2.5 border border-amber-500/50"
+                            >
+                              <div className="flex items-center gap-1.5 font-bold text-amber-300 text-xs mb-1">
+                                <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span>Serialization Deferred</span>
+                              </div>
+                              <p className="text-[11px] text-zinc-100 leading-snug font-medium">
+                                Serialization is deferred to ensure data consistency.
+                              </p>
+                              <p className="text-[10px] text-zinc-300/90 mt-1 leading-relaxed">
+                                {pendingMutationsCount > 1
+                                  ? `${pendingMutationsCount} database mutations are currently mid-process. Export serialization is paused to prevent dirty reads and partial snapshot tearing.`
+                                  : 'A database mutation is currently mid-process. Export serialization is paused to prevent dirty reads and partial snapshot tearing.'}{' '}
+                                Serialization will automatically resume once in-flight transactions commit their WAL frames and B-Tree index updates.
+                              </p>
+                            </div>
+
+                            {/* Active Pending Database Mutations & Estimation Telemetry */}
+                            <div
+                              id="section-pending-mutations-telemetry"
+                              data-testid="section-pending-mutations-telemetry"
+                              className="bg-zinc-800/90 rounded-md p-2.5 border border-amber-500/40 space-y-2 text-[11px]"
+                            >
+                              <div className="flex items-center justify-between text-zinc-300 font-medium">
+                                <span className="flex items-center gap-1.5 font-semibold text-zinc-100">
+                                  <RefreshCw className="w-3 h-3 text-amber-400 animate-spin" />
+                                  Active Pending Mutations:
+                                </span>
+                                <span
+                                  id="active-pending-mutations-counter"
+                                  data-testid="active-pending-mutations-counter"
+                                  className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                                >
+                                  {pendingMutationsCount} active {pendingMutationsCount === 1 ? 'mutation' : 'mutations'}
+                                </span>
+                              </div>
+
+                              {/* Estimated Wait Time for serialization to resume */}
+                              <div className="flex items-center justify-between pt-1.5 border-t border-zinc-700/70 text-[11px]">
+                                <span className="flex items-center gap-1 text-zinc-400 font-medium">
+                                  <Clock className="w-3 h-3 text-amber-400" />
+                                  Est. Wait to Resume Serialization:
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    id="export-estimated-wait-time"
+                                    data-testid="export-estimated-wait-time"
+                                    className="font-mono text-xs font-bold text-amber-300"
+                                  >
+                                    {estimatedWaitTimeText}
+                                  </span>
+                                  <button
+                                    id="btn-copy-log-summary-inline"
+                                    data-testid="btn-copy-log-summary-inline"
+                                    aria-label="Copy Log Summary"
+                                    type="button"
+                                    onClick={handleCopyLogSummary}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-700/70 hover:bg-zinc-600 active:bg-zinc-500 text-zinc-200 border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer"
+                                    title="Copy pending mutation queue count and estimated wait time as Slack/Jira ticket summary"
+                                  >
+                                    {isCopiedSummary ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ClipboardCheck className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy Log Summary</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Total Estimated Completion Progress Bar */}
+                              <div
+                                id="block-mutations-progress"
+                                data-testid="block-mutations-progress"
+                                className="pt-1.5 border-t border-zinc-700/70 space-y-1.5"
+                              >
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <span className="flex items-center gap-1 text-zinc-400 font-medium">
+                                    <Sparkles className="w-3 h-3 text-amber-400" />
+                                    <span>Total Est. Completion:</span>
+                                  </span>
+                                  <span
+                                    id="mutation-progress-percent-label"
+                                    data-testid="mutation-progress-percent-label"
+                                    className="font-mono text-xs font-bold text-amber-300"
+                                  >
+                                    {mutationProgressPercent}%
+                                  </span>
+                                </div>
+                                <div
+                                  id="progress-container-mutations"
+                                  data-testid="progress-container-mutations"
+                                  className="w-full bg-zinc-950/90 rounded-full h-1.5 overflow-hidden border border-zinc-700/70"
+                                  title={`Total estimated completion: ${mutationProgressPercent}% across ${pendingMutationsCount} active pending database mutation${pendingMutationsCount === 1 ? '' : 's'}`}
+                                >
+                                  <div
+                                    id="progress-bar-mutations"
+                                    data-testid="progress-bar-mutations"
+                                    role="progressbar"
+                                    aria-valuenow={mutationProgressPercent}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    style={{ width: `${mutationProgressPercent}%` }}
+                                    className="h-full rounded-full bg-linear-to-r from-amber-500 via-amber-400 to-emerald-400 transition-all duration-300 ease-out shadow-xs shadow-amber-400/50"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* In-Flight Mutations Queue List */}
+                              <div className="pt-1.5 border-t border-zinc-700/70 space-y-1.5">
+                                <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                                  <span className="font-semibold text-zinc-300">Queue Breakdown ({pendingMutationsCount}):</span>
+                                  <div className="flex items-center gap-1.5 font-mono text-[9px]">
+                                    <span className="flex items-center gap-1 text-emerald-400 font-medium" title="Minor B-Tree overhead (in-place leaf update, 0 page splits)">
+                                      <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" /> Minor
+                                    </span>
+                                    <span className="flex items-center gap-1 text-amber-400 font-medium" title="Moderate B-Tree overhead (localized page splits)">
+                                      <AlertTriangle className="w-2.5 h-2.5 text-amber-400" /> Mod
+                                    </span>
+                                    <span className="flex items-center gap-1 text-rose-400 font-medium" title="Bulk B-Tree overhead (heavy node splits & tree rebalancing)">
+                                      <AlertCircle className="w-2.5 h-2.5 text-rose-400" /> Bulk
+                                    </span>
+                                  </div>
+                                </div>
+                                <div
+                                  id="active-pending-mutations-list"
+                                  data-testid="active-pending-mutations-list"
+                                  className="max-h-28 overflow-y-auto space-y-1 pr-0.5"
+                                >
+                                  {activeMutationsList.length > 0 ? (
+                                    activeMutationsList.map((m, idx) => {
+                                      const impact = getBTreeResourceImpact(m);
+                                      return (
+                                        <div
+                                          key={m.id || idx}
+                                          data-testid={`pending-mutation-item-${idx}`}
+                                          className="flex items-center justify-between gap-1.5 text-[10px] px-2 py-1 rounded bg-zinc-900/80 border border-zinc-700/50 hover:border-zinc-600 transition-colors"
+                                          title={`${m.description || `Transaction #${idx + 1}`} — ${impact.tooltipText}`}
+                                        >
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <span
+                                              id={`icon-btree-impact-${idx}`}
+                                              data-testid={`icon-btree-impact-${idx}`}
+                                              data-impact-level={impact.level}
+                                              className="shrink-0 flex items-center"
+                                              title={impact.tooltipText}
+                                            >
+                                              {impact.level === 'bulk' ? (
+                                                <AlertCircle className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
+                                              ) : impact.level === 'moderate' ? (
+                                                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                                              ) : (
+                                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                              )}
+                                            </span>
+                                            <span className="text-zinc-200 font-medium truncate">
+                                              {m.description || `Transaction #${idx + 1}`}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            <span
+                                              className={`text-[9px] font-mono font-semibold px-1.5 py-0.2 rounded border ${impact.badgeBg} ${impact.badgeText} ${impact.badgeBorder}`}
+                                              title={`Estimated B-Tree Impact: ${impact.label} (${impact.estimatedPageSplits})`}
+                                            >
+                                              {impact.badgeLabel}
+                                            </span>
+                                            <span className="font-mono text-[9px] text-zinc-400">
+                                              {m.targetRows ? `${m.targetRows}r` : 'In-flight'}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })
+                                  ) : activeInFlightMutation ? (
+                                    (() => {
+                                      const impact = getBTreeResourceImpact(activeInFlightMutation);
+                                      return (
+                                        <div
+                                          data-testid="pending-mutation-item-active"
+                                          className="flex items-center justify-between gap-1.5 text-[10px] px-2 py-1 rounded bg-zinc-900/80 border border-zinc-700/50"
+                                          title={`${activeInFlightMutation.description} — ${impact.tooltipText}`}
+                                        >
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <span
+                                              id="icon-btree-impact-active"
+                                              data-testid="icon-btree-impact-active"
+                                              data-impact-level={impact.level}
+                                              className="shrink-0 flex items-center"
+                                              title={impact.tooltipText}
+                                            >
+                                              {impact.level === 'bulk' ? (
+                                                <AlertCircle className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
+                                              ) : impact.level === 'moderate' ? (
+                                                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                                              ) : (
+                                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                              )}
+                                            </span>
+                                            <span className="text-zinc-200 font-medium truncate">
+                                              {activeInFlightMutation.description || 'Active transaction in progress'}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1.5 shrink-0">
+                                            <span
+                                              className={`text-[9px] font-mono font-semibold px-1.5 py-0.2 rounded border ${impact.badgeBg} ${impact.badgeText} ${impact.badgeBorder}`}
+                                              title={`Estimated B-Tree Impact: ${impact.label}`}
+                                            >
+                                              {impact.badgeLabel}
+                                            </span>
+                                            <span className="font-mono text-[9px] text-zinc-400">
+                                              {activeInFlightMutation.targetRows ? `${activeInFlightMutation.targetRows}r` : 'In-flight'}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()
+                                  ) : (
+                                    <div className="text-zinc-300 text-[10px] italic">
+                                      Active transaction in progress
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 border-t border-zinc-700/50 font-mono">
+                                <span>Lock Scope: Heap Rows &amp; Indexes</span>
+                                <span>Snapshot Isolation: Active</span>
+                              </div>
+                            </div>
+
+                            {/* Last 3 Invalidation Triggers List */}
+                            <div className="bg-zinc-800/60 rounded-md p-2 border border-zinc-700/60">
+                              <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
+                                <span className="flex items-center gap-1 text-[11px] font-semibold text-zinc-200">
+                                  <Layers className="w-3 h-3 text-amber-400" />
+                                  Last 3 Invalidation Triggers
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {recurrentBulkCount >= 2 ? (
+                                    <span
+                                      className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-300 border border-amber-500/40 uppercase tracking-wider flex items-center gap-1"
+                                      title="Recurrent bulk operations are frequently clearing the cache"
+                                    >
+                                      <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
+                                      Recurrent Bulk ({recurrentBulkCount}/3)
+                                    </span>
+                                  ) : (
+                                    <span className="text-[9px] font-medium text-zinc-400 font-mono">
+                                      Prior Events
+                                    </span>
+                                  )}
+                                  <button
+                                    id="btn-copy-invalidation-logs"
+                                    data-testid="btn-copy-invalidation-logs"
+                                    type="button"
+                                    onClick={handleCopyInvalidationLogs}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Copy Last 3 Invalidation Triggers formatted logs to clipboard"
+                                  >
+                                    {isCopiedLogs ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy Logs</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-copy-invalidation-json"
+                                    data-testid="btn-copy-invalidation-json"
+                                    type="button"
+                                    onClick={handleCopyInvalidationJson}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Copy current invalidation trigger state as minified JSON string"
+                                  >
+                                    {isCopiedJson ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <FileCode className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy JSON</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-download-invalidation-logs-json"
+                                    data-testid="btn-download-invalidation-logs-json"
+                                    type="button"
+                                    onClick={handleDownloadInvalidationLogsJson}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Download Last 3 Invalidation Triggers as JSON file"
+                                  >
+                                    {isDownloadedJson ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Saved!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Download className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Download JSON</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-export-all-logs"
+                                    data-testid="btn-export-all-logs"
+                                    data-id="btn-export-all-invalidation-logs-csv"
+                                    aria-label="Export All Logs"
+                                    type="button"
+                                    onClick={handleExportAllInvalidationLogsCsv}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Export full list of invalidation trigger events as CSV (timestamps, reasons, bulk markers)"
+                                  >
+                                    {isExportedAllCsv ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Export All Logs (Done!)</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Export All Logs</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-copy-log-summary"
+                                    data-testid="btn-copy-log-summary"
+                                    aria-label="Copy Log Summary"
+                                    type="button"
+                                    onClick={handleCopyLogSummary}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Copy current pending mutation queue count and estimated wait time as Slack/Jira summary"
+                                  >
+                                    {isCopiedSummary ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copy Log Summary (Copied!)</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ClipboardCheck className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy Log Summary</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-1.5">
+                                {last3Triggers.map((trigger) => (
+                                  <div
+                                    key={trigger.id}
+                                    className="flex items-center justify-between gap-2 p-1.5 rounded bg-zinc-900/60 border border-zinc-700/50 text-[11px]"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5">
+                                        <span
+                                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                            trigger.isBulk ? 'bg-amber-400 animate-pulse' : 'bg-zinc-400'
+                                          }`}
+                                        />
+                                        <span className="font-semibold text-zinc-200 truncate">
+                                          {trigger.label}
+                                        </span>
+                                        {trigger.isBulk && (
+                                          <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 font-medium">
+                                            Bulk
+                                          </span>
+                                        )}
+                                      </div>
+                                      {trigger.details && (
+                                        <div className="text-[10px] text-zinc-400 pl-3 truncate">
+                                          {trigger.details}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] font-mono text-zinc-400 shrink-0 self-start mt-0.5">
+                                      {formatTriggerTimeAgo(trigger.timestamp)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 text-[11px] text-amber-300 pt-1 border-t border-zinc-800 font-medium">
+                              <Clock className="w-3 h-3 text-amber-400 animate-spin shrink-0" />
+                              <span>Awaiting transaction commit to resume clean serialization</span>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          {/* Cache Invalidated / Fresh Read Ready State */}
+                          <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
+                            <div className="flex items-center gap-1.5 font-semibold text-amber-400">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                              <span>LRU Cache Invalidated</span>
+                            </div>
+                            <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              Fresh Read Ready
+                            </span>
+                          </div>
+
+                          <div className="mt-2.5 space-y-2.5">
+                            {/* Explicit Last Cache Refresh listing */}
+                            <div className="bg-zinc-800/90 rounded-md p-2 border border-zinc-700/80">
+                              <div className="flex items-center justify-between text-[11px] text-zinc-300 mb-1">
+                                <span className="flex items-center gap-1 text-zinc-400 font-medium">
+                                  <Clock className="w-3 h-3 text-amber-400" />
+                                  Last Cache Refresh:
+                                </span>
+                                <span className="text-[10px] font-mono text-zinc-400">
+                                  {cacheRefreshSecondsAgo} ago
+                                </span>
+                              </div>
+                              <div className="flex items-baseline justify-between">
+                                <span className="font-mono text-xs font-bold text-amber-300 tracking-tight">
+                                  {formattedCacheRefreshTime}
+                                </span>
+                                <span className="text-[10px] text-zinc-400 font-mono">
+                                  {formattedCacheRefreshDate}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Last 3 Invalidation Triggers List */}
+                            <div className="bg-zinc-800/60 rounded-md p-2 border border-zinc-700/60">
+                              <div className="flex items-center justify-between mb-1.5 gap-1.5 flex-wrap">
+                                <span className="flex items-center gap-1 text-[11px] font-semibold text-zinc-200">
+                                  <Layers className="w-3 h-3 text-amber-400" />
+                                  Last 3 Invalidation Triggers
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {recurrentBulkCount >= 2 ? (
+                                    <span
+                                      className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-500/25 text-amber-300 border border-amber-500/40 uppercase tracking-wider flex items-center gap-1"
+                                      title="Recurrent bulk operations are frequently clearing the cache"
+                                    >
+                                      <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
+                                      Recurrent Bulk ({recurrentBulkCount}/3)
+                                    </span>
+                                  ) : (
+                                    <span className="text-[9px] font-medium text-zinc-400 font-mono">
+                                      Recent Events
+                                    </span>
+                                  )}
+                                  <button
+                                    id="btn-copy-invalidation-logs-ready"
+                                    data-testid="btn-copy-invalidation-logs"
+                                    type="button"
+                                    onClick={handleCopyInvalidationLogs}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Copy Last 3 Invalidation Triggers formatted logs to clipboard"
+                                  >
+                                    {isCopiedLogs ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy Logs</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-copy-invalidation-json-ready"
+                                    data-testid="btn-copy-invalidation-json"
+                                    type="button"
+                                    onClick={handleCopyInvalidationJson}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Copy current invalidation trigger state as minified JSON string"
+                                  >
+                                    {isCopiedJson ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <FileCode className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy JSON</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-download-invalidation-logs-json-ready"
+                                    data-testid="btn-download-invalidation-logs-json"
+                                    type="button"
+                                    onClick={handleDownloadInvalidationLogsJson}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Download Last 3 Invalidation Triggers as JSON file"
+                                  >
+                                    {isDownloadedJson ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Saved!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Download className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Download JSON</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-export-all-logs-ready"
+                                    data-testid="btn-export-all-logs"
+                                    data-id="btn-export-all-invalidation-logs-csv"
+                                    aria-label="Export All Logs"
+                                    type="button"
+                                    onClick={handleExportAllInvalidationLogsCsv}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Export full list of invalidation trigger events as CSV (timestamps, reasons, bulk markers)"
+                                  >
+                                    {isExportedAllCsv ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Export All Logs (Done!)</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Export All Logs</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-copy-log-summary-ready"
+                                    data-testid="btn-copy-log-summary"
+                                    aria-label="Copy Log Summary"
+                                    type="button"
+                                    onClick={handleCopyLogSummary}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs shrink-0"
+                                    title="Copy current pending mutation queue count and estimated wait time as Slack/Jira summary"
+                                  >
+                                    {isCopiedSummary ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copy Log Summary (Copied!)</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ClipboardCheck className="w-2.5 h-2.5 text-amber-300" />
+                                        <span>Copy Log Summary</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-1.5">
+                                {last3Triggers.map((trigger) => (
+                                  <div
+                                    key={trigger.id}
+                                    className="flex items-center justify-between gap-2 p-1.5 rounded bg-zinc-900/60 border border-zinc-700/50 text-[11px]"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5">
+                                        <span
+                                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                            trigger.isBulk ? 'bg-amber-400 animate-pulse' : 'bg-zinc-400'
+                                          }`}
+                                        />
+                                        <span className="font-semibold text-zinc-200 truncate">
+                                          {trigger.label}
+                                        </span>
+                                        {trigger.isBulk && (
+                                          <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 font-medium">
+                                            Bulk
+                                          </span>
+                                        )}
+                                      </div>
+                                      {trigger.details && (
+                                        <div className="text-[10px] text-zinc-400 pl-3 truncate">
+                                          {trigger.details}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] font-mono text-zinc-400 shrink-0 self-start mt-0.5">
+                                      {formatTriggerTimeAgo(trigger.timestamp)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {recurrentBulkCount >= 2 && (
+                                <div className="mt-1.5 pt-1.5 border-t border-zinc-800 text-[10px] text-amber-300/90 leading-tight">
+                                  Recurrent bulk writes are actively invalidating query memory; next export will execute a full table scan.
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 pt-1 border-t border-zinc-800 font-medium">
+                              <Sparkles className="w-3 h-3 text-emerald-400 shrink-0" />
+                              <span>Next export will perform a live database read</span>
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Active Threshold Alerts History Panel */}
+                      <div
+                        id="panel-active-threshold-alerts"
+                        data-testid="panel-active-threshold-alerts"
+                        className="mt-2.5 pt-2 border-t border-zinc-800/90 text-zinc-200"
+                      >
+                        <div className="flex items-center justify-between mb-1.5 gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5">
+                            <Bell className="w-3 h-3 text-rose-400" />
+                            <span className="font-semibold text-[11px] text-zinc-200 tracking-tight">
+                              Active Threshold Alerts
+                            </span>
+                            <span
+                              id="badge-threshold-alerts-count"
+                              data-testid="badge-threshold-alerts-count"
+                              className="text-[9px] font-mono px-1 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                            >
+                              Last {thresholdViolationsHistory.slice(0, 5).length}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] text-zinc-400 font-mono">
+                              threshold: {mutationThreshold}s
+                            </span>
+                            <button
+                              id="btn-toggle-pdf-export-settings"
+                              data-testid="btn-toggle-pdf-export-settings"
+                              aria-label="Export Settings"
+                              aria-expanded={showPdfExportSettings}
+                              type="button"
+                              onClick={() => setShowPdfExportSettings((prev) => !prev)}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shadow-2xs ${
+                                showPdfExportSettings
+                                  ? 'bg-amber-950/80 text-amber-200 border border-amber-500/70 shadow-xs'
+                                  : 'bg-zinc-800/90 hover:bg-zinc-700/90 text-zinc-300 hover:text-white border border-zinc-700'
+                              }`}
+                              title="Customize sections to include in the generated PDF report"
+                            >
+                              <SlidersHorizontal className="w-2.5 h-2.5 text-amber-400" />
+                              <span>Export Settings</span>
+                              <ChevronDown className={`w-2.5 h-2.5 transition-transform ${showPdfExportSettings ? 'rotate-180' : ''}`} />
+                            </button>
+                            <button
+                              id="btn-preview-pdf-report"
+                              data-testid="btn-preview-pdf-report"
+                              aria-label="Preview PDF Report"
+                              type="button"
+                              onClick={() => setShowPdfPreviewModal(true)}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/90 hover:bg-zinc-700/90 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-700 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs"
+                              title="Preview live-rendered PDF document in modal before triggering download"
+                            >
+                              <Eye className="w-2.5 h-2.5 text-cyan-400" />
+                              <span>Preview</span>
+                            </button>
+                            <div className="relative inline-flex flex-col items-stretch">
+                              <button
+                                id="btn-generate-pdf-diagnostic-report"
+                                data-testid="btn-generate-pdf-diagnostic-report"
+                                aria-label="Generate PDF Report"
+                                type="button"
+                                onClick={handleGenerateDiagnosticCorrelationPdf}
+                                disabled={isGeneratingDiagnosticPdf}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-950/60 hover:bg-rose-900/80 active:bg-rose-800 text-rose-200 border border-rose-600/70 hover:border-rose-400 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
+                                title="Generate Visual PDF Report of the diagnostic correlation report with sparklines for non-technical stakeholders"
+                              >
+                                {isDiagnosticPdfSuccess ? (
+                                  <>
+                                    <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                    <span className="text-emerald-300 font-semibold">PDF Generated!</span>
+                                  </>
+                                ) : isGeneratingDiagnosticPdf ? (
+                                  <>
+                                    <RefreshCw className="w-2.5 h-2.5 text-rose-300 animate-spin" />
+                                    <span>Generating PDF...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <FileText className="w-2.5 h-2.5 text-rose-300" />
+                                    <span>Generate PDF Report</span>
+                                  </>
+                                )}
+                              </button>
+                              {isGeneratingDiagnosticPdf && (
+                                <div
+                                  id="progress-pdf-generating"
+                                  data-testid="progress-pdf-generating"
+                                  role="progressbar"
+                                  aria-label="Generating PDF Report"
+                                  className="w-full mt-1 h-1 bg-zinc-950/90 rounded-full overflow-hidden border border-rose-500/50 shadow-xs"
+                                >
+                                  <div className="h-full bg-linear-to-r from-rose-500 via-amber-400 to-rose-400 rounded-full animate-indeterminate" />
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              id="btn-diagnostic-correlation-report"
+                              data-testid="btn-diagnostic-correlation-report"
+                              aria-label="Generate Diagnostic Correlation Report"
+                              type="button"
+                              onClick={handleGenerateDiagnosticCorrelationReport}
+                              disabled={isGeneratingDiagnosticReport}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-950/60 hover:bg-amber-900/80 active:bg-amber-800 text-amber-200 border border-amber-600/70 hover:border-amber-400 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
+                              title="Generate Diagnostic Correlation Report (JSON) mapping mutation clusters to latency spikes"
+                            >
+                              {isDiagnosticReportSuccess ? (
+                                <>
+                                  <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                  <span className="text-emerald-300 font-semibold">Report Generated!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Download className="w-2.5 h-2.5 text-amber-300" />
+                                  <span>Diagnostic Correlation Report</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              id="btn-clear-alert-history"
+                              data-testid="btn-clear-alert-history"
+                              aria-label="Clear Alert History"
+                              type="button"
+                              onClick={handleClearAlertHistory}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-rose-950/60 active:bg-rose-900/80 text-zinc-300 hover:text-rose-200 border border-zinc-700 hover:border-rose-600/70 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs"
+                              title="Clear all recorded threshold alerts and reset tracking state"
+                            >
+                              {isAlertHistoryCleared ? (
+                                <>
+                                  <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                  <span className="text-emerald-300 font-semibold">Cleared!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-2.5 h-2.5 text-zinc-400" />
+                                  <span>Clear Alert History</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* PDF Export Section Settings Accordion / Panel */}
+                        {showPdfExportSettings && (
+                          <div
+                            id="panel-pdf-export-settings"
+                            data-testid="panel-pdf-export-settings"
+                            className="mb-2.5 p-2.5 rounded-md bg-zinc-900/95 border border-amber-500/40 shadow-sm text-zinc-200 space-y-2 animate-fadeIn"
+                          >
+                            <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-1">
+                              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300">
+                                <SlidersHorizontal className="w-3 h-3 text-amber-400" />
+                                <span>PDF Report Export Settings</span>
+                              </div>
+                              <span className="text-[9.5px] text-zinc-400">
+                                Enable or disable specific sections for generated PDF stakeholder reports
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
+                              {/* Trend Sparklines Section Toggle */}
+                              <label
+                                htmlFor="toggle-section-sparklines"
+                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
+                              >
+                                <input
+                                  id="toggle-section-sparklines"
+                                  data-testid="toggle-section-sparklines"
+                                  type="checkbox"
+                                  checked={pdfExportSections.includeSparklines}
+                                  onChange={(e) =>
+                                    setPdfExportSections((prev) => ({ ...prev, includeSparklines: e.target.checked }))
+                                  }
+                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                />
+                                <div className="flex flex-col text-[10.5px]">
+                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                    <span>Trend Sparklines</span>
+                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/20 text-blue-300">
+                                      Visual Canvas
+                                    </span>
+                                  </span>
+                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                    Dual-panel latency response &amp; write mutation frequency charts with SLA limits
+                                  </span>
+                                </div>
+                              </label>
+
+                              {/* Detailed Mutation History Section Toggle */}
+                              <label
+                                htmlFor="toggle-section-mutation-history"
+                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
+                              >
+                                <input
+                                  id="toggle-section-mutation-history"
+                                  data-testid="toggle-section-mutation-history"
+                                  type="checkbox"
+                                  checked={pdfExportSections.includeMutationHistory}
+                                  onChange={(e) =>
+                                    setPdfExportSections((prev) => ({ ...prev, includeMutationHistory: e.target.checked }))
+                                  }
+                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                />
+                                <div className="flex flex-col text-[10.5px]">
+                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                    <span>Detailed Mutation History</span>
+                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300">
+                                      Data Tables
+                                    </span>
+                                  </span>
+                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                    Mutation clusters, lock holding times, and chronological root-cause chain of events
+                                  </span>
+                                </div>
+                              </label>
+
+                              {/* Strategic Engineering Recommendations Toggle */}
+                              <label
+                                htmlFor="toggle-section-recommendations"
+                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
+                              >
+                                <input
+                                  id="toggle-section-recommendations"
+                                  data-testid="toggle-section-recommendations"
+                                  type="checkbox"
+                                  checked={pdfExportSections.includeRecommendations}
+                                  onChange={(e) =>
+                                    setPdfExportSections((prev) => ({ ...prev, includeRecommendations: e.target.checked }))
+                                  }
+                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                />
+                                <div className="flex flex-col text-[10.5px]">
+                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                    <span>Strategic Recommendations</span>
+                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+                                      Action Plan
+                                    </span>
+                                  </span>
+                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                    Prioritized engineering remediation guidance (micro-batching, indexing, caching)
+                                  </span>
+                                </div>
+                              </label>
+
+                              {/* Executive Summary Takeaways Toggle */}
+                              <label
+                                htmlFor="toggle-section-executive-summary"
+                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
+                              >
+                                <input
+                                  id="toggle-section-executive-summary"
+                                  data-testid="toggle-section-executive-summary"
+                                  type="checkbox"
+                                  checked={pdfExportSections.includeExecutiveSummary}
+                                  onChange={(e) =>
+                                    setPdfExportSections((prev) => ({ ...prev, includeExecutiveSummary: e.target.checked }))
+                                  }
+                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                />
+                                <div className="flex flex-col text-[10.5px]">
+                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                    <span>Executive Narrative Callout</span>
+                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-purple-500/20 text-purple-300">
+                                      Briefing
+                                    </span>
+                                  </span>
+                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                    Non-technical explanation of table mutex locks and latency degradation causality
+                                  </span>
+                                </div>
+                              </label>
+                            </div>
+
+                            {/* Quick Presets and Done control */}
+                            <div className="flex items-center justify-between pt-1 border-t border-zinc-800/80 text-[10px] flex-wrap gap-1">
+                              <div className="flex items-center gap-1 text-zinc-400 flex-wrap">
+                                <span className="font-mono text-[9.5px]">Presets:</span>
+                                <button
+                                  id="btn-preset-all-sections"
+                                  data-testid="btn-preset-all-sections"
+                                  type="button"
+                                  onClick={() =>
+                                    setPdfExportSections({
+                                      includeSparklines: true,
+                                      includeMutationHistory: true,
+                                      includeRecommendations: true,
+                                      includeExecutiveSummary: true
+                                    })
+                                  }
+                                  className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                                >
+                                  All Sections
+                                </button>
+                                <button
+                                  id="btn-preset-visual-summary"
+                                  data-testid="btn-preset-visual-summary"
+                                  type="button"
+                                  onClick={() =>
+                                    setPdfExportSections({
+                                      includeSparklines: true,
+                                      includeMutationHistory: false,
+                                      includeRecommendations: true,
+                                      includeExecutiveSummary: true
+                                    })
+                                  }
+                                  className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                                >
+                                  Visual Summary
+                                </button>
+                                <button
+                                  id="btn-preset-detailed-data"
+                                  data-testid="btn-preset-detailed-data"
+                                  type="button"
+                                  onClick={() =>
+                                    setPdfExportSections({
+                                      includeSparklines: false,
+                                      includeMutationHistory: true,
+                                      includeRecommendations: true,
+                                      includeExecutiveSummary: false
+                                    })
+                                  }
+                                  className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                                >
+                                  Detailed Data Only
+                                </button>
+                              </div>
+
+                              <button
+                                id="btn-close-pdf-export-settings"
+                                data-testid="btn-close-pdf-export-settings"
+                                type="button"
+                                onClick={() => setShowPdfExportSettings(false)}
+                                className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer font-medium"
+                              >
+                                Done
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* PDF Generation Error Toast / Alert with Retry Action */}
+                        {diagnosticPdfError && (
+                          <div
+                            id="alert-pdf-generation-error"
+                            data-testid="alert-pdf-generation-error"
+                            role="alert"
+                            aria-live="assertive"
+                            className="mb-2 p-2 rounded bg-rose-950/80 border border-rose-600/80 text-rose-200 text-[11px] flex items-center justify-between gap-2 shadow-md animate-fadeIn"
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                              <div className="min-w-0">
+                                <span className="font-semibold text-rose-100">PDF Generation Failed:</span>{' '}
+                                <span className="text-rose-200 text-[10.5px] truncate inline-block max-w-[280px] sm:max-w-md align-bottom">
+                                  {diagnosticPdfError}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                id="btn-retry-generate-pdf"
+                                data-testid="btn-retry-generate-pdf"
+                                aria-label="Retry PDF Generation"
+                                type="button"
+                                onClick={handleGenerateDiagnosticCorrelationPdf}
+                                disabled={isGeneratingDiagnosticPdf}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white font-semibold text-[10px] transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                              >
+                                <RefreshCw className={`w-2.5 h-2.5 ${isGeneratingDiagnosticPdf ? 'animate-spin' : ''}`} />
+                                <span>Retry</span>
+                              </button>
+                              <button
+                                id="btn-dismiss-pdf-error"
+                                data-testid="btn-dismiss-pdf-error"
+                                aria-label="Dismiss error"
+                                type="button"
+                                onClick={() => setDiagnosticPdfError(null)}
+                                className="p-0.5 rounded text-rose-300 hover:text-white hover:bg-rose-900/60 transition-colors cursor-pointer"
+                                title="Dismiss notification"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {thresholdViolationsHistory.length === 0 ? (
+                          <div className="text-[10.5px] text-zinc-400 italic p-2 rounded bg-zinc-950/40 border border-zinc-800/80 text-center">
+                            No threshold violations recorded yet.
+                          </div>
+                        ) : (
+                          <div
+                            id="list-active-threshold-alerts"
+                            data-testid="list-active-threshold-alerts"
+                            className="space-y-1.5"
+                          >
+                            {thresholdViolationsHistory.slice(0, 5).map((item, idx) => {
+                              const isCopied = copiedAlertItemId === item.id;
+                              return (
+                                <div
+                                  key={item.id}
+                                  id={`alert-history-item-${idx}`}
+                                  data-testid={`alert-history-item-${idx}`}
+                                  className="flex items-center justify-between gap-2 p-1.5 rounded bg-zinc-950/70 border border-zinc-800 hover:border-zinc-700/80 text-[11px] transition-colors"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+                                      <span
+                                        className="font-medium text-zinc-200 truncate"
+                                        title={item.mutationDescription}
+                                      >
+                                        {item.mutationDescription}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-2 text-[10px] text-zinc-400 pl-3 mt-0.5 font-mono">
+                                      <span className="text-rose-300 font-semibold">
+                                        {item.elapsedSeconds}s ({item.thresholdSeconds}s limit)
+                                      </span>
+                                      <span>•</span>
+                                      <span>
+                                        {new Date(item.timestamp).toLocaleTimeString([], {
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                          second: '2-digit'
+                                        })}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    id={`btn-copy-alert-item-${idx}`}
+                                    data-testid={`btn-copy-alert-item-${idx}`}
+                                    aria-label="Copy to Clipboard"
+                                    title="Copy to Clipboard"
+                                    type="button"
+                                    onClick={() => handleCopyAlertItem(item)}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-700 text-[10px] font-medium transition-colors cursor-pointer shrink-0"
+                                  >
+                                    {isCopied ? (
+                                      <>
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-3 h-3 text-amber-300" />
+                                        <span>Copy to Clipboard</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {/* Diagnostic Correlation Report Footer Action */}
+                        <div
+                          id="footer-diagnostic-correlation-report"
+                          data-testid="footer-diagnostic-correlation-report"
+                          className="mt-2 pt-2 border-t border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap"
+                        >
+                          <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 min-w-0">
+                            <Activity className="w-3 h-3 text-amber-400 shrink-0" />
+                            <span className="truncate">Timestamp mapping &amp; cluster impact</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              id="btn-footer-preview-pdf-report"
+                              data-testid="btn-footer-preview-pdf-report"
+                              aria-label="Preview PDF Report"
+                              type="button"
+                              onClick={() => setShowPdfPreviewModal(true)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/90 hover:bg-zinc-700/90 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-700 text-[10px] font-medium transition-colors cursor-pointer shrink-0"
+                              title="Preview live-rendered PDF document in modal before triggering download"
+                            >
+                              <Eye className="w-2.5 h-2.5 text-cyan-400" />
+                              <span>Preview</span>
+                            </button>
+                            <div className="relative inline-flex flex-col items-stretch">
+                              <button
+                                id="btn-footer-generate-pdf-report"
+                                data-testid="btn-footer-generate-pdf-report"
+                                aria-label="Generate PDF Report"
+                                type="button"
+                                onClick={handleGenerateDiagnosticCorrelationPdf}
+                                disabled={isGeneratingDiagnosticPdf}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-950/70 hover:bg-rose-900/90 active:bg-rose-800 text-rose-200 hover:text-white border border-rose-600/70 hover:border-rose-400 text-[10px] font-semibold transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                                title="Generate Visual PDF Summary Report with sparklines for latency vs mutation frequency for non-technical stakeholders"
+                              >
+                                {isDiagnosticPdfSuccess ? (
+                                  <>
+                                    <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                    <span className="text-emerald-300">PDF Generated!</span>
+                                  </>
+                                ) : isGeneratingDiagnosticPdf ? (
+                                  <>
+                                    <RefreshCw className="w-2.5 h-2.5 text-rose-300 animate-spin" />
+                                    <span>Generating...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <FileText className="w-2.5 h-2.5 text-rose-300" />
+                                    <span>Generate PDF Report</span>
+                                  </>
+                                )}
+                              </button>
+                              {isGeneratingDiagnosticPdf && (
+                                <div
+                                  id="progress-footer-pdf-generating"
+                                  data-testid="progress-footer-pdf-generating"
+                                  role="progressbar"
+                                  aria-label="Generating PDF Report"
+                                  className="w-full mt-1 h-1 bg-zinc-950/90 rounded-full overflow-hidden border border-rose-500/50 shadow-xs"
+                                >
+                                  <div className="h-full bg-linear-to-r from-rose-500 via-amber-400 to-rose-400 rounded-full animate-indeterminate" />
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              id="btn-footer-diagnostic-correlation-report"
+                              data-testid="btn-footer-diagnostic-correlation-report"
+                              aria-label="Generate Diagnostic Correlation Report"
+                              type="button"
+                              onClick={handleGenerateDiagnosticCorrelationReport}
+                              disabled={isGeneratingDiagnosticReport}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-amber-300 hover:text-amber-200 border border-zinc-700 hover:border-amber-500/60 text-[10px] font-semibold transition-colors cursor-pointer shrink-0"
+                              title="Export Diagnostic Correlation Report JSON summarizing how mutation clusters influenced recent latency spikes by mapping event timestamps"
+                            >
+                              <Download className="w-2.5 h-2.5 text-amber-400" />
+                              <span>Diagnostic Correlation Report</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Tooltip downward pointing caret */}
+                      <div className={`absolute top-full left-8 -mt-1 w-2.5 h-2.5 bg-zinc-900 border-r border-b ${
+                        isDatabaseMutatingState ? 'border-amber-400/90' : 'border-amber-500/60'
+                      } rotate-45`} />
+                    </div>
+                  )}
 
                   {/* Dropdown Menu Trigger Toggle */}
                   <button
@@ -907,7 +3539,7 @@ export default function App() {
                   {isExportDropdownOpen && (
                     <div
                       id="export-format-dropdown-menu"
-                      className="absolute right-0 top-full mt-1 w-80 bg-white border border-zinc-200 rounded-xl shadow-lg z-30 py-1 overflow-hidden animate-fade-in divide-y divide-zinc-100"
+                      className="absolute right-0 top-full mt-1 w-84 sm:w-88 bg-white border border-zinc-200 rounded-xl shadow-xl z-30 py-1 overflow-hidden animate-fade-in divide-y divide-zinc-100 max-h-[88vh] overflow-y-auto"
                     >
                       <div className="px-3 py-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-wider bg-zinc-50/70">
                         Choose Serialization Format
@@ -937,9 +3569,14 @@ export default function App() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between">
                               <span className="font-semibold text-zinc-900">Standard CSV</span>
-                              <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
-                                RFC 4180
-                              </span>
+                              <div className="flex items-center gap-1">
+                                <kbd className="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-zinc-100 text-zinc-600 border border-zinc-200">
+                                  {selectedExportFormat === 'csv' ? shortcutKeyLabel : altShortcutKeyLabel}
+                                </kbd>
+                                <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800">
+                                  RFC 4180
+                                </span>
+                              </div>
                             </div>
                             <p className="text-[11px] text-zinc-500 mt-0.5 leading-tight">
                               Flat tabular with UTF-8 BOM. High data density &amp; ~50% smaller than JSON.
@@ -973,9 +3610,14 @@ export default function App() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between">
                               <span className="font-semibold text-zinc-900">Structured JSON</span>
-                              <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">
-                                RFC 8259
-                              </span>
+                              <div className="flex items-center gap-1">
+                                <kbd className="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-zinc-100 text-zinc-600 border border-zinc-200">
+                                  {selectedExportFormat === 'json' ? shortcutKeyLabel : altShortcutKeyLabel}
+                                </kbd>
+                                <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">
+                                  RFC 8259
+                                </span>
+                              </div>
                             </div>
                             <p className="text-[11px] text-zinc-500 mt-0.5 leading-tight">
                               Full object graph with nested line items &amp; native type fidelity.
@@ -985,6 +3627,76 @@ export default function App() {
                             <Check className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-1" />
                           )}
                         </button>
+                      </div>
+
+                      {/* Section: CSV Header Configuration with 'Include Column Headers' Checkbox */}
+                      <div
+                        id="csv-header-toggle-section"
+                        className="p-2.5 bg-zinc-50/90 border-t border-zinc-100"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center justify-between mb-1.5 px-0.5">
+                          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1">
+                            <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+                            CSV Export Options
+                          </span>
+                          <span
+                            id="csv-header-toggle-status-badge"
+                            className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded border ${
+                              includeCsvHeaders
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : 'bg-zinc-200 text-zinc-700 border-zinc-300'
+                            }`}
+                          >
+                            {includeCsvHeaders ? 'HEADERS: ON' : 'HEADERS: OFF'}
+                          </span>
+                        </div>
+
+                        <label
+                          id="label-include-column-headers"
+                          htmlFor="checkbox-include-column-headers"
+                          title="Include Column Headers"
+                          className="flex items-start gap-2.5 p-2 rounded-lg bg-white border border-zinc-200 hover:border-emerald-400 hover:bg-emerald-50/20 transition-all cursor-pointer shadow-2xs group select-none"
+                        >
+                          <input
+                            id="checkbox-include-column-headers"
+                            name="includeColumnHeaders"
+                            type="checkbox"
+                            checked={includeCsvHeaders}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              setIncludeCsvHeaders(e.target.checked);
+                            }}
+                            className="w-4 h-4 mt-0.5 rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500/30 cursor-pointer shrink-0"
+                            title="Include Column Headers"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-zinc-900 group-hover:text-emerald-950 transition-colors">
+                                Include Column Headers
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-zinc-500 leading-tight mt-0.5">
+                              {includeCsvHeaders
+                                ? 'Includes RFC 4180 column header row with order, customer, amount, and item fields.'
+                                : 'Excludes header row from CSV output, streaming raw transaction data rows directly.'}
+                            </p>
+                          </div>
+                        </label>
+                      </div>
+
+                      {/* Power-User Keyboard Shortcut Helper Callout */}
+                      <div className="px-3 py-2 bg-indigo-50/70 border-t border-indigo-100/80 flex items-center justify-between text-[11px] text-indigo-950">
+                        <div className="flex items-center gap-1.5 font-medium">
+                          <Keyboard className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span>Power-User Shortcut:</span>
+                        </div>
+                        <div className="flex items-center gap-1 font-mono text-[10px]">
+                          <kbd className="px-1.5 py-0.5 rounded bg-white border border-indigo-200 shadow-3xs font-bold text-indigo-900">
+                            {shortcutKeyLabel}
+                          </kbd>
+                          <span className="text-zinc-500 font-sans">Quick Export</span>
+                        </div>
                       </div>
 
                       {/* Section: Queue Auto-Save Continuous Audit Tape */}
@@ -1077,9 +3789,36 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="px-3 py-1.5 bg-zinc-50 text-[10px] text-zinc-500">
-                        ⚡ Serialization latency &amp; compression ratios will display in the banner below
+                      {/* Concurrency & Data Consistency Simulation Action */}
+                      <div className="p-2.5 bg-amber-50/70 border-t border-amber-100/90 flex items-center justify-between gap-2 text-xs text-amber-950">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 font-bold text-amber-900 text-[11px]">
+                            <Lock className="w-3 h-3 text-amber-600 shrink-0" />
+                            <span>Simulate Mid-Process Mutation</span>
+                          </div>
+                          <p className="text-[10px] text-amber-800/80 leading-tight mt-0.5">
+                            Locks mutations for 3s to inspect deferred serialization consistency.
+                          </p>
+                        </div>
+                        <button
+                          id="btn-simulate-mutation-lock"
+                          type="button"
+                          disabled={isDatabaseMutatingState}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSimulateMidProcessMutation();
+                          }}
+                          className="px-2 py-1 rounded bg-amber-200 hover:bg-amber-300 active:bg-amber-400 text-amber-950 text-[10px] font-bold border border-amber-400/80 shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isDatabaseMutatingState ? 'Mid-Process...' : 'Lock DB'}
+                        </button>
                       </div>
+
+                      {/* Serialization Time Saved Summary Stat & 10-Op Micro Chart */}
+                      <ExportSavingsSummaryChart
+                        history={exportHistory}
+                        selectedFormat={selectedExportFormat}
+                      />
                     </div>
                   )}
                 </div>
@@ -1240,12 +3979,33 @@ export default function App() {
             onRunOptimizationSequence={handleRunOptimizationSequence}
             isSimulatingSequence={isSimulatingSequence}
             onAppendTrendPoint={handleAppendTrendPoint}
+            dataTapeEntries={dataTapeEntries}
+            exportHistory={exportHistory}
+            onTriggerAuditBurst={() => handleHeaderExport(selectedExportFormat)}
+            serializationLogs={serializationLogs}
+            onLogLatencyAnomaly={handleLogLatencyAnomaly}
+            onClearSerializationLogs={handleClearSerializationLogs}
+            onDismissSerializationLog={handleDismissLog}
+            onSimulateFault={handleSimulateFault}
+            thresholdViolations={thresholdViolationsHistory}
+            mutationThreshold={mutationThreshold}
+            mutationHistory={mutationHistory}
           />
         ) : (
           /* Main Data Grid & Diagnostics View */
           <>
             {/* Interactive Architectural Controls */}
             <OptimizationControls flags={flags} onToggleFlag={handleToggleFlag} />
+
+            {/* Serialization Errors & Throughput Anomalies Log Panel */}
+            <SerializationErrorLogPanel
+              logs={serializationLogs}
+              onClearLogs={handleClearSerializationLogs}
+              onDismissLog={handleDismissLog}
+              onSimulateFault={handleSimulateFault}
+              currentFormat={selectedExportFormat}
+              currentRecordCount={queryResult.records.length}
+            />
 
             {/* Transaction Explorer & Virtualized Data Grid */}
             <VirtualizedTable
@@ -1264,9 +4024,19 @@ export default function App() {
               simulatedError={queryResult.simulatedError}
               warningNotice={queryResult.warningNotice}
               onOpenBulkImport={() => setIsBulkImportOpen(true)}
+              selectedExportFormat={selectedExportFormat}
+              onExportFormatChange={setSelectedExportFormat}
+              onTriggerExport={handleHeaderExport}
+              isExportingProp={isHeaderExporting}
+              shortcutKeyLabel={shortcutKeyLabel}
+              isShortcutFlashing={isShortcutFlashing}
+              includeCsvHeaders={includeCsvHeaders}
+              onIncludeCsvHeadersChange={setIncludeCsvHeaders}
+              onDeleteRecords={handleDeleteRecords}
+              cacheHit={queryResult.cacheHit}
               onExportComplete={(stats) => {
                 setHeaderExportStats(stats);
-                recordExportOperation(stats, 'csv');
+                recordExportOperation(stats, selectedExportFormat);
               }}
             />
 
@@ -1303,12 +4073,11 @@ export default function App() {
         isOpen={isDataTapeModalOpen}
         onClose={() => setIsDataTapeModalOpen(false)}
         entries={dataTapeEntries}
-        isQueueAutoSaveEnabled={isQueueAutoSaveEnabled}
-        onToggleQueueAutoSave={(val) => setIsQueueAutoSaveEnabled(val)}
+        isAutoSaveEnabled={isQueueAutoSaveEnabled}
+        onToggleAutoSave={() => setIsQueueAutoSaveEnabled(!isQueueAutoSaveEnabled)}
         onTriggerManualSlice={handleTriggerManualTapeSlice}
-        onSimulateDatabaseMutation={handleMutateDatabase}
-        onClearLedger={() => setDataTapeEntries([])}
-        currentFilteredCount={queryResult.records.length}
+        onMutateDatabase={handleMutateDatabase}
+        onClearTape={() => setDataTapeEntries([])}
       />
 
       {/* Floating Auto-Save Notification Toast */}
@@ -1365,6 +4134,148 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Floating Keyboard Shortcut Trigger Notification Toast */}
+      {shortcutToast && (
+        <div
+          id="keyboard-shortcut-export-toast"
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 left-5 z-50 max-w-sm w-full bg-zinc-900 border border-emerald-500/60 text-white rounded-xl p-3 shadow-2xl animate-in slide-in-from-bottom-4 fade-in duration-200"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/30">
+              <Keyboard className="w-4 h-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono text-xs font-bold text-emerald-300">
+                  {shortcutToast.key}
+                </span>
+                <span className="text-[10px] font-semibold text-emerald-400 px-1.5 py-0.2 rounded bg-emerald-950/80 border border-emerald-700/50">
+                  Keyboard Shortcut
+                </span>
+              </div>
+              <p className="text-xs text-zinc-200 truncate mt-0.5">
+                {shortcutToast.isEmpty
+                  ? 'No matching filtered records to export'
+                  : `Exported ${shortcutToast.rows.toLocaleString()} rows as ${
+                      shortcutToast.format === 'json' ? 'Structured JSON' : 'Standard CSV'
+                    }`}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShortcutToast(null)}
+              className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer"
+              aria-label="Dismiss shortcut notification"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Export Paused (Mid-Process Mutation) Notification Toast */}
+      {exportPausedToast && (
+        <div
+          id="toast-export-paused-notice"
+          data-testid="toast-export-paused-notice"
+          role="alert"
+          aria-live="assertive"
+          className="fixed bottom-5 right-5 z-50 max-w-md w-full bg-zinc-900 border border-amber-500/80 text-white rounded-xl p-3.5 shadow-2xl animate-in slide-in-from-bottom-4 fade-in duration-200"
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/30 mt-0.5">
+              <Pause className="w-4 h-4 fill-amber-400 text-amber-400 animate-pulse" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-xs text-amber-300 flex items-center gap-1">
+                  <Lock className="w-3 h-3 text-amber-400" />
+                  Export Paused — Consistency Lock
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider font-bold">
+                  Deferred
+                </span>
+              </div>
+              <p className="text-xs text-zinc-100 font-medium mt-1 leading-snug">
+                Serialization is deferred to ensure data consistency.
+              </p>
+              <p className="text-[11px] text-zinc-400 mt-0.5 leading-tight">
+                A database mutation is currently mid-process. Serialization will automatically unlock when heap writes and indexes commit.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setExportPausedToast(null)}
+              className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer shrink-0"
+              aria-label="Dismiss export paused notice"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Mutation Threshold Exceeded Alert Toast */}
+      {thresholdAlert && (
+        <div
+          id="toast-mutation-threshold-alert"
+          data-testid="toast-mutation-threshold-alert"
+          role="alert"
+          aria-live="assertive"
+          className="fixed top-5 right-5 z-50 max-w-md w-full bg-zinc-900 border-2 border-rose-500/90 text-white rounded-xl p-3.5 shadow-2xl animate-in slide-in-from-top-4 fade-in duration-200"
+        >
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0 border border-rose-500/30 mt-0.5">
+              <AlertTriangle className="w-4 h-4 text-rose-400 animate-pulse" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-xs text-rose-300 flex items-center gap-1.5">
+                  <Bell className="w-3.5 h-3.5 text-rose-400" />
+                  Mutation Threshold Exceeded
+                </span>
+                <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 uppercase tracking-wider font-bold">
+                  &gt; {thresholdAlert.thresholdSeconds}s
+                </span>
+              </div>
+              <p className="text-xs text-zinc-100 font-medium mt-1 leading-snug">
+                {thresholdAlert.mutationDescription}
+              </p>
+              <p className="text-[11px] text-zinc-400 mt-0.5 leading-tight">
+                Duration: <span className="font-mono text-rose-300 font-bold">{thresholdAlert.elapsedSeconds}s</span> (Custom threshold: {thresholdAlert.thresholdSeconds}s).
+              </p>
+            </div>
+            <button
+              id="btn-dismiss-toast-threshold-alert"
+              data-testid="btn-dismiss-toast-threshold-alert"
+              type="button"
+              onClick={() => setThresholdAlert(null)}
+              className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer shrink-0"
+              aria-label="Dismiss mutation threshold alert"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Live PDF Report Preview Modal */}
+      <DiagnosticPdfPreviewModal
+        isOpen={showPdfPreviewModal}
+        onClose={() => setShowPdfPreviewModal(false)}
+        onDownload={handleGenerateDiagnosticCorrelationPdf}
+        isDownloading={isGeneratingDiagnosticPdf}
+        isDownloadSuccess={isDiagnosticPdfSuccess}
+        thresholdViolations={thresholdViolationsHistory}
+        mutationHistory={mutationHistory}
+        trendHistory={trendHistory}
+        mutationThreshold={mutationThreshold}
+        currentFlags={flags}
+        sectionsConfig={pdfExportSections}
+        onUpdateSections={setPdfExportSections}
+      />
     </div>
   );
 }
