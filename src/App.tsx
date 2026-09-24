@@ -18,6 +18,7 @@ import {
   exportRecords,
   exportRecordsToCsv,
   exportRecordsToJson,
+  buildCsvString,
   triggerFileDownload,
   ExportFormat,
   ExportPerformanceResult,
@@ -87,8 +88,19 @@ import {
   Trash2,
   FileText,
   SlidersHorizontal,
-  Eye
+  Eye,
+  Bookmark,
+  Save,
+  FolderOpen,
+  Users
 } from 'lucide-react';
+import {
+  PREDEFINED_PDF_TEMPLATES,
+  PdfReportTemplate,
+  getSavedCustomTemplate,
+  saveCustomTemplate,
+  matchTemplateId
+} from './utils/pdfReportTemplates';
 
 interface InvalidationTriggerEntry {
   id: string;
@@ -610,6 +622,91 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     }, 2000);
   };
 
+  const [isExportingThresholdLogs, setIsExportingThresholdLogs] = useState<boolean>(false);
+  const [isExportThresholdLogsSuccess, setIsExportThresholdLogsSuccess] = useState<boolean>(false);
+
+  // Exports the entire threshold alert history as a CSV file for long-term auditing
+  const handleExportThresholdAlertLogsCsv = (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+
+    setIsExportingThresholdLogs(true);
+    try {
+      const escapeCsvValue = (val: unknown): string => {
+        if (val === null || val === undefined) return '""';
+        const str = String(val);
+        if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return `"${str}"`;
+      };
+
+      const headers = [
+        'Alert ID',
+        'Mutation ID',
+        'Mutation Description',
+        'Threshold Seconds',
+        'Elapsed Seconds',
+        'Variance Over Threshold (Sec)',
+        'Timestamp (ISO)',
+        'Timestamp (Epoch Ms)',
+        'Date Formatted',
+        'Time Formatted',
+        'Severity Tier',
+        'Audit Status'
+      ];
+
+      const rows = thresholdViolationsHistory.map((item) => {
+        const iso = new Date(item.timestamp).toISOString();
+        const dateStr = new Date(item.timestamp).toLocaleDateString();
+        const timeStr = new Date(item.timestamp).toLocaleTimeString();
+        const varianceSec = Math.max(0, Number((item.elapsedSeconds - item.thresholdSeconds).toFixed(2)));
+        const severity =
+          item.elapsedSeconds >= item.thresholdSeconds * 2
+            ? 'CRITICAL'
+            : item.elapsedSeconds >= item.thresholdSeconds * 1.5
+            ? 'HIGH'
+            : 'WARNING';
+
+        return [
+          escapeCsvValue(item.id),
+          escapeCsvValue(item.mutationId),
+          escapeCsvValue(item.mutationDescription),
+          escapeCsvValue(item.thresholdSeconds),
+          escapeCsvValue(item.elapsedSeconds),
+          escapeCsvValue(varianceSec),
+          escapeCsvValue(iso),
+          escapeCsvValue(item.timestamp),
+          escapeCsvValue(dateStr),
+          escapeCsvValue(timeStr),
+          escapeCsvValue(severity),
+          escapeCsvValue('AUDITED')
+        ].join(',');
+      });
+
+      const csvContent = [headers.join(','), ...rows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const timestampStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      link.download = `threshold-alert-history-audit-${timestampStr}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setIsExportThresholdLogsSuccess(true);
+      setTimeout(() => setIsExportThresholdLogsSuccess(false), 2500);
+    } catch (err) {
+      console.error('Failed to export threshold alerts audit logs as CSV:', err);
+    } finally {
+      setIsExportingThresholdLogs(false);
+    }
+  };
+
   const [isGeneratingDiagnosticReport, setIsGeneratingDiagnosticReport] = useState(false);
   const [isDiagnosticReportSuccess, setIsDiagnosticReportSuccess] = useState(false);
 
@@ -622,8 +719,80 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     includeSparklines: true,
     includeMutationHistory: true,
     includeRecommendations: true,
-    includeExecutiveSummary: true
+    includeExecutiveSummary: true,
+    breakBeforeSparklines: false,
+    breakBeforeMutationHistory: true,
+    breakBeforeRecommendations: true,
+    breakBeforeExecutiveSummary: false
   });
+
+  // Saved custom PDF template in localStorage
+  const [savedCustomPdfTemplate, setSavedCustomPdfTemplate] = useState<PdfReportTemplate | null>(() => getSavedCustomTemplate());
+  const [isCustomTemplateSavedFeedback, setIsCustomTemplateSavedFeedback] = useState<boolean>(false);
+
+  // Computes which predefined or saved template matches current pdfExportSections
+  const currentMatchedTemplateId = useMemo(() => {
+    return matchTemplateId(pdfExportSections, savedCustomPdfTemplate);
+  }, [pdfExportSections, savedCustomPdfTemplate]);
+
+  // Handles selecting a template from the Template Selector dropdown
+  const handleSelectPdfTemplate = (templateId: string) => {
+    if (templateId === 'saved-custom') {
+      if (savedCustomPdfTemplate) {
+        setPdfExportSections({ ...savedCustomPdfTemplate.sections });
+      }
+      return;
+    }
+    const found = PREDEFINED_PDF_TEMPLATES.find((t) => t.id === templateId);
+    if (found) {
+      setPdfExportSections({ ...found.sections });
+    }
+  };
+
+  // Handles saving current configuration as user's custom template
+  const handleSaveCurrentAsCustomTemplate = () => {
+    const saved = saveCustomTemplate(pdfExportSections, 'Saved Custom Preset');
+    setSavedCustomPdfTemplate(saved);
+    setIsCustomTemplateSavedFeedback(true);
+    setTimeout(() => setIsCustomTemplateSavedFeedback(false), 2500);
+  };
+
+  // Handles loading user's custom saved template
+  const handleLoadCustomTemplate = () => {
+    if (savedCustomPdfTemplate) {
+      setPdfExportSections({ ...savedCustomPdfTemplate.sections });
+    }
+  };
+
+  // Computes active template metadata for display (audience, description, name)
+  const activeTemplateMeta = useMemo(() => {
+    if (currentMatchedTemplateId === 'saved-custom' && savedCustomPdfTemplate) {
+      return {
+        name: savedCustomPdfTemplate.name,
+        audience: savedCustomPdfTemplate.audience,
+        tagline: savedCustomPdfTemplate.tagline,
+        description: savedCustomPdfTemplate.description,
+        isCustom: true
+      };
+    }
+    const predefined = PREDEFINED_PDF_TEMPLATES.find((t) => t.id === currentMatchedTemplateId);
+    if (predefined) {
+      return {
+        name: predefined.name,
+        audience: predefined.audience,
+        tagline: predefined.tagline,
+        description: predefined.description,
+        isCustom: false
+      };
+    }
+    return {
+      name: 'Custom Configuration',
+      audience: 'Custom Stakeholders',
+      tagline: 'Customized Section Rules',
+      description: 'Modified combination of sections and page break rules customized from default presets.',
+      isCustom: true
+    };
+  }, [currentMatchedTemplateId, savedCustomPdfTemplate]);
 
   // Generate Diagnostic Correlation Report as a non-technical Visual PDF with sparklines
   const handleGenerateDiagnosticCorrelationPdf = async () => {
@@ -703,7 +872,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             timestamp: Date.now()
           };
           setThresholdAlert(newAlertItem);
-          setThresholdViolationsHistory((prev) => [newAlertItem, ...prev].slice(0, 5));
+          setThresholdViolationsHistory((prev) => [newAlertItem, ...prev]);
 
           // Automatically mark correlating latency data points as 'High-Duration Mutation' in the Performance Trends view
           setTrendHistory((prevTrend) => {
@@ -1026,6 +1195,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         'label',
         'isBulk',
         'bulk_operation',
+        'audit_event_type',
+        'invalidation_scope',
         'details'
       ];
 
@@ -1041,6 +1212,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
           escapeCsvValue(item.label),
           escapeCsvValue(item.isBulk ? 'true' : 'false'),
           escapeCsvValue(item.isBulk ? 'YES' : 'NO'),
+          escapeCsvValue('CACHE_INVALIDATION_TRIGGER'),
+          escapeCsvValue(item.isBulk ? 'GLOBAL_PARTITION_FLUSH' : 'TARGETED_ENTRY_EVICTION'),
           escapeCsvValue(item.details || '')
         ].join(',');
       });
@@ -1050,14 +1223,14 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `invalidation-history-all-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+      link.download = `cache-invalidation-audit-history-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
       setIsExportedAllCsv(true);
-      setTimeout(() => setIsExportedAllCsv(false), 2000);
+      setTimeout(() => setIsExportedAllCsv(false), 2500);
     } catch (err) {
       console.error('Failed to export all invalidation triggers CSV:', err);
     }
@@ -1264,6 +1437,82 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       flags
     );
   }, [searchTerm, statusFilter, categoryFilter, pageSize, flags, queryVersion]);
+
+  // Dynamically compute estimated file sizes & performance comparison for CSV vs JSON export based on currently filtered records
+  const exportSizeEstimates = useMemo(() => {
+    const rowCount = queryResult.records.length;
+    if (rowCount === 0) {
+      return {
+        rowCount: 0,
+        csvBytes: 0,
+        jsonBytes: 0,
+        csvGzipBytes: 0,
+        jsonGzipBytes: 0,
+        csvBytesFormatted: '0 B',
+        jsonBytesFormatted: '0 B',
+        csvGzipFormatted: '0 B',
+        jsonGzipFormatted: '0 B',
+        savingsPercent: 0,
+        overheadPercent: 0,
+        overheadRatio: 1,
+        bytesPerRowCsv: 0,
+        bytesPerRowJson: 0,
+        csvEstDurationText: '< 1 ms',
+        jsonEstDurationText: '< 1 ms'
+      };
+    }
+
+    // Sample actual filtered records to accurately calculate average row byte density with real SKUs and field values
+    const sampleSize = Math.min(25, rowCount);
+    const sample = queryResult.records.slice(0, sampleSize);
+
+    // CSV size calculation (using real CSV serialization)
+    const { csvString: sampleCsv } = buildCsvString(sample, { includeHeaders: false });
+    const csvRowBytesAvg = new Blob([sampleCsv]).size / sampleSize;
+    const headerBytes = includeCsvHeaders ? 212 : 0;
+    const estimatedCsvBytes = Math.round(headerBytes + csvRowBytesAvg * rowCount);
+
+    // JSON size calculation (formatted with 2 spaces matching exportRecordsToJson default)
+    const sampleJson = JSON.stringify(sample, null, 2);
+    const jsonRowBytesAvg = new Blob([sampleJson]).size / sampleSize;
+    const estimatedJsonBytes = Math.round(jsonRowBytesAvg * rowCount);
+
+    // GZIP compression estimates (CSV ~65% compression, JSON ~78% compression due to repetitive schema keys)
+    const estimatedCsvGzip = Math.round(estimatedCsvBytes * 0.35);
+    const estimatedJsonGzip = Math.round(estimatedJsonBytes * 0.22);
+
+    const overheadRatio = Number((estimatedJsonBytes / Math.max(1, estimatedCsvBytes)).toFixed(1));
+    const overheadPercent = Math.max(0, Math.round(((estimatedJsonBytes - estimatedCsvBytes) / Math.max(1, estimatedCsvBytes)) * 100));
+    const savingsPercent = Math.max(0, Math.round(((estimatedJsonBytes - estimatedCsvBytes) / Math.max(1, estimatedJsonBytes)) * 100));
+
+    const formatBytes = (bytes: number): string => {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    };
+
+    const csvEstMs = Math.max(0.1, Number(((rowCount / 35000) * 1000).toFixed(1)));
+    const jsonEstMs = Math.max(0.2, Number(((rowCount / 18000) * 1000).toFixed(1)));
+
+    return {
+      rowCount,
+      csvBytes: estimatedCsvBytes,
+      jsonBytes: estimatedJsonBytes,
+      csvGzipBytes: estimatedCsvGzip,
+      jsonGzipBytes: estimatedJsonGzip,
+      csvBytesFormatted: formatBytes(estimatedCsvBytes),
+      jsonBytesFormatted: formatBytes(estimatedJsonBytes),
+      csvGzipFormatted: formatBytes(estimatedCsvGzip),
+      jsonGzipFormatted: formatBytes(estimatedJsonGzip),
+      savingsPercent,
+      overheadPercent,
+      overheadRatio,
+      bytesPerRowCsv: Math.round(csvRowBytesAvg),
+      bytesPerRowJson: Math.round(jsonRowBytesAvg),
+      csvEstDurationText: csvEstMs < 1 ? '< 1 ms' : `~${csvEstMs} ms`,
+      jsonEstDurationText: jsonEstMs < 1 ? '< 1 ms' : `~${jsonEstMs} ms`
+    };
+  }, [queryResult.records, includeCsvHeaders]);
 
   // Track changes to flags/query to record real-time points in trendHistory
   const prevFlagsRef = useRef<OptimizationFlags>(flags);
@@ -2041,9 +2290,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                     onMouseLeave={handleExportMouseLeave}
                     onFocus={handleExportMouseEnter}
                     onBlur={handleExportMouseLeave}
-                    aria-describedby={isExportPulsing ? 'tooltip-cache-invalidation-fresh-read' : undefined}
+                    aria-describedby={
+                      isExportPulsing || isExportHovered || isLiveMonitoring
+                        ? 'tooltip-cache-invalidation-fresh-read'
+                        : undefined
+                    }
                     disabled={isHeaderExporting || queryResult.records.length === 0}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-r-0 border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-800 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-r-0 border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-800 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-98 ${
                       isShortcutFlashing
                         ? 'ring-2 ring-emerald-500 bg-emerald-50 text-emerald-950 shadow-md scale-102'
                         : isExportPulsing
@@ -2123,26 +2376,26 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                     )}
                   </button>
 
-                  {/* Custom Tooltip: includes 'Export Paused' state during mid-process mutations & Last 3 Invalidation Triggers */}
-                  {isExportPulsing && (
-                    <div
-                      id="tooltip-cache-invalidation-fresh-read"
-                      data-testid="tooltip-cache-invalidation-fresh-read"
-                      role="tooltip"
-                      onMouseEnter={handleExportMouseEnter}
-                      onMouseLeave={handleExportMouseLeave}
-                      className={`absolute bottom-full mb-2.5 left-0 z-50 w-80 sm:w-96 max-h-[85vh] overflow-y-auto p-3 rounded-lg bg-zinc-900/95 backdrop-blur-xs text-zinc-100 text-xs shadow-2xl border ${
-                        thresholdAlert
-                          ? 'border-rose-500/90 shadow-rose-500/20 ring-1 ring-rose-500/40'
-                          : isDatabaseMutatingState
-                          ? 'border-amber-400/90 shadow-amber-500/20 ring-1 ring-amber-400/30'
-                          : 'border-amber-500/60'
-                      } transition-all duration-150 ${
-                        isExportHovered || isLiveMonitoring || isThresholdInputFocused
-                          ? 'opacity-100 translate-y-0 visible pointer-events-auto'
-                          : 'opacity-0 translate-y-1 invisible pointer-events-none'
-                      }`}
-                    >
+                  {/* Custom Tooltip: includes Performance Comparison Table, 'Export Paused' state during mid-process mutations, Last 3 Invalidation Triggers & Export All Logs Audit CSV */}
+                  <div
+                    id="tooltip-cache-invalidation-fresh-read"
+                    data-testid="tooltip-cache-invalidation-fresh-read"
+                    data-tooltip="tooltip-header-export-csv"
+                    role="tooltip"
+                    onMouseEnter={handleExportMouseEnter}
+                    onMouseLeave={handleExportMouseLeave}
+                    className={`absolute bottom-full mb-2.5 left-0 z-50 w-80 sm:w-[420px] max-h-[85vh] overflow-y-auto p-3 rounded-lg bg-zinc-900/95 backdrop-blur-xs text-zinc-100 text-xs shadow-2xl border ${
+                      thresholdAlert
+                        ? 'border-rose-500/90 shadow-rose-500/20 ring-1 ring-rose-500/40'
+                        : isDatabaseMutatingState
+                        ? 'border-amber-400/90 shadow-amber-500/20 ring-1 ring-amber-400/30'
+                        : 'border-zinc-700 shadow-zinc-950/50'
+                    } transition-all duration-150 ${
+                      isExportHovered || isLiveMonitoring || isThresholdInputFocused || isExportPulsing
+                        ? 'opacity-100 translate-y-0 visible pointer-events-auto'
+                        : 'opacity-0 translate-y-1 invisible pointer-events-none'
+                    }`}
+                  >
                       {/* Live Monitoring Toggle Bar */}
                       <div
                         id="control-live-monitoring"
@@ -2321,6 +2574,185 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           </div>
                         </div>
                       )}
+
+                      {/* Format Performance & File Size Comparison Table based on filtered row count */}
+                      <div
+                        id="section-export-format-comparison"
+                        data-testid="section-export-format-comparison"
+                        className="p-2.5 mb-2.5 rounded bg-zinc-950/85 border border-zinc-700/80 text-[11px] space-y-2 shadow-inner"
+                      >
+                        <div className="flex items-center justify-between gap-1 flex-wrap">
+                          <div className="flex items-center gap-1.5 font-semibold text-zinc-100">
+                            <Table className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Format Performance &amp; Size Comparison</span>
+                          </div>
+                          <span
+                            id="export-comparison-filtered-rows"
+                            data-testid="export-comparison-filtered-rows"
+                            className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 border border-zinc-700 font-bold"
+                            title={`Calculated dynamically for ${exportSizeEstimates.rowCount} filtered database records`}
+                          >
+                            {exportSizeEstimates.rowCount} filtered {exportSizeEstimates.rowCount === 1 ? 'row' : 'rows'}
+                          </span>
+                        </div>
+
+                        <p className="text-[10px] text-zinc-400 leading-snug">
+                          Estimated payload sizes and network compression based on currently filtered records to inform format selection:
+                        </p>
+
+                        {/* Comparison Table */}
+                        <div className="overflow-x-auto -mx-0.5 px-0.5">
+                          <table
+                            id="table-export-performance-comparison"
+                            data-testid="table-export-performance-comparison"
+                            className="w-full text-left text-[10px] border-collapse"
+                          >
+                            <thead>
+                              <tr className="border-b border-zinc-800 text-zinc-400 font-medium">
+                                <th className="py-1 px-1.5 font-semibold">Format</th>
+                                <th className="py-1 px-1.5 font-semibold text-right">Est. Size</th>
+                                <th className="py-1 px-1.5 font-semibold text-right">Overhead / Savings</th>
+                                <th className="py-1 px-1.5 font-semibold text-right">GZIP Est.</th>
+                                <th className="py-1 px-1.5 font-semibold">Best Audience / Use Case</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-zinc-800/60 font-mono">
+                              {/* CSV Row */}
+                              <tr
+                                id="row-export-comparison-csv"
+                                data-testid="row-export-comparison-csv"
+                                className={`transition-colors ${
+                                  selectedExportFormat === 'csv'
+                                    ? 'bg-emerald-950/40 text-zinc-100 font-medium'
+                                    : 'hover:bg-zinc-900/60 text-zinc-300'
+                                }`}
+                              >
+                                <td className="py-1.5 px-1.5 whitespace-nowrap">
+                                  <div className="flex items-center gap-1.5 font-sans">
+                                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                    <span className="font-semibold text-zinc-200">CSV</span>
+                                    <span className="text-[9px] text-zinc-500">RFC 4180</span>
+                                    {selectedExportFormat === 'csv' && (
+                                      <span
+                                        id="badge-active-format-csv"
+                                        data-testid="badge-active-format-csv"
+                                        className="text-[8px] font-bold px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 uppercase tracking-wider"
+                                      >
+                                        Active
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td
+                                  id="export-est-size-csv"
+                                  data-testid="export-est-size-csv"
+                                  className="py-1.5 px-1.5 text-right font-bold text-emerald-300 whitespace-nowrap"
+                                >
+                                  {exportSizeEstimates.csvBytesFormatted}
+                                </td>
+                                <td className="py-1.5 px-1.5 text-right text-emerald-400 whitespace-nowrap">
+                                  <span className="inline-flex items-center gap-0.5">
+                                    <span>-{exportSizeEstimates.savingsPercent}%</span>
+                                    <span className="text-[9px] text-zinc-400 font-sans">(compact)</span>
+                                  </span>
+                                </td>
+                                <td className="py-1.5 px-1.5 text-right text-zinc-400 whitespace-nowrap">
+                                  ~{exportSizeEstimates.csvGzipFormatted}
+                                </td>
+                                <td className="py-1.5 px-1.5 font-sans text-zinc-300 text-[9.5px]">
+                                  Spreadsheets (Excel, Sheets), fast tabular analysis
+                                </td>
+                              </tr>
+
+                              {/* JSON Row */}
+                              <tr
+                                id="row-export-comparison-json"
+                                data-testid="row-export-comparison-json"
+                                className={`transition-colors ${
+                                  selectedExportFormat === 'json'
+                                    ? 'bg-amber-950/40 text-zinc-100 font-medium'
+                                    : 'hover:bg-zinc-900/60 text-zinc-300'
+                                }`}
+                              >
+                                <td className="py-1.5 px-1.5 whitespace-nowrap">
+                                  <div className="flex items-center gap-1.5 font-sans">
+                                    <FileCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                    <span className="font-semibold text-zinc-200">JSON</span>
+                                    <span className="text-[9px] text-zinc-500">RFC 8259</span>
+                                    {selectedExportFormat === 'json' && (
+                                      <span
+                                        id="badge-active-format-json"
+                                        data-testid="badge-active-format-json"
+                                        className="text-[8px] font-bold px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 uppercase tracking-wider"
+                                      >
+                                        Active
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td
+                                  id="export-est-size-json"
+                                  data-testid="export-est-size-json"
+                                  className="py-1.5 px-1.5 text-right font-bold text-amber-300 whitespace-nowrap"
+                                >
+                                  {exportSizeEstimates.jsonBytesFormatted}
+                                </td>
+                                <td className="py-1.5 px-1.5 text-right text-amber-400 whitespace-nowrap">
+                                  <span className="inline-flex items-center gap-0.5">
+                                    <span>+{exportSizeEstimates.overheadPercent}%</span>
+                                    <span className="text-[9px] text-zinc-400 font-sans">({exportSizeEstimates.overheadRatio}x)</span>
+                                  </span>
+                                </td>
+                                <td className="py-1.5 px-1.5 text-right text-zinc-400 whitespace-nowrap">
+                                  ~{exportSizeEstimates.jsonGzipFormatted}
+                                </td>
+                                <td className="py-1.5 px-1.5 font-sans text-zinc-300 text-[9.5px]">
+                                  APIs, nested line items, object tree schemas
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Quick Format Switcher & Insight Footer */}
+                        <div className="pt-1.5 border-t border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-1 text-[9.5px] text-zinc-400">
+                            <span className="font-semibold text-zinc-300">Quick Format:</span>
+                            <button
+                              id="btn-select-format-csv-tooltip"
+                              data-testid="btn-select-format-csv-tooltip"
+                              type="button"
+                              onClick={() => setSelectedExportFormat('csv')}
+                              className={`px-1.5 py-0.5 rounded text-[9.5px] font-medium transition-colors cursor-pointer border ${
+                                selectedExportFormat === 'csv'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold'
+                                  : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
+                              }`}
+                              title="Switch primary export format to CSV"
+                            >
+                              Use CSV ({exportSizeEstimates.csvBytesFormatted})
+                            </button>
+                            <button
+                              id="btn-select-format-json-tooltip"
+                              data-testid="btn-select-format-json-tooltip"
+                              type="button"
+                              onClick={() => setSelectedExportFormat('json')}
+                              className={`px-1.5 py-0.5 rounded text-[9.5px] font-medium transition-colors cursor-pointer border ${
+                                selectedExportFormat === 'json'
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 font-bold'
+                                  : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border-zinc-700'
+                              }`}
+                              title="Switch primary export format to JSON"
+                            >
+                              Use JSON ({exportSizeEstimates.jsonBytesFormatted})
+                            </button>
+                          </div>
+
+                          <span className="text-[9.5px] text-zinc-400 font-mono">
+                            ~{exportSizeEstimates.bytesPerRowCsv}B (CSV) vs ~{exportSizeEstimates.bytesPerRowJson}B (JSON)/row
+                          </span>
+                        </div>
+                      </div>
 
                       {isDatabaseMutatingState ? (
                         <>
@@ -2752,6 +3184,28 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   </div>
                                 ))}
                               </div>
+
+                              <div
+                                id="audit-invalidation-history-summary-mutating"
+                                data-testid="audit-invalidation-history-summary-mutating"
+                                className="mt-1.5 pt-1.5 border-t border-zinc-800/80 flex items-center justify-between text-[10px] text-zinc-400 gap-2 flex-wrap"
+                              >
+                                <div className="flex items-center gap-1.5 font-mono text-[9.5px]">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                                  <span>Full Audit History: {invalidationHistory.length} trigger event{invalidationHistory.length === 1 ? '' : 's'} recorded</span>
+                                </div>
+                                <button
+                                  id="btn-export-all-logs-audit-cta-mutating"
+                                  data-testid="btn-export-all-logs-audit-cta"
+                                  type="button"
+                                  onClick={handleExportAllInvalidationLogsCsv}
+                                  className="inline-flex items-center gap-1 text-[9.5px] font-semibold text-amber-300 hover:text-amber-200 underline decoration-amber-500/50 hover:decoration-amber-400 transition-colors cursor-pointer"
+                                  title="Export full audit CSV of cache invalidation triggers"
+                                >
+                                  <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
+                                  <span>Export All Logs CSV ({invalidationHistory.length})</span>
+                                </button>
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-1.5 text-[11px] text-amber-300 pt-1 border-t border-zinc-800 font-medium">
@@ -2762,14 +3216,29 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                         </>
                       ) : (
                         <>
-                          {/* Cache Invalidated / Fresh Read Ready State */}
+                          {/* Cache Invalidated / Synchronized Ready State */}
                           <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
-                            <div className="flex items-center gap-1.5 font-semibold text-amber-400">
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
-                              <span>LRU Cache Invalidated</span>
+                            <div className="flex items-center gap-1.5 font-semibold">
+                              {isCacheInvalidatedPulsing ? (
+                                <>
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                                  <span className="text-amber-400">LRU Cache Invalidated</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                  <span className="text-zinc-200">LRU Cache Synchronized</span>
+                                </>
+                              )}
                             </div>
-                            <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                              Fresh Read Ready
+                            <span
+                              className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border ${
+                                isCacheInvalidatedPulsing
+                                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                  : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              }`}
+                            >
+                              {isCacheInvalidatedPulsing ? 'Fresh Read Ready' : 'Cache Hot & Ready'}
                             </span>
                           </div>
 
@@ -2817,7 +3286,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     </span>
                                   )}
                                   <button
-                                    id="btn-copy-invalidation-logs-ready"
+                                    id="btn-copy-invalidation-logs"
                                     data-testid="btn-copy-invalidation-logs"
                                     type="button"
                                     onClick={handleCopyInvalidationLogs}
@@ -2837,7 +3306,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     )}
                                   </button>
                                   <button
-                                    id="btn-copy-invalidation-json-ready"
+                                    id="btn-copy-invalidation-json"
                                     data-testid="btn-copy-invalidation-json"
                                     type="button"
                                     onClick={handleCopyInvalidationJson}
@@ -2857,7 +3326,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     )}
                                   </button>
                                   <button
-                                    id="btn-download-invalidation-logs-json-ready"
+                                    id="btn-download-invalidation-logs-json"
                                     data-testid="btn-download-invalidation-logs-json"
                                     type="button"
                                     onClick={handleDownloadInvalidationLogsJson}
@@ -2877,7 +3346,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     )}
                                   </button>
                                   <button
-                                    id="btn-export-all-logs-ready"
+                                    id="btn-export-all-logs"
                                     data-testid="btn-export-all-logs"
                                     data-id="btn-export-all-invalidation-logs-csv"
                                     aria-label="Export All Logs"
@@ -2899,7 +3368,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     )}
                                   </button>
                                   <button
-                                    id="btn-copy-log-summary-ready"
+                                    id="btn-copy-log-summary"
                                     data-testid="btn-copy-log-summary"
                                     aria-label="Copy Log Summary"
                                     type="button"
@@ -2962,11 +3431,37 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   Recurrent bulk writes are actively invalidating query memory; next export will execute a full table scan.
                                 </div>
                               )}
+
+                              <div
+                                id="audit-invalidation-history-summary"
+                                data-testid="audit-invalidation-history-summary"
+                                className="mt-1.5 pt-1.5 border-t border-zinc-800/80 flex items-center justify-between text-[10px] text-zinc-400 gap-2 flex-wrap"
+                              >
+                                <div className="flex items-center gap-1.5 font-mono text-[9.5px]">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                  <span>Full Audit History: {invalidationHistory.length} trigger event{invalidationHistory.length === 1 ? '' : 's'} recorded</span>
+                                </div>
+                                <button
+                                  id="btn-export-all-logs-audit-cta"
+                                  data-testid="btn-export-all-logs-audit-cta"
+                                  type="button"
+                                  onClick={handleExportAllInvalidationLogsCsv}
+                                  className="inline-flex items-center gap-1 text-[9.5px] font-semibold text-amber-300 hover:text-amber-200 underline decoration-amber-500/50 hover:decoration-amber-400 transition-colors cursor-pointer"
+                                  title="Export full audit CSV of cache invalidation triggers"
+                                >
+                                  <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
+                                  <span>Export All Logs CSV ({invalidationHistory.length})</span>
+                                </button>
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 pt-1 border-t border-zinc-800 font-medium">
                               <Sparkles className="w-3 h-3 text-emerald-400 shrink-0" />
-                              <span>Next export will perform a live database read</span>
+                              <span>
+                                {isCacheInvalidatedPulsing
+                                  ? 'Next export will perform a live database read'
+                                  : 'Zero-latency cached snapshot ready for immediate export'}
+                              </span>
                             </div>
                           </div>
                         </>
@@ -2989,7 +3484,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               data-testid="badge-threshold-alerts-count"
                               className="text-[9px] font-mono px-1 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30"
                             >
-                              Last {thresholdViolationsHistory.slice(0, 5).length}
+                              Last {Math.min(5, thresholdViolationsHistory.length)} ({thresholdViolationsHistory.length} logged)
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 flex-wrap">
@@ -3089,6 +3584,31 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               )}
                             </button>
                             <button
+                              id="btn-export-logs"
+                              data-testid="btn-export-logs"
+                              aria-label="Export Logs"
+                              type="button"
+                              onClick={handleExportThresholdAlertLogsCsv}
+                              disabled={isExportingThresholdLogs}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-950/60 hover:bg-emerald-900/80 active:bg-emerald-800 text-emerald-200 border border-emerald-600/70 hover:border-emerald-400 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
+                              title="Export entire threshold alert history as a CSV file for long-term auditing"
+                            >
+                              {isExportThresholdLogsSuccess ? (
+                                <>
+                                  <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                  <span className="text-emerald-300 font-semibold">Logs Exported!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-300" />
+                                  <span>Export Logs</span>
+                                  <span className="text-[8.5px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+                                    CSV
+                                  </span>
+                                </>
+                              )}
+                            </button>
+                            <button
                               id="btn-clear-alert-history"
                               data-testid="btn-clear-alert-history"
                               aria-label="Clear Alert History"
@@ -3125,175 +3645,445 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                 <span>PDF Report Export Settings</span>
                               </div>
                               <span className="text-[9.5px] text-zinc-400">
-                                Enable or disable specific sections for generated PDF stakeholder reports
+                                Configure stakeholder layouts and section visibility for generated PDF reports
                               </span>
                             </div>
 
+                            {/* Template Selector Dropdown & Stakeholder Configuration Controls */}
+                            <div
+                              id="panel-pdf-template-selector"
+                              data-testid="panel-pdf-template-selector"
+                              className="p-2 rounded bg-zinc-950/70 border border-zinc-800/90 flex flex-col gap-2"
+                            >
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+                                  <label
+                                    htmlFor="select-pdf-template"
+                                    className="flex items-center gap-1.5 text-[10.5px] font-semibold text-zinc-200 shrink-0"
+                                  >
+                                    <Bookmark className="w-3.5 h-3.5 text-amber-400" />
+                                    <span>Template Selector:</span>
+                                  </label>
+                                  <div className="relative flex-1">
+                                    <select
+                                      id="select-pdf-template"
+                                      data-testid="select-pdf-template"
+                                      aria-label="Template Selector"
+                                      value={currentMatchedTemplateId}
+                                      onChange={(e) => handleSelectPdfTemplate(e.target.value)}
+                                      className="w-full text-[11px] font-medium bg-zinc-900 border border-amber-500/50 hover:border-amber-400 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded px-2.5 py-1 text-zinc-100 cursor-pointer shadow-xs transition-colors"
+                                    >
+                                      <optgroup label="Predefined Stakeholder Templates">
+                                        {PREDEFINED_PDF_TEMPLATES.map((tmpl) => (
+                                          <option key={tmpl.id} value={tmpl.id}>
+                                            {tmpl.name} — {tmpl.audience}
+                                          </option>
+                                        ))}
+                                      </optgroup>
+                                      {savedCustomPdfTemplate && (
+                                        <optgroup label="Saved Presets">
+                                          <option value="saved-custom">
+                                            ★ {savedCustomPdfTemplate.name}
+                                          </option>
+                                        </optgroup>
+                                      )}
+                                      {currentMatchedTemplateId === 'custom' && (
+                                        <optgroup label="Current Configuration">
+                                          <option value="custom">Custom Configuration (Modified)</option>
+                                        </optgroup>
+                                      )}
+                                    </select>
+                                  </div>
+                                </div>
+
+                                {/* Save / Load Custom Template Action Buttons */}
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    id="btn-save-pdf-template"
+                                    data-testid="btn-save-pdf-template"
+                                    aria-label="Save Custom Template"
+                                    type="button"
+                                    onClick={handleSaveCurrentAsCustomTemplate}
+                                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 hover:border-amber-500/50 text-[10px] font-medium transition-colors cursor-pointer"
+                                    title="Save current sections and page break settings as your custom preset in browser storage"
+                                  >
+                                    {isCustomTemplateSavedFeedback ? (
+                                      <>
+                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Preset Saved!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Save className="w-2.5 h-2.5 text-amber-400" />
+                                        <span>Save Preset</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  {savedCustomPdfTemplate && (
+                                    <button
+                                      id="btn-load-pdf-template"
+                                      data-testid="btn-load-pdf-template"
+                                      aria-label="Load Custom Template"
+                                      type="button"
+                                      onClick={handleLoadCustomTemplate}
+                                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer"
+                                      title="Load your saved custom section preset"
+                                    >
+                                      <FolderOpen className="w-2.5 h-2.5 text-blue-400" />
+                                      <span>Load Saved</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Stakeholder Audience & Template Context Banner */}
+                              <div className="flex items-start justify-between gap-2 px-2 py-1.5 rounded bg-zinc-900/90 border border-zinc-800/80 text-[10px]">
+                                <div className="flex flex-col gap-0.5">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                      <span>{activeTemplateMeta.name}</span>
+                                    </span>
+                                    <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                      <Users className="w-2.5 h-2.5" />
+                                      <span>Audience: {activeTemplateMeta.audience}</span>
+                                    </span>
+                                    {currentMatchedTemplateId === 'custom' && (
+                                      <span className="text-[8.5px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                        Modified Settings
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span className="text-[9.5px] text-zinc-400 leading-tight">
+                                    {activeTemplateMeta.description}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
-                              {/* Trend Sparklines Section Toggle */}
-                              <label
-                                htmlFor="toggle-section-sparklines"
-                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
-                              >
-                                <input
-                                  id="toggle-section-sparklines"
-                                  data-testid="toggle-section-sparklines"
-                                  type="checkbox"
-                                  checked={pdfExportSections.includeSparklines}
-                                  onChange={(e) =>
-                                    setPdfExportSections((prev) => ({ ...prev, includeSparklines: e.target.checked }))
-                                  }
-                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                />
-                                <div className="flex flex-col text-[10.5px]">
-                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                    <span>Trend Sparklines</span>
-                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/20 text-blue-300">
-                                      Visual Canvas
+                              {/* Trend Sparklines Section Card */}
+                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
+                                <label
+                                  htmlFor="toggle-section-sparklines"
+                                  className="flex items-start gap-2 cursor-pointer select-none"
+                                >
+                                  <input
+                                    id="toggle-section-sparklines"
+                                    data-testid="toggle-section-sparklines"
+                                    type="checkbox"
+                                    checked={pdfExportSections.includeSparklines}
+                                    onChange={(e) =>
+                                      setPdfExportSections((prev) => ({ ...prev, includeSparklines: e.target.checked }))
+                                    }
+                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                  />
+                                  <div className="flex flex-col text-[10.5px]">
+                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                      <span>Trend Sparklines</span>
+                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/20 text-blue-300">
+                                        Visual Canvas
+                                      </span>
                                     </span>
-                                  </span>
-                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                    Dual-panel latency response &amp; write mutation frequency charts with SLA limits
-                                  </span>
+                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                      Dual-panel latency response &amp; write mutation frequency charts with SLA limits
+                                    </span>
+                                  </div>
+                                </label>
+                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
+                                  <label
+                                    htmlFor="toggle-break-sparklines"
+                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                      !pdfExportSections.includeSparklines ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                    }`}
+                                    title="Force this section to start on a new page"
+                                  >
+                                    <input
+                                      id="toggle-break-sparklines"
+                                      data-testid="toggle-break-sparklines"
+                                      type="checkbox"
+                                      disabled={!pdfExportSections.includeSparklines}
+                                      checked={pdfExportSections.breakBeforeSparklines}
+                                      onChange={(e) =>
+                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeSparklines: e.target.checked }))
+                                      }
+                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
+                                    />
+                                    <span className="font-mono flex items-center gap-1">
+                                      <span className={pdfExportSections.breakBeforeSparklines ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
+                                        Force Page Break
+                                      </span>
+                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
+                                    </span>
+                                  </label>
+                                  {pdfExportSections.breakBeforeSparklines && pdfExportSections.includeSparklines && (
+                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                      New Page
+                                    </span>
+                                  )}
                                 </div>
-                              </label>
+                              </div>
 
-                              {/* Detailed Mutation History Section Toggle */}
-                              <label
-                                htmlFor="toggle-section-mutation-history"
-                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
-                              >
-                                <input
-                                  id="toggle-section-mutation-history"
-                                  data-testid="toggle-section-mutation-history"
-                                  type="checkbox"
-                                  checked={pdfExportSections.includeMutationHistory}
-                                  onChange={(e) =>
-                                    setPdfExportSections((prev) => ({ ...prev, includeMutationHistory: e.target.checked }))
-                                  }
-                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                />
-                                <div className="flex flex-col text-[10.5px]">
-                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                    <span>Detailed Mutation History</span>
-                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300">
-                                      Data Tables
+                              {/* Detailed Mutation History Section Card */}
+                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
+                                <label
+                                  htmlFor="toggle-section-mutation-history"
+                                  className="flex items-start gap-2 cursor-pointer select-none"
+                                >
+                                  <input
+                                    id="toggle-section-mutation-history"
+                                    data-testid="toggle-section-mutation-history"
+                                    type="checkbox"
+                                    checked={pdfExportSections.includeMutationHistory}
+                                    onChange={(e) =>
+                                      setPdfExportSections((prev) => ({ ...prev, includeMutationHistory: e.target.checked }))
+                                    }
+                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                  />
+                                  <div className="flex flex-col text-[10.5px]">
+                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                      <span>Detailed Mutation History</span>
+                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300">
+                                        Data Tables
+                                      </span>
                                     </span>
-                                  </span>
-                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                    Mutation clusters, lock holding times, and chronological root-cause chain of events
-                                  </span>
+                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                      Mutation clusters, lock holding times, and chronological root-cause chain of events
+                                    </span>
+                                  </div>
+                                </label>
+                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
+                                  <label
+                                    htmlFor="toggle-break-mutation-history"
+                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                      !pdfExportSections.includeMutationHistory ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                    }`}
+                                    title="Force this section to start on a new page"
+                                  >
+                                    <input
+                                      id="toggle-break-mutation-history"
+                                      data-testid="toggle-break-mutation-history"
+                                      type="checkbox"
+                                      disabled={!pdfExportSections.includeMutationHistory}
+                                      checked={pdfExportSections.breakBeforeMutationHistory}
+                                      onChange={(e) =>
+                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeMutationHistory: e.target.checked }))
+                                      }
+                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
+                                    />
+                                    <span className="font-mono flex items-center gap-1">
+                                      <span className={pdfExportSections.breakBeforeMutationHistory ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
+                                        Force Page Break
+                                      </span>
+                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
+                                    </span>
+                                  </label>
+                                  {pdfExportSections.breakBeforeMutationHistory && pdfExportSections.includeMutationHistory && (
+                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                      New Page
+                                    </span>
+                                  )}
                                 </div>
-                              </label>
+                              </div>
 
-                              {/* Strategic Engineering Recommendations Toggle */}
-                              <label
-                                htmlFor="toggle-section-recommendations"
-                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
-                              >
-                                <input
-                                  id="toggle-section-recommendations"
-                                  data-testid="toggle-section-recommendations"
-                                  type="checkbox"
-                                  checked={pdfExportSections.includeRecommendations}
-                                  onChange={(e) =>
-                                    setPdfExportSections((prev) => ({ ...prev, includeRecommendations: e.target.checked }))
-                                  }
-                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                />
-                                <div className="flex flex-col text-[10.5px]">
-                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                    <span>Strategic Recommendations</span>
-                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
-                                      Action Plan
+                              {/* Strategic Engineering Recommendations Card */}
+                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
+                                <label
+                                  htmlFor="toggle-section-recommendations"
+                                  className="flex items-start gap-2 cursor-pointer select-none"
+                                >
+                                  <input
+                                    id="toggle-section-recommendations"
+                                    data-testid="toggle-section-recommendations"
+                                    type="checkbox"
+                                    checked={pdfExportSections.includeRecommendations}
+                                    onChange={(e) =>
+                                      setPdfExportSections((prev) => ({ ...prev, includeRecommendations: e.target.checked }))
+                                    }
+                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                  />
+                                  <div className="flex flex-col text-[10.5px]">
+                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                      <span>Strategic Recommendations</span>
+                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+                                        Action Plan
+                                      </span>
                                     </span>
-                                  </span>
-                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                    Prioritized engineering remediation guidance (micro-batching, indexing, caching)
-                                  </span>
+                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                      Prioritized engineering remediation guidance (micro-batching, indexing, caching)
+                                    </span>
+                                  </div>
+                                </label>
+                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
+                                  <label
+                                    htmlFor="toggle-break-recommendations"
+                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                      !pdfExportSections.includeRecommendations ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                    }`}
+                                    title="Force this section to start on a new page"
+                                  >
+                                    <input
+                                      id="toggle-break-recommendations"
+                                      data-testid="toggle-break-recommendations"
+                                      type="checkbox"
+                                      disabled={!pdfExportSections.includeRecommendations}
+                                      checked={pdfExportSections.breakBeforeRecommendations}
+                                      onChange={(e) =>
+                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeRecommendations: e.target.checked }))
+                                      }
+                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
+                                    />
+                                    <span className="font-mono flex items-center gap-1">
+                                      <span className={pdfExportSections.breakBeforeRecommendations ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
+                                        Force Page Break
+                                      </span>
+                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
+                                    </span>
+                                  </label>
+                                  {pdfExportSections.breakBeforeRecommendations && pdfExportSections.includeRecommendations && (
+                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                      New Page
+                                    </span>
+                                  )}
                                 </div>
-                              </label>
+                              </div>
 
-                              {/* Executive Summary Takeaways Toggle */}
-                              <label
-                                htmlFor="toggle-section-executive-summary"
-                                className="flex items-start gap-2 p-1.5 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700 cursor-pointer transition-colors"
-                              >
-                                <input
-                                  id="toggle-section-executive-summary"
-                                  data-testid="toggle-section-executive-summary"
-                                  type="checkbox"
-                                  checked={pdfExportSections.includeExecutiveSummary}
-                                  onChange={(e) =>
-                                    setPdfExportSections((prev) => ({ ...prev, includeExecutiveSummary: e.target.checked }))
-                                  }
-                                  className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                />
-                                <div className="flex flex-col text-[10.5px]">
-                                  <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                    <span>Executive Narrative Callout</span>
-                                    <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-purple-500/20 text-purple-300">
-                                      Briefing
+                              {/* Executive Summary Takeaways Card */}
+                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
+                                <label
+                                  htmlFor="toggle-section-executive-summary"
+                                  className="flex items-start gap-2 cursor-pointer select-none"
+                                >
+                                  <input
+                                    id="toggle-section-executive-summary"
+                                    data-testid="toggle-section-executive-summary"
+                                    type="checkbox"
+                                    checked={pdfExportSections.includeExecutiveSummary}
+                                    onChange={(e) =>
+                                      setPdfExportSections((prev) => ({ ...prev, includeExecutiveSummary: e.target.checked }))
+                                    }
+                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                  />
+                                  <div className="flex flex-col text-[10.5px]">
+                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                      <span>Executive Narrative Callout</span>
+                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-purple-500/20 text-purple-300">
+                                        Briefing
+                                      </span>
                                     </span>
-                                  </span>
-                                  <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                    Non-technical explanation of table mutex locks and latency degradation causality
-                                  </span>
+                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                      Non-technical explanation of table mutex locks and latency degradation causality
+                                    </span>
+                                  </div>
+                                </label>
+                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
+                                  <label
+                                    htmlFor="toggle-break-executive-summary"
+                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                      !pdfExportSections.includeExecutiveSummary ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                    }`}
+                                    title="Force this section to start on a new page"
+                                  >
+                                    <input
+                                      id="toggle-break-executive-summary"
+                                      data-testid="toggle-break-executive-summary"
+                                      type="checkbox"
+                                      disabled={!pdfExportSections.includeExecutiveSummary}
+                                      checked={pdfExportSections.breakBeforeExecutiveSummary}
+                                      onChange={(e) =>
+                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeExecutiveSummary: e.target.checked }))
+                                      }
+                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
+                                    />
+                                    <span className="font-mono flex items-center gap-1">
+                                      <span className={pdfExportSections.breakBeforeExecutiveSummary ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
+                                        Force Page Break
+                                      </span>
+                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
+                                    </span>
+                                  </label>
+                                  {pdfExportSections.breakBeforeExecutiveSummary && pdfExportSections.includeExecutiveSummary && (
+                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                      New Page
+                                    </span>
+                                  )}
                                 </div>
-                              </label>
+                              </div>
                             </div>
 
                             {/* Quick Presets and Done control */}
                             <div className="flex items-center justify-between pt-1 border-t border-zinc-800/80 text-[10px] flex-wrap gap-1">
                               <div className="flex items-center gap-1 text-zinc-400 flex-wrap">
-                                <span className="font-mono text-[9.5px]">Presets:</span>
+                                <span className="font-mono text-[9.5px]">Templates:</span>
                                 <button
-                                  id="btn-preset-all-sections"
-                                  data-testid="btn-preset-all-sections"
+                                  id="btn-preset-executive-summary"
+                                  data-testid="btn-preset-executive-summary"
                                   type="button"
-                                  onClick={() =>
-                                    setPdfExportSections({
-                                      includeSparklines: true,
-                                      includeMutationHistory: true,
-                                      includeRecommendations: true,
-                                      includeExecutiveSummary: true
-                                    })
-                                  }
-                                  className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                                  onClick={() => handleSelectPdfTemplate('executive-summary')}
+                                  className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                                    currentMatchedTemplateId === 'executive-summary'
+                                      ? 'bg-purple-900/60 text-purple-200 border border-purple-500/50 font-semibold'
+                                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white'
+                                  }`}
+                                  title="Leadership & Executive briefing layout"
                                 >
-                                  All Sections
+                                  Executive Summary
+                                </button>
+                                <button
+                                  id="btn-preset-structured-multi-page"
+                                  data-testid="btn-preset-structured-multi-page"
+                                  type="button"
+                                  onClick={() => handleSelectPdfTemplate('full-technical-audit')}
+                                  className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                                    currentMatchedTemplateId === 'full-technical-audit'
+                                      ? 'bg-amber-900/60 text-amber-200 border border-amber-500/50 font-semibold'
+                                      : 'bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200'
+                                  }`}
+                                  title="Full multi-page technical audit with page breaks"
+                                >
+                                  Full Technical Audit
+                                </button>
+                                <button
+                                  id="btn-preset-troubleshooting-focused"
+                                  data-testid="btn-preset-troubleshooting-focused"
+                                  type="button"
+                                  onClick={() => handleSelectPdfTemplate('troubleshooting-focused')}
+                                  className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                                    currentMatchedTemplateId === 'troubleshooting-focused'
+                                      ? 'bg-blue-900/60 text-blue-200 border border-blue-500/50 font-semibold'
+                                      : 'bg-zinc-800 hover:bg-zinc-700 text-blue-300 hover:text-blue-100'
+                                  }`}
+                                  title="Root cause & on-call triage focus"
+                                >
+                                  Troubleshooting Focused
                                 </button>
                                 <button
                                   id="btn-preset-visual-summary"
                                   data-testid="btn-preset-visual-summary"
                                   type="button"
-                                  onClick={() =>
-                                    setPdfExportSections({
-                                      includeSparklines: true,
-                                      includeMutationHistory: false,
-                                      includeRecommendations: true,
-                                      includeExecutiveSummary: true
-                                    })
-                                  }
-                                  className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                                  onClick={() => handleSelectPdfTemplate('visual-standup')}
+                                  className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                                    currentMatchedTemplateId === 'visual-standup'
+                                      ? 'bg-rose-900/60 text-rose-200 border border-rose-500/50 font-semibold'
+                                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white'
+                                  }`}
+                                  title="Visual standup overview with dual-panel charts"
                                 >
-                                  Visual Summary
+                                  Visual Standup
                                 </button>
                                 <button
                                   id="btn-preset-detailed-data"
                                   data-testid="btn-preset-detailed-data"
                                   type="button"
-                                  onClick={() =>
-                                    setPdfExportSections({
-                                      includeSparklines: false,
-                                      includeMutationHistory: true,
-                                      includeRecommendations: true,
-                                      includeExecutiveSummary: false
-                                    })
-                                  }
-                                  className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                                  onClick={() => handleSelectPdfTemplate('data-compliance-audit')}
+                                  className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                                    currentMatchedTemplateId === 'data-compliance-audit'
+                                      ? 'bg-emerald-900/60 text-emerald-200 border border-emerald-500/50 font-semibold'
+                                      : 'bg-zinc-800 hover:bg-zinc-700 text-emerald-300 hover:text-emerald-100'
+                                  }`}
+                                  title="Compliance & deep mutation audit tables"
                                 >
-                                  Detailed Data Only
+                                  Compliance Logs
                                 </button>
                               </div>
 
@@ -3503,6 +4293,28 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               <Download className="w-2.5 h-2.5 text-amber-400" />
                               <span>Diagnostic Correlation Report</span>
                             </button>
+                            <button
+                              id="btn-footer-export-logs"
+                              data-testid="btn-footer-export-logs"
+                              aria-label="Export Logs"
+                              type="button"
+                              onClick={handleExportThresholdAlertLogsCsv}
+                              disabled={isExportingThresholdLogs}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-emerald-300 hover:text-emerald-200 border border-zinc-700 hover:border-emerald-500/60 text-[10px] font-semibold transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+                              title="Export entire threshold alert history as a CSV file for long-term auditing"
+                            >
+                              {isExportThresholdLogsSuccess ? (
+                                <>
+                                  <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                  <span className="text-emerald-300">Logs Exported!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-400" />
+                                  <span>Export Logs</span>
+                                </>
+                              )}
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -3512,7 +4324,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                         isDatabaseMutatingState ? 'border-amber-400/90' : 'border-amber-500/60'
                       } rotate-45`} />
                     </div>
-                  )}
 
                   {/* Dropdown Menu Trigger Toggle */}
                   <button

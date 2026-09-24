@@ -9,8 +9,14 @@ import {
   Sparkles,
   Layers,
   BarChart3,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Bookmark
 } from 'lucide-react';
+import {
+  PREDEFINED_PDF_TEMPLATES,
+  getSavedCustomTemplate,
+  matchTemplateId
+} from '../utils/pdfReportTemplates';
 import {
   generateDiagnosticCorrelationPdf,
   DiagnosticPdfSectionsConfig
@@ -231,91 +237,216 @@ export const DiagnosticPdfPreviewModal: React.FC<DiagnosticPdfPreviewModalProps>
         </div>
 
         {/* Optional Section Toggles Ribbon */}
-        {onUpdateSections && (
-          <div className="px-4 py-2 bg-zinc-950/60 border-b border-zinc-800/80 flex items-center justify-between gap-2 flex-wrap text-[10.5px]">
-            <div className="flex items-center gap-1.5 text-zinc-400">
-              <SlidersHorizontal className="w-3 h-3 text-amber-400" />
-              <span className="font-semibold text-zinc-300">Sections in Preview:</span>
+        {onUpdateSections && (() => {
+          const savedCustom = getSavedCustomTemplate();
+          const matchedTemplateId = matchTemplateId(sectionsConfig, savedCustom);
+          return (
+            <div className="px-4 py-2 bg-zinc-950/60 border-b border-zinc-800/80 flex items-center justify-between gap-3 flex-wrap text-[10.5px]">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <div className="flex items-center gap-1.5 text-zinc-300">
+                  <Bookmark className="w-3 h-3 text-amber-400" />
+                  <span className="font-semibold text-zinc-200">Template:</span>
+                  <select
+                    id="modal-select-pdf-template"
+                    data-testid="modal-select-pdf-template"
+                    aria-label="Modal Template Selector"
+                    value={matchedTemplateId}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'saved-custom') {
+                        if (savedCustom) onUpdateSections({ ...savedCustom.sections });
+                        return;
+                      }
+                      const found = PREDEFINED_PDF_TEMPLATES.find((t) => t.id === val);
+                      if (found) onUpdateSections({ ...found.sections });
+                    }}
+                    className="text-[10px] font-medium bg-zinc-900 border border-amber-500/50 hover:border-amber-400 focus:border-amber-400 rounded px-1.5 py-0.5 text-zinc-200 cursor-pointer shadow-xs"
+                  >
+                    <optgroup label="Predefined Stakeholder Templates">
+                      {PREDEFINED_PDF_TEMPLATES.map((tmpl) => (
+                        <option key={tmpl.id} value={tmpl.id}>
+                          {tmpl.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                    {savedCustom && (
+                      <optgroup label="Saved Presets">
+                        <option value="saved-custom">★ {savedCustom.name}</option>
+                      </optgroup>
+                    )}
+                    {matchedTemplateId === 'custom' && (
+                      <optgroup label="Custom Configuration">
+                        <option value="custom">Custom (Modified)</option>
+                      </optgroup>
+                    )}
+                  </select>
+                </div>
+
+                <div className="h-3 w-px bg-zinc-700/80 hidden sm:block" />
+
+                <div className="flex items-center gap-1.5 text-zinc-400">
+                  <SlidersHorizontal className="w-3 h-3 text-amber-400" />
+                  <span className="font-semibold text-zinc-300">Sections:</span>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <label
+                    htmlFor="modal-toggle-sparklines"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                  >
+                    <input
+                      id="modal-toggle-sparklines"
+                      type="checkbox"
+                      checked={sectionsConfig.includeSparklines}
+                      onChange={(e) =>
+                        onUpdateSections({
+                          ...sectionsConfig,
+                          includeSparklines: e.target.checked
+                        })
+                      }
+                      className="accent-amber-500 rounded cursor-pointer"
+                    />
+                    <span className="text-zinc-200">Sparklines</span>
+                  </label>
+
+                <label
+                  htmlFor="modal-toggle-mutation-history"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                >
+                  <input
+                    id="modal-toggle-mutation-history"
+                    type="checkbox"
+                    checked={sectionsConfig.includeMutationHistory}
+                    onChange={(e) =>
+                      onUpdateSections({
+                        ...sectionsConfig,
+                        includeMutationHistory: e.target.checked
+                      })
+                    }
+                    className="accent-amber-500 rounded cursor-pointer"
+                  />
+                  <span className="text-zinc-200">Tables</span>
+                </label>
+
+                <label
+                  htmlFor="modal-toggle-recommendations"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                >
+                  <input
+                    id="modal-toggle-recommendations"
+                    type="checkbox"
+                    checked={sectionsConfig.includeRecommendations}
+                    onChange={(e) =>
+                      onUpdateSections({
+                        ...sectionsConfig,
+                        includeRecommendations: e.target.checked
+                      })
+                    }
+                    className="accent-amber-500 rounded cursor-pointer"
+                  />
+                  <span className="text-zinc-200">Action Plan</span>
+                </label>
+
+                <label
+                  htmlFor="modal-toggle-executive"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                >
+                  <input
+                    id="modal-toggle-executive"
+                    type="checkbox"
+                    checked={sectionsConfig.includeExecutiveSummary}
+                    onChange={(e) =>
+                      onUpdateSections({
+                        ...sectionsConfig,
+                        includeExecutiveSummary: e.target.checked
+                      })
+                    }
+                    className="accent-amber-500 rounded cursor-pointer"
+                  />
+                  <span className="text-zinc-200">Executive</span>
+                </label>
+              </div>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+
+            {/* Page Break Controls in Preview */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] text-zinc-400 font-mono">Force Page Break:</span>
               <label
-                htmlFor="modal-toggle-sparklines"
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                htmlFor="modal-break-sparklines"
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] border cursor-pointer transition-colors ${
+                  sectionsConfig.breakBeforeSparklines
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/60 hover:text-zinc-200'
+                } ${!sectionsConfig.includeSparklines ? 'opacity-40 pointer-events-none' : ''}`}
+                title="Force Trend Sparklines to start on a new page"
               >
                 <input
-                  id="modal-toggle-sparklines"
+                  id="modal-break-sparklines"
                   type="checkbox"
-                  checked={sectionsConfig.includeSparklines}
+                  disabled={!sectionsConfig.includeSparklines}
+                  checked={Boolean(sectionsConfig.breakBeforeSparklines)}
                   onChange={(e) =>
                     onUpdateSections({
                       ...sectionsConfig,
-                      includeSparklines: e.target.checked
+                      breakBeforeSparklines: e.target.checked
                     })
                   }
-                  className="accent-amber-500 rounded cursor-pointer"
+                  className="accent-amber-500 rounded cursor-pointer w-2.5 h-2.5"
                 />
-                <span className="text-zinc-200">Trend Sparklines</span>
+                <span>Sparklines</span>
               </label>
 
               <label
-                htmlFor="modal-toggle-mutation-history"
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                htmlFor="modal-break-tables"
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] border cursor-pointer transition-colors ${
+                  sectionsConfig.breakBeforeMutationHistory
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/60 hover:text-zinc-200'
+                } ${!sectionsConfig.includeMutationHistory ? 'opacity-40 pointer-events-none' : ''}`}
+                title="Force Detailed Tables to start on a new page"
               >
                 <input
-                  id="modal-toggle-mutation-history"
+                  id="modal-break-tables"
                   type="checkbox"
-                  checked={sectionsConfig.includeMutationHistory}
+                  disabled={!sectionsConfig.includeMutationHistory}
+                  checked={Boolean(sectionsConfig.breakBeforeMutationHistory)}
                   onChange={(e) =>
                     onUpdateSections({
                       ...sectionsConfig,
-                      includeMutationHistory: e.target.checked
+                      breakBeforeMutationHistory: e.target.checked
                     })
                   }
-                  className="accent-amber-500 rounded cursor-pointer"
+                  className="accent-amber-500 rounded cursor-pointer w-2.5 h-2.5"
                 />
-                <span className="text-zinc-200">Detailed Tables</span>
+                <span>Tables</span>
               </label>
 
               <label
-                htmlFor="modal-toggle-recommendations"
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
+                htmlFor="modal-break-recommendations"
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] border cursor-pointer transition-colors ${
+                  sectionsConfig.breakBeforeRecommendations
+                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                    : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/60 hover:text-zinc-200'
+                } ${!sectionsConfig.includeRecommendations ? 'opacity-40 pointer-events-none' : ''}`}
+                title="Force Action Plan Recommendations to start on a new page"
               >
                 <input
-                  id="modal-toggle-recommendations"
+                  id="modal-break-recommendations"
                   type="checkbox"
-                  checked={sectionsConfig.includeRecommendations}
+                  disabled={!sectionsConfig.includeRecommendations}
+                  checked={Boolean(sectionsConfig.breakBeforeRecommendations)}
                   onChange={(e) =>
                     onUpdateSections({
                       ...sectionsConfig,
-                      includeRecommendations: e.target.checked
+                      breakBeforeRecommendations: e.target.checked
                     })
                   }
-                  className="accent-amber-500 rounded cursor-pointer"
+                  className="accent-amber-500 rounded cursor-pointer w-2.5 h-2.5"
                 />
-                <span className="text-zinc-200">Action Plan</span>
-              </label>
-
-              <label
-                htmlFor="modal-toggle-executive"
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/80 cursor-pointer"
-              >
-                <input
-                  id="modal-toggle-executive"
-                  type="checkbox"
-                  checked={sectionsConfig.includeExecutiveSummary}
-                  onChange={(e) =>
-                    onUpdateSections({
-                      ...sectionsConfig,
-                      includeExecutiveSummary: e.target.checked
-                    })
-                  }
-                  className="accent-amber-500 rounded cursor-pointer"
-                />
-                <span className="text-zinc-200">Executive Summary</span>
+                <span>Recommendations</span>
               </label>
             </div>
           </div>
-        )}
+        ); })()}
 
         {/* Modal Main Body (PDF Viewport) */}
         <div className="relative flex-1 w-full bg-zinc-950 p-2 sm:p-3 overflow-hidden flex flex-col items-center justify-center min-h-[360px]">
