@@ -1,4 +1,7 @@
-import { DiagnosticPdfSectionsConfig } from './diagnosticCorrelationPdfGenerator';
+import {
+  DiagnosticPdfSectionsConfig,
+  DEFAULT_PDF_SECTION_ORDER
+} from './diagnosticCorrelationPdfGenerator';
 
 export interface PdfReportTemplate {
   id: string;
@@ -147,6 +150,11 @@ export function matchTemplateId(
   current: DiagnosticPdfSectionsConfig,
   savedCustom?: PdfReportTemplate | null
 ): string {
+  const currentOrder = current.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
+  const isDefaultOrder =
+    currentOrder.length === DEFAULT_PDF_SECTION_ORDER.length &&
+    currentOrder.every((val, idx) => val === DEFAULT_PDF_SECTION_ORDER[idx]);
+
   for (const t of PREDEFINED_PDF_TEMPLATES) {
     if (
       Boolean(t.sections.includeSparklines) === Boolean(current.includeSparklines) &&
@@ -158,7 +166,13 @@ export function matchTemplateId(
       Boolean(t.sections.breakBeforeRecommendations) === Boolean(current.breakBeforeRecommendations) &&
       Boolean(t.sections.breakBeforeExecutiveSummary) === Boolean(current.breakBeforeExecutiveSummary)
     ) {
-      return t.id;
+      const tmplOrder = t.sections.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
+      const orderMatches =
+        currentOrder.length === tmplOrder.length &&
+        currentOrder.every((val, idx) => val === tmplOrder[idx]);
+      if (orderMatches || (isDefaultOrder && !t.sections.sectionOrder)) {
+        return t.id;
+      }
     }
   }
 
@@ -173,7 +187,13 @@ export function matchTemplateId(
       Boolean(savedCustom.sections.breakBeforeRecommendations) === Boolean(current.breakBeforeRecommendations) &&
       Boolean(savedCustom.sections.breakBeforeExecutiveSummary) === Boolean(current.breakBeforeExecutiveSummary)
     ) {
-      return 'saved-custom';
+      const savedOrder = savedCustom.sections.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
+      const orderMatches =
+        currentOrder.length === savedOrder.length &&
+        currentOrder.every((val, idx) => val === savedOrder[idx]);
+      if (orderMatches) {
+        return 'saved-custom';
+      }
     }
   }
 

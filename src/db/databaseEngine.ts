@@ -15,6 +15,8 @@ import {
   DatabaseMutationHistoryEntry
 } from '../types';
 
+export type { DatabaseMutationHistoryEntry };
+
 // Event bus for notifying external auditing / Queue Auto-Save subscribers
 type DatabaseUpdateListener = (event: DatabaseUpdateEvent) => void;
 const DATABASE_UPDATE_LISTENERS = new Set<DatabaseUpdateListener>();
@@ -146,7 +148,8 @@ export function notifyMutationState(): void {
           isMutating,
           activeMutation: active,
           pendingCount: count,
-          allPending: pending
+          allPending: pending,
+          lastCompletedMutation: LAST_COMPLETED_MUTATION ? { ...LAST_COMPLETED_MUTATION } : null
         }
       })
     );
@@ -154,6 +157,12 @@ export function notifyMutationState(): void {
 }
 
 // History of executed and in-flight mutation events for telemetry and frequency analysis
+let LAST_COMPLETED_MUTATION: DatabaseMutationHistoryEntry | null = null;
+
+export function getLastCompletedMutation(): DatabaseMutationHistoryEntry | null {
+  return LAST_COMPLETED_MUTATION ? { ...LAST_COMPLETED_MUTATION } : null;
+}
+
 const MUTATION_HISTORY_LOG: DatabaseMutationHistoryEntry[] = [
   // Seed mutation events corresponding to the seed bulk ingestion spike (seed-3 at now - 36s)
   {
@@ -200,6 +209,9 @@ export function getDatabaseMutationHistory(): DatabaseMutationHistoryEntry[] {
 
 export function recordDatabaseMutationEvent(entry: DatabaseMutationHistoryEntry): void {
   MUTATION_HISTORY_LOG.push(entry);
+  if (entry.completedAt && !entry.id?.startsWith('seed-')) {
+    LAST_COMPLETED_MUTATION = { ...entry };
+  }
   if (MUTATION_HISTORY_LOG.length > 200) {
     MUTATION_HISTORY_LOG.splice(0, MUTATION_HISTORY_LOG.length - 200);
   }
@@ -245,8 +257,18 @@ export function beginDatabaseMutation(
     released = true;
     historyEntry.completedAt = Date.now();
     historyEntry.durationMs = historyEntry.completedAt - historyEntry.startedAt;
+    LAST_COMPLETED_MUTATION = { ...historyEntry };
     ACTIVE_IN_FLIGHT_MUTATIONS.delete(mutationId);
     notifyMutationState();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('db:mutation-completed', {
+          detail: {
+            mutation: { ...historyEntry }
+          }
+        })
+      );
+    }
   };
 }
 

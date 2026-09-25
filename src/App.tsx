@@ -1,3 +1,4 @@
+import { motion } from 'framer-motion';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { OptimizationFlags, OrderStatus, ProductCategory, LatencyTrendPoint, BulkImportResult } from './types';
 import { executeQuery, initializeDatabase, getDatabaseStats } from './db/databaseEngine';
@@ -26,11 +27,17 @@ import {
   generateInitialExportHistory
 } from './utils/csvExporter';
 import { exportDiagnosticCorrelationReportJson } from './utils/diagnosticCorrelationReportGenerator';
-import { exportDiagnosticCorrelationPdf } from './utils/diagnosticCorrelationPdfGenerator';
+import {
+  exportDiagnosticCorrelationPdf,
+  DiagnosticPdfSectionId,
+  DiagnosticPdfSectionsConfig,
+  DEFAULT_PDF_SECTION_ORDER
+} from './utils/diagnosticCorrelationPdfGenerator';
 import {
   DataTapeEntry,
   DatabaseUpdateEvent,
-  SerializationLogEntry
+  SerializationLogEntry,
+  DatabaseMutationHistoryEntry
 } from './types';
 import {
   subscribeDatabaseUpdate,
@@ -45,7 +52,8 @@ import {
   subscribeMutationState,
   beginDatabaseMutation,
   InFlightMutationState,
-  getDatabaseMutationHistory
+  getDatabaseMutationHistory,
+  getLastCompletedMutation
 } from './db/databaseEngine';
 import {
   createDataTapeEntry,
@@ -63,7 +71,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   Sparkles,
+  Sparkle,
   ShieldCheck,
+  Search,
   Table,
   TrendingDown,
   Download,
@@ -89,10 +99,20 @@ import {
   FileText,
   SlidersHorizontal,
   Eye,
+  EyeOff,
   Bookmark,
   Save,
   FolderOpen,
-  Users
+  Users,
+  Pin,
+  Timer,
+  GripVertical,
+  ChevronUp,
+  Minimize2,
+  Maximize2,
+  RotateCcw,
+  ArrowUpDown,
+  HelpCircle
 } from 'lucide-react';
 import {
   PREDEFINED_PDF_TEMPLATES,
@@ -101,6 +121,136 @@ import {
   saveCustomTemplate,
   matchTemplateId
 } from './utils/pdfReportTemplates';
+
+const PDF_SECTION_CONFIG_ITEMS: Record<
+  DiagnosticPdfSectionId,
+  {
+    id: DiagnosticPdfSectionId;
+    title: string;
+    tag: string;
+    badge: string;
+    badgeClass: string;
+    description: string;
+    includeKey: 'includeSparklines' | 'includeMutationHistory' | 'includeRecommendations' | 'includeExecutiveSummary';
+    breakKey: 'breakBeforeSparklines' | 'breakBeforeMutationHistory' | 'breakBeforeRecommendations' | 'breakBeforeExecutiveSummary';
+    noteKey: 'sparklinesNote' | 'mutationHistoryNote' | 'recommendationsNote' | 'executiveSummaryNote';
+    metadataKey: 'includeMetadataSparklines' | 'includeMetadataMutationHistory' | 'includeMetadataRecommendations' | 'includeMetadataExecutiveSummary';
+    inputSectionId: string;
+    inputBreakId: string;
+    inputNoteId: string;
+    inputMetadataId: string;
+    inputPaddingId: string;
+    paddingKey: 'paddingSparklines' | 'paddingMutationHistory' | 'paddingRecommendations' | 'paddingExecutiveSummary';
+    filenamePrefixKey: 'sparklinesFilenamePrefix' | 'mutationHistoryFilenamePrefix' | 'recommendationsFilenamePrefix' | 'executiveSummaryFilenamePrefix';
+    inputFilenamePrefixId: string;
+    delimiterKey: 'sparklinesDelimiter' | 'mutationHistoryDelimiter' | 'recommendationsDelimiter' | 'executiveSummaryDelimiter';
+    inputDelimiterId: string;
+    tip: string;
+    icon: React.ComponentType<{ className?: string }>;
+    barColor: string;
+  }
+> = {
+  sparklines: {
+    id: 'sparklines',
+    icon: Activity,
+    barColor: 'bg-blue-500',
+    tag: 'Metrics',
+    title: 'Trend Sparklines',
+    badge: 'Visual Canvas',
+    badgeClass: 'bg-blue-500/20 text-blue-300',
+    description: 'Dual-panel latency response & write mutation frequency charts with SLA limits',
+    includeKey: 'includeSparklines',
+    breakKey: 'breakBeforeSparklines',
+    noteKey: 'sparklinesNote',
+    metadataKey: 'includeMetadataSparklines',
+    inputSectionId: 'toggle-section-sparklines',
+    inputBreakId: 'toggle-break-sparklines',
+    inputNoteId: 'input-custom-note-sparklines',
+    inputMetadataId: 'toggle-metadata-sparklines',
+    inputPaddingId: 'slider-padding-sparklines',
+    paddingKey: 'paddingSparklines',
+    filenamePrefixKey: 'sparklinesFilenamePrefix',
+    inputFilenamePrefixId: 'input-filename-prefix-sparklines',
+    delimiterKey: 'sparklinesDelimiter',
+    inputDelimiterId: 'select-delimiter-sparklines',
+    tip: 'Pro-tip: Derived from real-time telemetry buffer recording 50Hz latency sample windows and write mutation frequency counters against SLA thresholds.'
+  },
+  mutationHistory: {
+    id: 'mutationHistory',
+    icon: Table,
+    barColor: 'bg-amber-500',
+    tag: 'Logs',
+    title: 'Detailed Mutation History',
+    badge: 'Data Tables',
+    badgeClass: 'bg-amber-500/20 text-amber-300',
+    description: 'Mutation clusters, lock holding times, and chronological root-cause chain of events',
+    includeKey: 'includeMutationHistory',
+    breakKey: 'breakBeforeMutationHistory',
+    noteKey: 'mutationHistoryNote',
+    metadataKey: 'includeMetadataMutationHistory',
+    inputSectionId: 'toggle-section-mutation-history',
+    inputBreakId: 'toggle-break-mutation-history',
+    inputNoteId: 'input-custom-note-mutation-history',
+    inputMetadataId: 'toggle-metadata-mutation-history',
+    inputPaddingId: 'slider-padding-mutation-history',
+    paddingKey: 'paddingMutationHistory',
+    filenamePrefixKey: 'mutationHistoryFilenamePrefix',
+    inputFilenamePrefixId: 'input-filename-prefix-mutation-history',
+    delimiterKey: 'mutationHistoryDelimiter',
+    inputDelimiterId: 'select-delimiter-mutation-history',
+    tip: 'Pro-tip: Aggregated from transaction mutex acquisition logs, deadlock detectors, and chronological root-cause tracing events.'
+  },
+  recommendations: {
+    id: 'recommendations',
+    icon: Zap,
+    barColor: 'bg-emerald-500',
+    tag: 'Strategy',
+    title: 'Strategic Recommendations',
+    badge: 'Action Plan',
+    badgeClass: 'bg-emerald-500/20 text-emerald-300',
+    description: 'Prioritized engineering remediation guidance (micro-batching, indexing, caching)',
+    includeKey: 'includeRecommendations',
+    breakKey: 'breakBeforeRecommendations',
+    noteKey: 'recommendationsNote',
+    metadataKey: 'includeMetadataRecommendations',
+    inputSectionId: 'toggle-section-recommendations',
+    inputBreakId: 'toggle-break-recommendations',
+    inputNoteId: 'input-custom-note-recommendations',
+    inputMetadataId: 'toggle-metadata-recommendations',
+    inputPaddingId: 'slider-padding-recommendations',
+    paddingKey: 'paddingRecommendations',
+    filenamePrefixKey: 'recommendationsFilenamePrefix',
+    inputFilenamePrefixId: 'input-filename-prefix-recommendations',
+    delimiterKey: 'recommendationsDelimiter',
+    inputDelimiterId: 'select-delimiter-recommendations',
+    tip: 'Pro-tip: Generated via automated heuristic rule engines analyzing lock contention hot-spots, index scan efficiency, and query cache hit rates.'
+  },
+  executiveSummary: {
+    id: 'executiveSummary',
+    icon: FileText,
+    barColor: 'bg-purple-500',
+    tag: 'Summary',
+    title: 'Executive Narrative Callout',
+    badge: 'Briefing',
+    badgeClass: 'bg-purple-500/20 text-purple-300',
+    description: 'Non-technical explanation of table mutex locks and latency degradation causality',
+    includeKey: 'includeExecutiveSummary',
+    breakKey: 'breakBeforeExecutiveSummary',
+    noteKey: 'executiveSummaryNote',
+    metadataKey: 'includeMetadataExecutiveSummary',
+    inputSectionId: 'toggle-section-executive-summary',
+    inputBreakId: 'toggle-break-executive-summary',
+    inputNoteId: 'input-custom-note-executive-summary',
+    inputMetadataId: 'toggle-metadata-executive-summary',
+    inputPaddingId: 'slider-padding-executive-summary',
+    paddingKey: 'paddingExecutiveSummary',
+    filenamePrefixKey: 'executiveSummaryFilenamePrefix',
+    inputFilenamePrefixId: 'input-filename-prefix-executive-summary',
+    delimiterKey: 'executiveSummaryDelimiter',
+    inputDelimiterId: 'select-delimiter-executive-summary',
+    tip: 'Pro-tip: Synthesized using executive summarization algorithms that translate low-level table mutex locks into business impact metrics.'
+  }
+};
 
 interface InvalidationTriggerEntry {
   id: string;
@@ -358,9 +508,57 @@ export default function App() {
   // Data Serialization Efficiency state for Table & Explain Plan header export (CSV & JSON)
   const [headerExportStats, setHeaderExportStats] = useState<ExportPerformanceResult | null>(null);
   const [isHeaderExporting, setIsHeaderExporting] = useState(false);
+  const [isExportCopied, setIsExportCopied] = useState<boolean>(false);
+  const exportCopiedTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>('csv');
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Show confirmation prompt state: when enabled, requires confirmation modal before triggering CSV/JSON export
+  const [isExportConfirmationPromptEnabled, setIsExportConfirmationPromptEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('applet_export_confirmation_prompt') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('applet_export_confirmation_prompt', String(isExportConfirmationPromptEnabled));
+    } catch {
+      // ignore
+    }
+  }, [isExportConfirmationPromptEnabled]);
+
+  const [isExportConfirmationModalOpen, setIsExportConfirmationModalOpen] = useState<boolean>(false);
+  const [pendingExportFormat, setPendingExportFormat] = useState<ExportFormat>('csv');
+  const [pendingExportIsFromShortcut, setPendingExportIsFromShortcut] = useState<boolean>(false);
+
+  // Closes export confirmation modal while preserving tooltip pinned state if active
+  const handleCloseExportConfirmationModal = () => {
+    setIsExportConfirmationModalOpen(false);
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
+  };
+
+  // Escape key handler to close export confirmation modal
+  useEffect(() => {
+    if (!isExportConfirmationModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsExportConfirmationModalOpen(false);
+        if (isTooltipPinnedRef.current) {
+          setIsTooltipPinned(true);
+          setIsExportHovered(true);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isExportConfirmationModalOpen]);
 
   // CSV Column Headers Inclusion / Exclusion state (dynamically updates serialization logic)
   const [includeCsvHeaders, setIncludeCsvHeaders] = useState<boolean>(true);
@@ -372,6 +570,24 @@ export default function App() {
   // Export operations history (last 10) correlated with system CPU usage for the sparkline
   const [exportHistory, setExportHistory] = useState<ExportHistoryPoint[]>(() => generateInitialExportHistory());
   const systemCpu = useSystemCpuMonitor();
+
+  // Duration of last export to emphasize serialization performance on #btn-header-export-csv
+  const lastExportDurationMs = useMemo(() => {
+    if (headerExportStats?.durationMs !== undefined && headerExportStats?.durationMs !== null) {
+      return headerExportStats.durationMs;
+    }
+    if (exportHistory.length > 0 && exportHistory[exportHistory.length - 1]?.durationMs !== undefined) {
+      return exportHistory[exportHistory.length - 1].durationMs;
+    }
+    return null;
+  }, [headerExportStats, exportHistory]);
+
+  const formattedLastExportDuration = useMemo(() => {
+    if (lastExportDurationMs === null || lastExportDurationMs === undefined) return null;
+    const rounded = Math.round(lastExportDurationMs);
+    const displayMs = lastExportDurationMs < 1 ? '<1' : rounded <= 0 ? '1' : rounded;
+    return `Last: ${displayMs}ms`;
+  }, [lastExportDurationMs]);
 
   // Power-user keyboard shortcut state & OS detection
   const [isShortcutFlashing, setIsShortcutFlashing] = useState<boolean>(false);
@@ -394,6 +610,7 @@ export default function App() {
   const [cacheInvalidationReason, setCacheInvalidationReason] = useState<string>('database mutation');
   const [lastCacheRefreshedAt, setLastCacheRefreshedAt] = useState<number>(() => getLastCacheRefreshTimestamp());
   const [isExportHovered, setIsExportHovered] = useState<boolean>(false);
+  const [isHeaderExportBtnHovered, setIsHeaderExportBtnHovered] = useState<boolean>(false);
   const [invalidationHistory, setInvalidationHistory] = useState<InvalidationTriggerEntry[]>(INITIAL_INVALIDATION_TRIGGERS);
 
   // In-flight database mutation state & deferred serialization consistency lock
@@ -411,14 +628,91 @@ export default function App() {
   const [mutationClock, setMutationClock] = useState<number>(() => Date.now());
   const [exportPausedToast, setExportPausedToast] = useState<string | null>(null);
 
-  // Live countdown ticker while database is mutating
+  // Last completed database mutation tracking for #btn-header-export-csv 'Last Mutation' badge
+  const appMountTimestamp = useRef<number>(Date.now());
+  const [lastCompletedMutation, setLastCompletedMutation] = useState<DatabaseMutationHistoryEntry | null>(() =>
+    getLastCompletedMutation()
+  );
+  const [completedMutationClock, setCompletedMutationClock] = useState<number>(() => Date.now());
+
+  // Tracks explicit deferred export action requested by user while a database mutation is active
+  const [deferredExportRequest, setDeferredExportRequest] = useState<{
+    format: ExportFormat;
+    isFromShortcut: boolean;
+    timestamp: number;
+  } | null>(null);
+
+  // Live countdown ticker while database is mutating (100ms intervals for smooth sub-second updates)
   useEffect(() => {
     if (!isDatabaseMutatingState) return;
     const interval = setInterval(() => {
       setMutationClock(Date.now());
-    }, 250);
+    }, 100);
     return () => clearInterval(interval);
   }, [isDatabaseMutatingState]);
+
+  // Window in ms for a mutation to be considered "recently completed" (45 seconds)
+  const RECENT_MUTATION_WINDOW_MS = 45000;
+
+  // Active clock ticker while a recently completed mutation is within the window (updates every 500ms)
+  useEffect(() => {
+    const hasCandidate =
+      Boolean(lastCompletedMutation?.completedAt) ||
+      mutationHistory.some(
+        (m) =>
+          Boolean(m.completedAt) &&
+          (!m.id?.startsWith('seed-') || (m.completedAt || 0) >= appMountTimestamp.current)
+      );
+
+    if (!hasCandidate) return;
+
+    const interval = setInterval(() => {
+      setCompletedMutationClock(Date.now());
+    }, 500);
+    return () => clearInterval(interval);
+  }, [lastCompletedMutation, mutationHistory]);
+
+  // Derived state for the small 'Last Mutation' badge on #btn-header-export-csv
+  const recentCompletedMutationInfo = useMemo(() => {
+    let candidate = lastCompletedMutation;
+    if (!candidate || !candidate.completedAt) {
+      const fromHistory = mutationHistory
+        .filter(
+          (m) =>
+            Boolean(m.completedAt && m.completedAt > 0) &&
+            (!m.id?.startsWith('seed-') || (m.completedAt || 0) >= appMountTimestamp.current)
+        )
+        .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0))[0];
+      if (fromHistory) {
+        candidate = fromHistory;
+      }
+    }
+
+    if (!candidate || !candidate.completedAt) return null;
+
+    const elapsedMs = Math.max(0, completedMutationClock - candidate.completedAt);
+    if (elapsedMs > RECENT_MUTATION_WINDOW_MS) {
+      return null;
+    }
+
+    const elapsedSeconds = Math.floor(elapsedMs / 1000);
+    const formattedDuration =
+      elapsedSeconds < 1
+        ? '<1s ago'
+        : elapsedSeconds === 1
+        ? '1s ago'
+        : `${elapsedSeconds}s ago`;
+
+    return {
+      mutation: candidate,
+      type: candidate.type,
+      description: candidate.description,
+      completedAt: candidate.completedAt,
+      elapsedSeconds,
+      formattedDuration,
+      durationMs: candidate.durationMs
+    };
+  }, [lastCompletedMutation, mutationHistory, completedMutationClock]);
 
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
@@ -453,40 +747,120 @@ export default function App() {
       setPendingMutationsCount(count);
       setActiveMutationsList(allPending);
       setMutationHistory(getDatabaseMutationHistory());
+      const lastComp = getLastCompletedMutation();
+      if (lastComp) {
+        setLastCompletedMutation(lastComp);
+        setCompletedMutationClock(Date.now());
+      }
     });
+
+    const handleMutationCompleted = (e: Event) => {
+      const customEvent = e as CustomEvent<{ mutation: DatabaseMutationHistoryEntry }>;
+      if (customEvent.detail?.mutation) {
+        setLastCompletedMutation(customEvent.detail.mutation);
+        setCompletedMutationClock(Date.now());
+      }
+    };
+    const handleMutationStateChange = (e: Event) => {
+      const customEvent = e as CustomEvent<{
+        isMutating: boolean;
+        lastCompletedMutation?: DatabaseMutationHistoryEntry | null;
+      }>;
+      if (customEvent.detail?.lastCompletedMutation) {
+        setLastCompletedMutation(customEvent.detail.lastCompletedMutation);
+        setCompletedMutationClock(Date.now());
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('db:mutation-completed', handleMutationCompleted);
+      window.addEventListener('db:mutation-state-change', handleMutationStateChange);
+    }
 
     return () => {
       unsubscribeCache();
       unsubscribeMutation();
       if (timer) clearTimeout(timer);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('db:mutation-completed', handleMutationCompleted);
+        window.removeEventListener('db:mutation-state-change', handleMutationStateChange);
+      }
     };
   }, []);
 
-  // Compute estimated wait time based on active pending mutations
+  // Compute live countdown and expected wait time for deferred export action
+  const deferredWaitCountdown = useMemo(() => {
+    if (!isDatabaseMutatingState || pendingMutationsCount === 0 || activeMutationsList.length === 0) {
+      return {
+        remainingMs: 0,
+        remainingSeconds: 0,
+        formattedSeconds: '0.0s',
+        formattedTimer: '00:00.0',
+        totalExpectedMs: 2500,
+        elapsedMs: 2500,
+        percentComplete: 100,
+        isDeferred: Boolean(isDatabaseMutatingState)
+      };
+    }
+
+    const now = mutationClock;
+    let maxRemainingMs = 0;
+    let maxExpectedTotalDuration = 0;
+    let maxElapsed = 0;
+
+    activeMutationsList.forEach((m) => {
+      const elapsed = Math.max(0, now - m.startedAt);
+      const estDuration = m.estimatedDurationMs || 2500;
+      const remaining = Math.max(100, estDuration - elapsed);
+      if (remaining > maxRemainingMs) {
+        maxRemainingMs = remaining;
+        maxExpectedTotalDuration = estDuration;
+        maxElapsed = elapsed;
+      }
+    });
+
+    // Buffer 500ms per additional pending mutation for WAL frame flushes and B-Tree index balancing
+    const queueBuffer = Math.max(0, pendingMutationsCount - 1) * 500;
+    const totalRemainingMs = Math.max(100, maxRemainingMs + queueBuffer);
+    const totalDurationWithBuffer = Math.max(totalRemainingMs, maxExpectedTotalDuration + queueBuffer);
+    const remainingSeconds = Math.max(0.1, totalRemainingMs / 1000);
+
+    const minutes = Math.floor(remainingSeconds / 60);
+    const seconds = Math.floor(remainingSeconds % 60);
+    const tenths = Math.floor((remainingSeconds * 10) % 10);
+    const formattedTimer = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
+    const formattedSeconds = remainingSeconds >= 60
+      ? `${minutes}m ${seconds}s`
+      : `${remainingSeconds.toFixed(1)}s`;
+
+    const progressPct = Math.min(
+      98,
+      Math.max(4, Math.round(((totalDurationWithBuffer - totalRemainingMs) / totalDurationWithBuffer) * 100))
+    );
+
+    return {
+      remainingMs: totalRemainingMs,
+      remainingSeconds,
+      formattedSeconds,
+      formattedTimer,
+      totalExpectedMs: totalDurationWithBuffer,
+      elapsedMs: maxElapsed,
+      percentComplete: progressPct,
+      isDeferred: true
+    };
+  }, [isDatabaseMutatingState, pendingMutationsCount, activeMutationsList, mutationClock]);
+
+  // Compute estimated wait time based on active pending mutations and live countdown
   const estimatedWaitTimeText = useMemo(() => {
     if (!isDatabaseMutatingState || pendingMutationsCount === 0 || activeMutationsList.length === 0) {
       return 'Resuming shortly...';
     }
-    const now = mutationClock;
-    let maxRemainingMs = 0;
-    activeMutationsList.forEach((m) => {
-      const elapsed = Math.max(0, now - m.startedAt);
-      const estDuration = m.estimatedDurationMs || 2500;
-      const remaining = Math.max(250, estDuration - elapsed);
-      if (remaining > maxRemainingMs) {
-        maxRemainingMs = remaining;
-      }
-    });
-
-    // Buffer 500ms per additional pending mutation for WAL flush & index re-sync
-    const queueBuffer = Math.max(0, pendingMutationsCount - 1) * 500;
-    const totalRemainingSeconds = Math.max(0.4, (maxRemainingMs + queueBuffer) / 1000);
-
-    if (totalRemainingSeconds < 1) {
-      return `~${totalRemainingSeconds.toFixed(1)}s (<1s remaining)`;
+    const { remainingSeconds } = deferredWaitCountdown;
+    if (remainingSeconds < 1) {
+      return `~${remainingSeconds.toFixed(1)}s (<1s remaining)`;
     }
-    return `~${totalRemainingSeconds.toFixed(1)}s remaining`;
-  }, [isDatabaseMutatingState, pendingMutationsCount, activeMutationsList, mutationClock]);
+    return `~${remainingSeconds.toFixed(1)}s remaining`;
+  }, [isDatabaseMutatingState, pendingMutationsCount, activeMutationsList, deferredWaitCountdown]);
 
   // Compute total estimated completion percentage across all active pending database mutations
   const mutationProgressPercent = useMemo(() => {
@@ -631,6 +1005,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       e.stopPropagation();
       e.preventDefault();
     }
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
 
     setIsExportingThresholdLogs(true);
     try {
@@ -700,10 +1078,18 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
       setIsExportThresholdLogsSuccess(true);
       setTimeout(() => setIsExportThresholdLogsSuccess(false), 2500);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to export threshold alerts audit logs as CSV:', err);
     } finally {
       setIsExportingThresholdLogs(false);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     }
   };
 
@@ -715,7 +1101,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const [diagnosticPdfError, setDiagnosticPdfError] = useState<string | null>(null);
   const [showPdfExportSettings, setShowPdfExportSettings] = useState(false);
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfExportSections, setPdfExportSections] = useState({
+  const [pdfExportSections, setPdfExportSections] = useState<DiagnosticPdfSectionsConfig>({
+    includePageNumbers: true,
     includeSparklines: true,
     includeMutationHistory: true,
     includeRecommendations: true,
@@ -723,8 +1110,459 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     breakBeforeSparklines: false,
     breakBeforeMutationHistory: true,
     breakBeforeRecommendations: true,
-    breakBeforeExecutiveSummary: false
+    breakBeforeExecutiveSummary: false,
+    sparklinesNote: '',
+    mutationHistoryNote: '',
+    recommendationsNote: '',
+    executiveSummaryNote: '',
+    includeMetadataSparklines: true,
+    includeMetadataMutationHistory: true,
+    includeMetadataRecommendations: true,
+    includeMetadataExecutiveSummary: true,
+    paddingSparklines: 10,
+    paddingMutationHistory: 10,
+    paddingRecommendations: 10,
+    paddingExecutiveSummary: 10,
+    sectionOrder: [...DEFAULT_PDF_SECTION_ORDER]
   });
+
+  // Drag-and-drop state for PDF export sections reordering in #panel-pdf-export-settings
+  const [draggedPdfSectionIndex, setDraggedPdfSectionIndex] = useState<number | null>(null);
+  const [dragOverPdfSectionIndex, setDragOverPdfSectionIndex] = useState<number | null>(null);
+  const [collapsedPdfSections, setCollapsedPdfSections] = useState<Record<string, boolean>>({});
+  const [hoveredPreviewSectionId, setHoveredPreviewSectionId] = useState<DiagnosticPdfSectionId | null>(null);
+  const [previewRefreshTimestamps, setPreviewRefreshTimestamps] = useState<Record<string, number>>({});
+    const [generatingSnapshotSectionId, setGeneratingSnapshotSectionId] = useState<DiagnosticPdfSectionId | null>(null);
+  const [copiedPdfSettings, setCopiedPdfSettings] = useState(false);
+  const [copiedNoteSectionId, setCopiedNoteSectionId] = useState<DiagnosticPdfSectionId | null>(null);
+  const [pdfSectionSearchQuery, setPdfSectionSearchQuery] = useState('');
+  const [showPdfCardDescriptions, setShowPdfCardDescriptions] = useState(true);
+  const [isDetailedPdfLayout, setIsDetailedPdfLayout] = useState(true);
+  const [isGroupSectionsMode, setIsGroupSectionsMode] = useState(false);
+  const [isGroupByTagActive, setIsGroupByTagActive] = useState(false);
+  const [selectedSectionsForGroup, setSelectedSectionsForGroup] = useState<DiagnosticPdfSectionId[]>([]);
+  const [newGroupTitleInput, setNewGroupTitleInput] = useState('');
+  const noteChangeTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
+
+  const currentSectionOrder = useMemo(() => {
+    const list = pdfExportSections.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
+    const cleanList: DiagnosticPdfSectionId[] = [];
+    list.forEach((id) => {
+      if (DEFAULT_PDF_SECTION_ORDER.includes(id) && !cleanList.includes(id)) {
+        cleanList.push(id);
+      }
+    });
+    DEFAULT_PDF_SECTION_ORDER.forEach((id) => {
+      if (!cleanList.includes(id)) {
+        cleanList.push(id);
+      }
+    });
+    return cleanList;
+  }, [pdfExportSections.sectionOrder]);
+
+  const filteredSectionOrder = useMemo(() => {
+    let list = currentSectionOrder;
+    if (pdfSectionSearchQuery.trim()) {
+      const q = pdfSectionSearchQuery.toLowerCase();
+      list = list.filter((id) => {
+        const item = PDF_SECTION_CONFIG_ITEMS[id];
+        if (!item) return false;
+        return (
+          item.title.toLowerCase().includes(q) ||
+          item.description.toLowerCase().includes(q) ||
+          item.badge.toLowerCase().includes(q) ||
+          (item.tag && item.tag.toLowerCase().includes(q))
+        );
+      });
+    }
+    if (isGroupByTagActive) {
+      list = [...list].sort((a, b) => {
+        const tagA = PDF_SECTION_CONFIG_ITEMS[a]?.tag || 'Other';
+        const tagB = PDF_SECTION_CONFIG_ITEMS[b]?.tag || 'Other';
+        return tagA.localeCompare(tagB);
+      });
+    }
+    return list;
+  }, [currentSectionOrder, pdfSectionSearchQuery, isGroupByTagActive]);
+
+  const [copiedAllNotes, setCopiedAllNotes] = useState(false);
+
+  const handleCopyAllNotes = async () => {
+    try {
+      const notesList: string[] = [];
+      filteredSectionOrder.forEach((id) => {
+        const item = PDF_SECTION_CONFIG_ITEMS[id];
+        if (item) {
+          const note = String(pdfExportSections[item.noteKey] || '').trim();
+          if (note) {
+            notesList.push(`### ${item.title}\n${note}`);
+          }
+        }
+      });
+      const combinedText = `# PDF Report Document Outline & Custom Notes\nGenerated: ${new Date().toLocaleString()}\n\n` +
+        (notesList.length > 0 ? notesList.join('\n\n') : '*(No custom notes entered for visible section cards)*');
+      await navigator.clipboard.writeText(combinedText);
+      setCopiedAllNotes(true);
+      setTimeout(() => setCopiedAllNotes(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy all notes:', err);
+    }
+  };
+
+  const handleCopyPdfSettings = async () => {
+    try {
+      const jsonStr = JSON.stringify(pdfExportSections, null, 2);
+      await navigator.clipboard.writeText(jsonStr);
+      setCopiedPdfSettings(true);
+      setTimeout(() => setCopiedPdfSettings(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy PDF settings to clipboard:', err);
+    }
+  };
+
+  // Auto-refresh listener for #panel-pdf-export-settings: automatically updates preview timestamps and refreshes snapshots when section inclusion, page breaks, notes, or section order update
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      // Refresh timestamps for all active sections to reflect latest configuration
+      const now = Date.now();
+      setPreviewRefreshTimestamps((prev) => {
+        const next = { ...prev };
+        DEFAULT_PDF_SECTION_ORDER.forEach((id) => {
+          next[id] = now;
+        });
+        return next;
+      });
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [
+    pdfExportSections.includeSparklines,
+    pdfExportSections.includeMutationHistory,
+    pdfExportSections.includeRecommendations,
+    pdfExportSections.includeExecutiveSummary,
+    pdfExportSections.breakBeforeSparklines,
+    pdfExportSections.breakBeforeMutationHistory,
+    pdfExportSections.breakBeforeRecommendations,
+    pdfExportSections.breakBeforeExecutiveSummary,
+    pdfExportSections.sparklinesNote,
+    pdfExportSections.mutationHistoryNote,
+    pdfExportSections.recommendationsNote,
+    pdfExportSections.executiveSummaryNote,
+    pdfExportSections.sectionOrder
+  ]);
+
+
+
+  const isOrderCustomized = useMemo(() => {
+    const current = pdfExportSections.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
+    if (current.length !== DEFAULT_PDF_SECTION_ORDER.length) return true;
+    return current.some((val, idx) => val !== DEFAULT_PDF_SECTION_ORDER[idx]);
+  }, [pdfExportSections.sectionOrder]);
+
+  const handleMovePdfSection = (fromIndex: number, toIndex: number) => {
+    setPdfExportSections((prev) => {
+      const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)];
+      if (fromIndex < 0 || fromIndex >= order.length || toIndex < 0 || toIndex >= order.length) {
+        return prev;
+      }
+      const [movedItem] = order.splice(fromIndex, 1);
+      order.splice(toIndex, 0, movedItem);
+      return {
+        ...prev,
+        sectionOrder: order
+      };
+    });
+  };
+
+  const handleBulkTogglePdfSections = (enable: boolean) => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      includeSparklines: enable,
+      includeMutationHistory: enable,
+      includeRecommendations: enable,
+      includeExecutiveSummary: enable,
+    }));
+  };
+
+  const handleBulkSetPadding = (padding: number) => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      paddingSparklines: padding,
+      paddingMutationHistory: padding,
+      paddingRecommendations: padding,
+      paddingExecutiveSummary: padding,
+    }));
+  };
+
+  const handleToggleSelectSectionForGroup = (sectionId: DiagnosticPdfSectionId) => {
+    setSelectedSectionsForGroup((prev) =>
+      prev.includes(sectionId) ? prev.filter((id) => id !== sectionId) : [...prev, sectionId]
+    );
+  };
+
+  const handleCreateSectionGroup = () => {
+    if (selectedSectionsForGroup.length === 0) return;
+    const groupTitle = newGroupTitleInput.trim() || `Folder Group ${(pdfExportSections.sectionGroups?.length || 0) + 1}`;
+    const newGroup = {
+      id: `group_${Date.now()}`,
+      title: groupTitle,
+      sectionIds: [...selectedSectionsForGroup],
+      isCollapsed: false
+    };
+    setPdfExportSections((prev) => ({
+      ...prev,
+      sectionGroups: [...(prev.sectionGroups || []), newGroup]
+    }));
+    setSelectedSectionsForGroup([]);
+    setNewGroupTitleInput('');
+  };
+
+  const handleDeleteSectionGroup = (groupId: string) => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      sectionGroups: (prev.sectionGroups || []).filter((g) => g.id !== groupId)
+    }));
+  };
+
+  const handleToggleSectionGroupCollapse = (groupId: string) => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      sectionGroups: (prev.sectionGroups || []).map((g) =>
+        g.id === groupId ? { ...g, isCollapsed: !g.isCollapsed } : g
+      )
+    }));
+  };
+
+  const handleResetSectionGroup = (groupId: string) => {
+    const group = (pdfExportSections.sectionGroups || []).find((g) => g.id === groupId);
+    if (!group) return;
+    setPdfExportSections((prev) => {
+      const next = { ...prev };
+      group.sectionIds.forEach((sectionId) => {
+        const item = PDF_SECTION_CONFIG_ITEMS[sectionId];
+        if (item) {
+          next[item.includeKey] = true;
+          next[item.breakKey] = false;
+          next[item.noteKey] = '';
+          next[item.metadataKey] = false;
+          next[item.paddingKey] = 10;
+        }
+      });
+      return next;
+    });
+  };
+
+    const handleGenerateSnapshot = async (sectionId: DiagnosticPdfSectionId) => {
+    setGeneratingSnapshotSectionId(sectionId);
+    setHoveredPreviewSectionId(sectionId);
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    setPreviewRefreshTimestamps((prev) => ({ ...prev, [sectionId]: Date.now() }));
+    setGeneratingSnapshotSectionId(null);
+  };
+
+  const handleResetPdfSectionOrder = () => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      sectionOrder: [...DEFAULT_PDF_SECTION_ORDER]
+    }));
+  };
+
+  const handleResetAllPdfLayouts = () => {
+    setPdfExportSections({
+      includeSparklines: true,
+      includeMutationHistory: true,
+      includeRecommendations: true,
+      includeExecutiveSummary: true,
+      breakBeforeSparklines: false,
+      breakBeforeMutationHistory: true,
+      breakBeforeRecommendations: true,
+      breakBeforeExecutiveSummary: false,
+      sparklinesNote: '',
+      mutationHistoryNote: '',
+      recommendationsNote: '',
+      executiveSummaryNote: '',
+      includeMetadataSparklines: true,
+      includeMetadataMutationHistory: true,
+      includeMetadataRecommendations: true,
+      includeMetadataExecutiveSummary: true,
+      paddingSparklines: 10,
+      paddingMutationHistory: 10,
+      paddingRecommendations: 10,
+      paddingExecutiveSummary: 10,
+      sectionOrder: [...DEFAULT_PDF_SECTION_ORDER]
+    });
+  };
+
+  const handleScrollToSection = (sectionId: string) => {
+    const el = document.getElementById(`card-pdf-section-${sectionId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-amber-400', 'bg-amber-950/50', 'transition-all', 'duration-500');
+      setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-amber-400', 'bg-amber-950/50');
+      }, 2000);
+    }
+  };
+
+  const handleAutoGroupCategories = () => {
+    const categoryMap: Record<string, DiagnosticPdfSectionId[]> = {
+      'Metrics': [],
+      'Logs': [],
+      'Strategy': [],
+      'Summary': []
+    };
+
+    DEFAULT_PDF_SECTION_ORDER.forEach((id) => {
+      const item = PDF_SECTION_CONFIG_ITEMS[id];
+      if (item) {
+        const cat = item.tag || 'Metrics';
+        if (!categoryMap[cat]) categoryMap[cat] = [];
+        categoryMap[cat].push(id);
+      }
+    });
+
+    const newGroups = Object.entries(categoryMap)
+      .filter(([_, ids]) => ids.length > 0)
+      .map(([catName, ids], idx) => ({
+        id: `auto_group_${idx}_${Date.now()}`,
+        title: `${catName} Domain Group`,
+        sectionIds: ids,
+        isCollapsed: false
+      }));
+
+    setPdfExportSections((prev) => ({
+      ...prev,
+      sectionGroups: newGroups
+    }));
+    setIsGroupSectionsMode(true);
+  };
+
+  const handleExportSectionData = (sectionId: DiagnosticPdfSectionId) => {
+    const itemConfig = PDF_SECTION_CONFIG_ITEMS[sectionId];
+    const prefixKey = itemConfig?.filenamePrefixKey;
+    const customPrefix = prefixKey ? (pdfExportSections as any)[prefixKey] : '';
+    const cleanPrefix = (customPrefix || '').trim() || sectionId;
+    const delimiterKey = itemConfig?.delimiterKey;
+    const rawDelimiter = delimiterKey ? (pdfExportSections as any)[delimiterKey] : ',';
+    const delimiter = rawDelimiter === '\\t' || rawDelimiter === 'tab' ? '\t' : rawDelimiter === ';' ? ';' : ',';
+    let filename = `${cleanPrefix}${delimiter === '\t' ? '.tsv' : '.csv'}`;
+
+    let rows: string[][] = [];
+    if (sectionId === 'sparklines') {
+      rows.push(['Timestamp', 'RecordID', 'MetricName', 'Value']);
+      queryResult.records.forEach((rec) => {
+        rows.push([new Date(rec.timestamp).toISOString(), String(rec.id), 'PrimaryMetric', String(rec.primaryMetricValue ?? 0)]);
+      });
+    } else if (sectionId === 'mutationHistory') {
+      rows.push(['ID', 'Timestamp', 'DatabaseTable', 'Operation', 'Severity']);
+      queryResult.records.forEach((rec) => {
+        rows.push([String(rec.id), new Date(rec.timestamp).toISOString(), rec.dbTable || 'MainTable', rec.operation || 'UPDATE', rec.severity || 'INFO']);
+      });
+    } else if (sectionId === 'recommendations') {
+      rows.push(['ItemID', 'Title', 'Category', 'Priority', 'Description']);
+      rows.push(['REC-01', 'Optimize Index Coverage', 'Database', 'High', 'Add compound index on timestamp and severity for faster range scans.']);
+      rows.push(['REC-02', 'Cache Aggregation Queries', 'Performance', 'Medium', 'Enable Redis query result caching for frequent metric summaries.']);
+      rows.push(['REC-03', 'Adjust Polling Frequency', 'Monitoring', 'Low', 'Reduce heartbeat polling frequency during off-peak hours to save bandwidth.']);
+    } else if (sectionId === 'executiveSummary') {
+      rows.push(['FindingID', 'Category', 'Severity', 'Summary']);
+      rows.push(['FIND-01', 'System Health', 'Normal', 'All primary health checks passing within normal operational parameters.']);
+      rows.push(['FIND-02', 'Database Latency', 'Warning', 'P95 query latency spiked briefly during background compaction.']);
+    } else {
+      rows.push(['RecordID', 'Timestamp', 'Value']);
+      queryResult.records.forEach((rec) => {
+        rows.push([String(rec.id), new Date(rec.timestamp).toISOString(), String(rec.primaryMetricValue ?? 0)]);
+      });
+    }
+
+    const d = delimiter === '\t' ? '\t' : delimiter;
+    const csvContent = 'data:text/csv;charset=utf-8,' + rows.map(r => r.join(d)).join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleResetSinglePdfSection = (sectionId: DiagnosticPdfSectionId) => {
+    setPdfExportSections((prev) => {
+      const next = { ...prev };
+      if (sectionId === 'sparklines') {
+        next.sparklinesNote = '';
+        next.paddingSparklines = 10;
+        next.breakBeforeSparklines = false;
+        next.includeMetadataSparklines = true;
+        next.sparklinesFilenamePrefix = '';
+        next.sparklinesDelimiter = ',';
+      } else if (sectionId === 'mutationHistory') {
+        next.mutationHistoryNote = '';
+        next.paddingMutationHistory = 10;
+        next.mutationHistoryFilenamePrefix = '';
+        next.mutationHistoryDelimiter = ',';
+        next.breakBeforeMutationHistory = true;
+        next.includeMetadataMutationHistory = true;
+      } else if (sectionId === 'recommendations') {
+        next.recommendationsNote = '';
+        next.paddingRecommendations = 10;
+        next.breakBeforeRecommendations = true;
+        next.includeMetadataRecommendations = true;
+        next.recommendationsFilenamePrefix = '';
+        next.recommendationsDelimiter = ',';
+      } else if (sectionId === 'executiveSummary') {
+        next.executiveSummaryNote = '';
+        next.paddingExecutiveSummary = 10;
+        next.breakBeforeExecutiveSummary = false;
+        next.includeMetadataExecutiveSummary = true;
+        next.executiveSummaryFilenamePrefix = '';
+        next.executiveSummaryDelimiter = ',';
+      }
+      return next;
+    });
+  };
+
+  const handlePdfSectionDragStart = (e: React.DragEvent, index: number) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
+    setDraggedPdfSectionIndex(index);
+  };
+
+  const handlePdfSectionDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverPdfSectionIndex !== index) {
+      setDragOverPdfSectionIndex(index);
+    }
+  };
+
+  const handlePdfSectionDragEnter = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    setDragOverPdfSectionIndex(index);
+  };
+
+  const handlePdfSectionDragLeave = (e: React.DragEvent, index: number) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) {
+      return;
+    }
+    if (dragOverPdfSectionIndex === index) {
+      setDragOverPdfSectionIndex(null);
+    }
+  };
+
+  const handlePdfSectionDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    const sourceRaw = e.dataTransfer.getData('text/plain');
+    const sourceIndex = draggedPdfSectionIndex !== null ? draggedPdfSectionIndex : parseInt(sourceRaw, 10);
+    if (!isNaN(sourceIndex) && sourceIndex !== targetIndex) {
+      handleMovePdfSection(sourceIndex, targetIndex);
+    }
+    setDraggedPdfSectionIndex(null);
+    setDragOverPdfSectionIndex(null);
+  };
+
+  const handlePdfSectionDragEnd = () => {
+    setDraggedPdfSectionIndex(null);
+    setDragOverPdfSectionIndex(null);
+  };
 
   // Saved custom PDF template in localStorage
   const [savedCustomPdfTemplate, setSavedCustomPdfTemplate] = useState<PdfReportTemplate | null>(() => getSavedCustomTemplate());
@@ -739,13 +1577,19 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleSelectPdfTemplate = (templateId: string) => {
     if (templateId === 'saved-custom') {
       if (savedCustomPdfTemplate) {
-        setPdfExportSections({ ...savedCustomPdfTemplate.sections });
+        setPdfExportSections({
+          ...savedCustomPdfTemplate.sections,
+          sectionOrder: savedCustomPdfTemplate.sections.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
+        });
       }
       return;
     }
     const found = PREDEFINED_PDF_TEMPLATES.find((t) => t.id === templateId);
     if (found) {
-      setPdfExportSections({ ...found.sections });
+      setPdfExportSections((prev) => ({
+        ...found.sections,
+        sectionOrder: found.sections.sectionOrder || prev.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
+      }));
     }
   };
 
@@ -760,7 +1604,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   // Handles loading user's custom saved template
   const handleLoadCustomTemplate = () => {
     if (savedCustomPdfTemplate) {
-      setPdfExportSections({ ...savedCustomPdfTemplate.sections });
+      setPdfExportSections({
+        ...savedCustomPdfTemplate.sections,
+        sectionOrder: savedCustomPdfTemplate.sections.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
+      });
     }
   };
 
@@ -796,6 +1643,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
   // Generate Diagnostic Correlation Report as a non-technical Visual PDF with sparklines
   const handleGenerateDiagnosticCorrelationPdf = async () => {
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
     setIsGeneratingDiagnosticPdf(true);
     setDiagnosticPdfError(null);
     try {
@@ -806,7 +1657,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         mutationThreshold,
         currentFlags: flags,
         options: {
-          sections: pdfExportSections
+          sections: {
+            ...pdfExportSections,
+            groupByTag: isGroupByTagActive
+          }
         }
       });
       setIsDiagnosticPdfSuccess(true);
@@ -814,6 +1668,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       setTimeout(() => {
         setIsDiagnosticPdfSuccess(false);
       }, 2500);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err: any) {
       console.error('Failed to generate diagnostic correlation PDF report:', err);
       const errorMessage =
@@ -822,11 +1680,19 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       setDiagnosticPdfError(errorMessage);
     } finally {
       setIsGeneratingDiagnosticPdf(false);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     }
   };
 
   // Generate Diagnostic Correlation Report as JSON summarizing mutation clusters & latency spikes
   const handleGenerateDiagnosticCorrelationReport = () => {
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
     setIsGeneratingDiagnosticReport(true);
     try {
       exportDiagnosticCorrelationReportJson({
@@ -840,10 +1706,18 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       setTimeout(() => {
         setIsDiagnosticReportSuccess(false);
       }, 2500);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to generate diagnostic correlation report:', err);
     } finally {
       setIsGeneratingDiagnosticReport(false);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     }
   };
 
@@ -967,31 +1841,150 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
   // Copy Logs state and export tooltip interaction helpers
   const [isCopiedLogs, setIsCopiedLogs] = useState<boolean>(false);
-  const exportHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isExportHoveredRef = useRef<boolean>(false);
+  useEffect(() => {
+    isExportHoveredRef.current = isExportHovered;
+  }, [isExportHovered]);
 
-  const handleExportMouseEnter = () => {
+  // Click-to-pin state: keeps tooltip permanently open until clicking outside or pin icon
+  const [isTooltipPinned, setIsTooltipPinned] = useState<boolean>(false);
+  const isTooltipPinnedRef = useRef<boolean>(false);
+  useEffect(() => {
+    isTooltipPinnedRef.current = isTooltipPinned;
+  }, [isTooltipPinned]);
+
+  const handleTogglePin = (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    setIsTooltipPinned((prev) => {
+      const next = !prev;
+      if (!next) {
+        setIsExportHovered(false);
+      } else {
+        setIsExportHovered(true);
+      }
+      return next;
+    });
+  };
+
+  // Instantly closes the pinned tooltip and resets the isTooltipPinned state
+  const handleCancelPinnedTooltip = (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setIsTooltipPinned(false);
+    isTooltipPinnedRef.current = false;
+    setIsExportHovered(false);
+    isExportHoveredRef.current = false;
+    setIsLiveMonitoring(false);
+    setIsHeaderExportBtnHovered(false);
+    if (exportHoverEnterTimeoutRef.current) {
+      clearTimeout(exportHoverEnterTimeoutRef.current);
+      exportHoverEnterTimeoutRef.current = null;
+    }
+    if (exportHoverLeaveTimeoutRef.current) {
+      clearTimeout(exportHoverLeaveTimeoutRef.current);
+      exportHoverLeaveTimeoutRef.current = null;
+    }
     if (exportHoverTimeoutRef.current) {
       clearTimeout(exportHoverTimeoutRef.current);
       exportHoverTimeoutRef.current = null;
     }
+  };
+
+  const handleExportButtonClick = (e: React.MouseEvent) => {
+    // Click-to-pin: pins the tooltip open permanently until user clicks outside or on the pin icon
+    setIsTooltipPinned(true);
     setIsExportHovered(true);
+    handleHeaderExport(selectedExportFormat);
+  };
+
+  const exportHoverEnterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const exportHoverLeaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const exportHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleExportMouseEnter = () => {
+    // Clear any pending mouseleave timer immediately
+    if (exportHoverLeaveTimeoutRef.current) {
+      clearTimeout(exportHoverLeaveTimeoutRef.current);
+      exportHoverLeaveTimeoutRef.current = null;
+    }
+    if (exportHoverTimeoutRef.current) {
+      clearTimeout(exportHoverTimeoutRef.current);
+      exportHoverTimeoutRef.current = null;
+    }
+
+    // If tooltip is already active, maintain open state without re-debouncing
+    if (isExportHoveredRef.current || isTooltipPinnedRef.current) {
+      setIsExportHovered(true);
+      return;
+    }
+
+    // 300ms display delay before opening to prevent unwanted flickering when quickly moving over the button
+    if (exportHoverEnterTimeoutRef.current) {
+      clearTimeout(exportHoverEnterTimeoutRef.current);
+    }
+    exportHoverEnterTimeoutRef.current = setTimeout(() => {
+      setIsExportHovered(true);
+      exportHoverEnterTimeoutRef.current = null;
+    }, 300);
   };
 
   const handleExportMouseLeave = () => {
-    if (isLiveMonitoring) return;
+    if (isLiveMonitoring || isTooltipPinnedRef.current) return;
+
+    // Clear any pending mouseenter timer so edge jitters don't falsely open
+    if (exportHoverEnterTimeoutRef.current) {
+      clearTimeout(exportHoverEnterTimeoutRef.current);
+      exportHoverEnterTimeoutRef.current = null;
+    }
+
+    // Robust 250ms debounce before closing to allow smooth transit across button/tooltip boundaries
+    if (exportHoverLeaveTimeoutRef.current) {
+      clearTimeout(exportHoverLeaveTimeoutRef.current);
+    }
     if (exportHoverTimeoutRef.current) {
       clearTimeout(exportHoverTimeoutRef.current);
     }
-    exportHoverTimeoutRef.current = setTimeout(() => {
-      if (!isLiveMonitoring) {
+
+    const leaveTimer = setTimeout(() => {
+      if (!isLiveMonitoring && !isTooltipPinnedRef.current) {
         setIsExportHovered(false);
       }
+      exportHoverLeaveTimeoutRef.current = null;
+      exportHoverTimeoutRef.current = null;
     }, 250);
+
+    exportHoverLeaveTimeoutRef.current = leaveTimer;
+    exportHoverTimeoutRef.current = leaveTimer;
   };
+
+  useEffect(() => {
+    return () => {
+      if (exportHoverEnterTimeoutRef.current) {
+        clearTimeout(exportHoverEnterTimeoutRef.current);
+      }
+      if (exportHoverLeaveTimeoutRef.current) {
+        clearTimeout(exportHoverLeaveTimeoutRef.current);
+      }
+      if (exportHoverTimeoutRef.current) {
+        clearTimeout(exportHoverTimeoutRef.current);
+      }
+      if (exportCopiedTimeoutRef.current) {
+        clearTimeout(exportCopiedTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleCopyInvalidationLogs = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
     const formatted = formatInvalidationLogsForClipboard(
       last3Triggers,
       isDatabaseMutatingState,
@@ -1013,6 +2006,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       }
       setIsCopiedLogs(true);
       setTimeout(() => setIsCopiedLogs(false), 2000);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to copy invalidation triggers to clipboard:', err);
     }
@@ -1023,6 +2020,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleCopyLogSummary = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
 
     const summary = [
       `*Database Mutation & Cache Performance Summary*`,
@@ -1049,6 +2050,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       }
       setIsCopiedSummary(true);
       setTimeout(() => setIsCopiedSummary(false), 2000);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to copy log summary to clipboard:', err);
     }
@@ -1059,6 +2064,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleCopyInvalidationJson = async (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
 
     const minifiedPayload = JSON.stringify({
       triggers: last3Triggers.map((t, idx) => ({
@@ -1096,6 +2105,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       }
       setIsCopiedJson(true);
       setTimeout(() => setIsCopiedJson(false), 2000);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to copy minified invalidation triggers JSON to clipboard:', err);
     }
@@ -1106,6 +2119,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleDownloadInvalidationLogsJson = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
 
     const payload = {
       exportType: 'cache_invalidation_triggers_audit',
@@ -1165,6 +2182,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
       setIsDownloadedJson(true);
       setTimeout(() => setIsDownloadedJson(false), 2000);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to download invalidation triggers JSON:', err);
     }
@@ -1175,6 +2196,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleExportAllInvalidationLogsCsv = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isTooltipPinnedRef.current) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
+    }
 
     try {
       const escapeCsvValue = (val: unknown): string => {
@@ -1231,6 +2256,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
       setIsExportedAllCsv(true);
       setTimeout(() => setIsExportedAllCsv(false), 2500);
+      if (isTooltipPinnedRef.current) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
     } catch (err) {
       console.error('Failed to export all invalidation triggers CSV:', err);
     }
@@ -1279,18 +2308,50 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   };
 
 
-  // Close export dropdown on outside click
+  // Close export dropdown or unpin tooltip on outside click
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (exportDropdownRef.current && !exportDropdownRef.current.contains(event.target as Node)) {
-        setIsExportDropdownOpen(false);
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+
+      // Never unpin/close if clicking inside the export dropdown or tooltip
+      if (exportDropdownRef.current && exportDropdownRef.current.contains(target)) {
+        return;
       }
+
+      // Never unpin/close if interacting with confirmation modal or its backdrop
+      const confirmationModal = document.getElementById('modal-export-confirmation');
+      const confirmationBackdrop = document.getElementById('modal-export-confirmation-backdrop');
+      if (
+        (confirmationModal && confirmationModal.contains(target)) ||
+        (confirmationBackdrop && confirmationBackdrop.contains(target))
+      ) {
+        return;
+      }
+
+      // Never unpin/close if interacting with PDF preview modal or its backdrop
+      const pdfModal = document.getElementById('modal-pdf-preview-backdrop');
+      if (pdfModal && pdfModal.contains(target)) {
+        return;
+      }
+
+      // If user triggers an export or copy action anywhere in the application while tooltip is pinned, keep it pinned
+      const isExportOrCopyAction = !!target.closest?.(
+        'button[data-testid*="export"], button[data-testid*="copy"], button[id*="export"], button[id*="copy"], [data-id*="export"], [data-id*="copy"]'
+      );
+      if (isExportOrCopyAction && isTooltipPinnedRef.current) {
+        return;
+      }
+
+      setIsExportDropdownOpen(false);
+      setIsTooltipPinned(false);
+      setIsExportHovered(false);
     }
-    if (isExportDropdownOpen) {
+    if (isExportDropdownOpen || isTooltipPinned) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [isExportDropdownOpen]);
+  }, [isExportDropdownOpen, isTooltipPinned]);
 
   // Monitor real-time browser FPS
   const currentFps = useFpsMonitor();
@@ -1875,13 +2936,37 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     };
   }, []);
 
-  const handleHeaderExport = (formatToExport?: ExportFormat, isFromShortcut?: boolean) => {
+  // Auto-execute deferred export when database mutation finishes
+  const prevMutatingRef = useRef<boolean>(isDatabaseMutatingState);
+  useEffect(() => {
+    if (prevMutatingRef.current && !isDatabaseMutatingState && deferredExportRequest) {
+      const req = deferredExportRequest;
+      setDeferredExportRequest(null);
+      setTimeout(() => {
+        handleHeaderExport(req.format, req.isFromShortcut, true);
+      }, 50);
+    }
+    prevMutatingRef.current = isDatabaseMutatingState;
+  }, [isDatabaseMutatingState, deferredExportRequest]);
+
+  const handleHeaderExport = (formatToExport?: ExportFormat, isFromShortcut?: boolean, bypassConfirmation?: boolean) => {
+    // Retain pinned status: if tooltip is pinned, it must remain pinned through copy and export actions
+    const wasPinned = isTooltipPinnedRef.current || isTooltipPinned;
+
     // If a database mutation is currently mid-process, defer serialization to ensure data consistency
     if (isDatabaseMutatingState) {
+      const format = formatToExport || selectedExportFormatRef.current;
+      setDeferredExportRequest({
+        format,
+        isFromShortcut: Boolean(isFromShortcut),
+        timestamp: Date.now()
+      });
       setExportPausedToast(
-        `Export Paused: ${pendingMutationsCount} database mutation${pendingMutationsCount === 1 ? ' is' : 's are'} mid-process. Serialization is deferred to ensure data consistency.`
+        `Export Action Deferred: ${pendingMutationsCount} active database mutation${pendingMutationsCount === 1 ? ' is' : 's are'} mid-process. Queued with live countdown.`
       );
       setTimeout(() => setExportPausedToast(null), 4500);
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
       return;
     }
 
@@ -1897,8 +2982,25 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         });
         setTimeout(() => setShortcutToast(null), 3500);
       }
+      if (wasPinned) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
       return;
     }
+
+    // Intercept with confirmation modal if enabled and not explicitly bypassed
+    if (isExportConfirmationPromptEnabled && !bypassConfirmation) {
+      setPendingExportFormat(format);
+      setPendingExportIsFromShortcut(!!isFromShortcut);
+      setIsExportConfirmationModalOpen(true);
+      if (wasPinned) {
+        setIsTooltipPinned(true);
+        setIsExportHovered(true);
+      }
+      return;
+    }
+
     if (isHeaderExporting) return;
 
     setSelectedExportFormat(format);
@@ -1906,6 +3008,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     setIsHeaderExporting(true);
     if (isCacheInvalidatedPulsing) {
       setIsCacheInvalidatedPulsing(false);
+    }
+
+    // Ensure pinned state is maintained while export is underway
+    if (wasPinned) {
+      setIsTooltipPinned(true);
+      setIsExportHovered(true);
     }
 
     if (isFromShortcut) {
@@ -1931,6 +3039,40 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         triggerFileDownload(blob, filename);
         setHeaderExportStats(stats);
         recordExportOperation(stats, format);
+
+        // Copy serialized content to clipboard for instant pasting
+        try {
+          if (format === 'json') {
+            const jsonText = JSON.stringify(recordsToExport, null, 2);
+            navigator?.clipboard?.writeText?.(jsonText);
+          } else {
+            const { csvString } = buildCsvString(recordsToExport, { includeHeaders: includeCsvHeadersRef.current });
+            navigator?.clipboard?.writeText?.(csvString);
+          }
+        } catch {
+          // ignore clipboard errors
+        }
+
+        // Temporarily show 'Copied!' label inside #btn-header-export-csv
+        setIsExportCopied(true);
+        if (exportCopiedTimeoutRef.current) {
+          clearTimeout(exportCopiedTimeoutRef.current);
+        }
+        exportCopiedTimeoutRef.current = setTimeout(() => {
+          setIsExportCopied(false);
+          exportCopiedTimeoutRef.current = null;
+          // Ensure tooltip remains pinned after temporary 'Copied!' label duration expires
+          if (isTooltipPinnedRef.current) {
+            setIsTooltipPinned(true);
+            setIsExportHovered(true);
+          }
+        }, 2200);
+
+        // Explicitly keep tooltip pinned open after triggering export or copy action
+        if (wasPinned) {
+          setIsTooltipPinned(true);
+          setIsExportHovered(true);
+        }
       } catch (err: unknown) {
         console.error(`Failed to export ${format.toUpperCase()} from Table & Explain Plan header:`, err);
         const errorLog: SerializationLogEntry = {
@@ -1951,14 +3093,58 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         setSerializationLogs((prev) => [errorLog, ...prev].slice(0, 50));
       } finally {
         setIsHeaderExporting(false);
+        if (wasPinned) {
+          setIsTooltipPinned(true);
+          setIsExportHovered(true);
+        }
       }
     }, 10);
   };
 
   // Power-user keyboard shortcut: Ctrl+E (or ⌘E on Mac) to trigger Export CSV/JSON directly from Table view
+  // Escape key to immediately unpin and close the #btn-header-export-csv tooltip if open or pinned
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
+
+      // Handle Escape key: immediately unpin and close the #btn-header-export-csv tooltip if currently open or pinned
+      if (e.key === 'Escape') {
+        // If a modal is open, let the modal handle Escape dismiss without unpinning tooltip
+        if (
+          isExportConfirmationModalOpen ||
+          showPdfPreviewModal ||
+          isBulkImportOpen ||
+          isDataTapeModalOpen ||
+          isBenchmarkOpen
+        ) {
+          return;
+        }
+
+        if (
+          isTooltipPinned ||
+          isExportHovered ||
+          isTooltipPinnedRef.current ||
+          isExportHoveredRef.current
+        ) {
+          e.preventDefault();
+          setIsTooltipPinned(false);
+          setIsExportHovered(false);
+          setIsLiveMonitoring(false);
+          if (exportHoverEnterTimeoutRef.current) {
+            clearTimeout(exportHoverEnterTimeoutRef.current);
+            exportHoverEnterTimeoutRef.current = null;
+          }
+          if (exportHoverLeaveTimeoutRef.current) {
+            clearTimeout(exportHoverLeaveTimeoutRef.current);
+            exportHoverLeaveTimeoutRef.current = null;
+          }
+          if (exportHoverTimeoutRef.current) {
+            clearTimeout(exportHoverTimeoutRef.current);
+            exportHoverTimeoutRef.current = null;
+          }
+          return;
+        }
+      }
 
       // Check for Ctrl+E (Windows/Linux) or Cmd+E (Mac)
       const isModifier = e.ctrlKey || e.metaKey;
@@ -1998,7 +3184,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     isBulkImportOpen,
     isDataTapeModalOpen,
     isBenchmarkOpen,
-    shortcutKeyLabel
+    shortcutKeyLabel,
+    isTooltipPinned,
+    isExportHovered
   ]);
 
   // Trigger on-demand manual tape slice
@@ -2281,31 +3469,70 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
                 {/* Export Dropdown Split Button */}
                 <div ref={exportDropdownRef} className="relative inline-flex ml-auto sm:ml-0 shadow-xs rounded-lg">
-                  {/* Primary Export Action Button */}
+                  {/* Primary Export Action Button with Click-to-Pin Support */}
                   <button
                     id="btn-header-export-csv"
+                    data-testid="btn-header-export-csv"
                     type="button"
-                    onClick={() => handleHeaderExport(selectedExportFormat)}
-                    onMouseEnter={handleExportMouseEnter}
-                    onMouseLeave={handleExportMouseLeave}
-                    onFocus={handleExportMouseEnter}
-                    onBlur={handleExportMouseLeave}
+                    onClick={handleExportButtonClick}
+                    onMouseEnter={() => {
+                      setIsHeaderExportBtnHovered(true);
+                      handleExportMouseEnter();
+                    }}
+                    onMouseLeave={() => {
+                      setIsHeaderExportBtnHovered(false);
+                      handleExportMouseLeave();
+                    }}
+                    onFocus={() => {
+                      setIsHeaderExportBtnHovered(true);
+                      handleExportMouseEnter();
+                    }}
+                    onBlur={() => {
+                      setIsHeaderExportBtnHovered(false);
+                      handleExportMouseLeave();
+                    }}
                     aria-describedby={
-                      isExportPulsing || isExportHovered || isLiveMonitoring
+                      isExportPulsing || isExportHovered || isLiveMonitoring || isTooltipPinned
                         ? 'tooltip-cache-invalidation-fresh-read'
                         : undefined
                     }
+                    data-pinned={isTooltipPinned ? 'true' : 'false'}
+                    data-serialization-ready={isHeaderExportBtnHovered ? 'true' : 'false'}
+                    data-copied={isExportCopied ? 'true' : 'false'}
+                    data-export-deferred={isDatabaseMutatingState ? 'true' : 'false'}
+                    data-deferred-wait-seconds={isDatabaseMutatingState ? deferredWaitCountdown.formattedSeconds : undefined}
+                    data-last-mutation-recent={recentCompletedMutationInfo ? 'true' : 'false'}
+                    data-last-mutation-type={recentCompletedMutationInfo ? recentCompletedMutationInfo.type : undefined}
+                    data-last-mutation-duration={recentCompletedMutationInfo ? recentCompletedMutationInfo.formattedDuration : undefined}
                     disabled={isHeaderExporting || queryResult.records.length === 0}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-r-0 border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-800 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-98 ${
+                    className={`group relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-r-0 border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-800 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02] active:scale-98 ${
                       isShortcutFlashing
                         ? 'ring-2 ring-emerald-500 bg-emerald-50 text-emerald-950 shadow-md scale-102'
+                        : isExportCopied && isTooltipPinned
+                        ? 'ring-2 ring-amber-400 border-amber-400 bg-emerald-50 text-emerald-950 shadow-xs shadow-amber-500/20 animate-pinned-ring-shift z-10'
+                        : isExportCopied
+                        ? 'ring-2 ring-emerald-500/80 bg-emerald-50 text-emerald-950 border-emerald-400 shadow-xs shadow-emerald-500/20'
                         : isExportPulsing
                         ? 'ring-2 ring-amber-500 bg-amber-50/90 text-amber-950 border-amber-400 shadow-md shadow-amber-500/20 animate-pulse'
+                        : isTooltipPinned
+                        ? 'ring-2 ring-amber-400 border-amber-400 bg-amber-50/60 text-amber-950 shadow-xs shadow-amber-500/20 animate-pinned-ring-shift z-10'
                         : ''
                     }`}
                     title={
-                      isDatabaseMutatingState
-                        ? `Export Paused (${pendingMutationsCount} active pending database mutation${pendingMutationsCount === 1 ? '' : 's'}): Serialization is deferred to ensure data consistency`
+                      isTooltipPinned
+                        ? `Tooltip pinned open (Click pin icon or outside to unpin). Export as ${
+                            selectedExportFormat === 'json' ? 'JSON' : 'CSV'
+                          }`
+                        : isDatabaseMutatingState
+                        ? `Export Action Deferred (${deferredWaitCountdown.formattedSeconds} expected wait time): Database mutation is mid-process (${pendingMutationsCount} active pending). Serialization is deferred to ensure data consistency`
+                        : recentCompletedMutationInfo
+                        ? `Export query results as ${
+                            selectedExportFormat === 'json'
+                              ? 'JSON'
+                              : includeCsvHeaders
+                              ? 'CSV (with headers)'
+                              : 'CSV (headerless)'
+                          } (Last Mutation: ${recentCompletedMutationInfo.type} finished ${recentCompletedMutationInfo.formattedDuration}) (Shortcut: ${shortcutKeyLabel}, ${altShortcutKeyLabel} for alternate)`
                         : isCacheInvalidatedPulsing
                         ? 'Cache invalidated: Next export will perform a fresh database read'
                         : `Export query results as ${
@@ -2324,35 +3551,162 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                       </>
                     ) : (
                       <>
-                        {selectedExportFormat === 'json' ? (
-                          <FileCode className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-amber-600'}`} />
+                        {isExportCopied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span
+                              id="label-export-copied"
+                              data-testid="label-export-copied"
+                              className="font-bold text-emerald-700"
+                            >
+                              Copied!
+                            </span>
+                          </>
                         ) : (
-                          <FileSpreadsheet className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-emerald-600'}`} />
+                          <>
+                            {selectedExportFormat === 'json' ? (
+                              <FileCode className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-amber-600'}`} />
+                            ) : (
+                              <FileSpreadsheet className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-emerald-600'}`} />
+                            )}
+                            <span>
+                              {selectedExportFormat === 'json'
+                                ? 'Export JSON'
+                                : includeCsvHeaders
+                                ? 'Export CSV'
+                                : 'Export CSV (No Headers)'}
+                            </span>
+                          </>
                         )}
-                        <span>
-                          {selectedExportFormat === 'json'
-                            ? 'Export JSON'
-                            : includeCsvHeaders
-                            ? 'Export CSV'
-                            : 'Export CSV (No Headers)'}
+                        {/* Dynamic pill-shaped format badge ('CSV' or 'JSON') with high-performance preparation sparkle indicator */}
+                        <span className="relative inline-flex items-center">
+                          <span
+                            id="badge-header-export-format"
+                            data-testid="badge-header-export-format"
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-mono text-[9px] font-bold tracking-wide border shadow-2xs transition-all select-none ${
+                              isExportCopied
+                                ? 'bg-emerald-300 text-emerald-950 border-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.6)] animate-pulse'
+                                : selectedExportFormat === 'json'
+                                ? 'bg-amber-100 text-amber-800 border-amber-300 group-hover:border-amber-400 group-hover:shadow-[0_0_8px_rgba(245,158,11,0.25)]'
+                                : 'bg-emerald-100 text-emerald-800 border-emerald-300 group-hover:border-emerald-400 group-hover:shadow-[0_0_8px_rgba(16,185,129,0.25)]'
+                            }`}
+                            title={`Active export format: ${selectedExportFormat === 'json' ? 'JSON' : 'CSV'} (High-performance serialization prepared)`}
+                          >
+                            <Sparkle
+                              className={`w-2.5 h-2.5 transition-all duration-300 shrink-0 ${
+                                isHeaderExportBtnHovered
+                                  ? 'opacity-100 scale-100 text-amber-500 fill-amber-400 animate-sparkle-twinkle'
+                                  : 'opacity-0 scale-0 -ml-1 w-0 overflow-hidden'
+                              } group-hover:opacity-100 group-hover:scale-100 group-hover:ml-0 group-hover:w-2.5 group-hover:animate-sparkle-twinkle text-amber-500 fill-amber-400`}
+                            />
+                            <span>{selectedExportFormat === 'json' ? 'JSON' : 'CSV'}</span>
+                          </span>
+
+                          {/* Subtle floating sparkle icon effect near format badge */}
+                          <span
+                            id="sparkle-header-export-ready"
+                            data-testid="sparkle-header-export-ready"
+                            className={`pointer-events-none absolute -top-1.5 -right-1.5 z-10 flex items-center justify-center transition-all duration-300 ease-out ${
+                              isHeaderExportBtnHovered
+                                ? 'opacity-100 scale-100 rotate-0'
+                                : 'opacity-0 scale-0 -rotate-45'
+                            } group-hover:opacity-100 group-hover:scale-100 group-hover:rotate-0`}
+                            title="High-performance serialization prepared for execution"
+                            aria-label="High-performance serialization prepared for execution"
+                          >
+                            <span className="relative flex items-center justify-center">
+                              {/* Pulsing ambient glint */}
+                              <span className="absolute -inset-1 rounded-full bg-amber-400/35 blur-[1.5px] animate-ping" />
+                              <Sparkles
+                                id="icon-export-serialization-sparkle"
+                                data-testid="icon-export-serialization-sparkle"
+                                className="relative w-3.5 h-3.5 text-amber-500 fill-amber-300/40 drop-shadow-[0_1px_3px_rgba(217,119,6,0.6)] animate-sparkle-twinkle"
+                              />
+                            </span>
+                          </span>
                         </span>
+                        {/* Tiny, subtle badge displaying duration of last export to emphasize performance */}
+                        {formattedLastExportDuration && (
+                          <span
+                            id="badge-header-export-duration"
+                            data-testid="badge-header-export-duration"
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-mono text-[9px] font-semibold tracking-tight border bg-emerald-50 text-emerald-700 border-emerald-200/90 shadow-2xs select-none transition-colors"
+                            title={`Last serialization duration: ${formattedLastExportDuration.replace('Last: ', '')}`}
+                          >
+                            <Zap className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>{formattedLastExportDuration}</span>
+                          </span>
+                        )}
                         <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded font-bold border transition-colors ${
                           isExportPulsing
                             ? 'bg-amber-100 text-amber-900 border-amber-300'
+                            : isTooltipPinned
+                            ? 'bg-amber-100/80 text-amber-900 border-amber-300'
                             : 'bg-zinc-100 text-zinc-700 border-zinc-200'
                         }`}>
                           {queryResult.records.length}
                         </span>
+
+                        {isTooltipPinned && (
+                          <span
+                            id="badge-header-tooltip-pinned"
+                            data-testid="badge-header-tooltip-pinned"
+                            role="button"
+                            tabIndex={0}
+                            aria-label="Unpin tooltip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleTogglePin(e);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.stopPropagation();
+                                handleTogglePin();
+                              }
+                            }}
+                            className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[9.5px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs ml-0.5 hover:bg-amber-200 cursor-pointer"
+                            title="Tooltip pinned open (click to unpin)"
+                          >
+                            <Pin className="w-2.5 h-2.5 rotate-45 fill-amber-700 text-amber-700" />
+                            <span>Pinned</span>
+                          </span>
+                        )}
+
+                        {/* Small 'Last Mutation' badge appearing only when a database mutation recently completed */}
+                        {recentCompletedMutationInfo && (
+                          <span
+                            id="badge-header-last-mutation"
+                            data-testid="badge-header-last-mutation"
+                            data-badge="last-mutation"
+                            data-mutation-type={recentCompletedMutationInfo.type}
+                            data-duration-since-finished={recentCompletedMutationInfo.formattedDuration}
+                            data-seconds-since-finished={recentCompletedMutationInfo.elapsedSeconds}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded font-mono text-[9.5px] font-semibold tracking-tight border bg-blue-50 text-blue-900 border-blue-200/90 shadow-2xs select-none transition-all ml-0.5 animate-in fade-in"
+                            title={`Last Mutation: ${recentCompletedMutationInfo.type} completed ${recentCompletedMutationInfo.formattedDuration}`}
+                          >
+                            <span id="badge-last-mutation" data-testid="badge-last-mutation" className="inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-2.5 h-2.5 text-blue-600 shrink-0" />
+                              <span className="font-bold text-blue-950">Last Mutation:</span>
+                              <span id="badge-last-mutation-type" data-testid="badge-last-mutation-type" className="font-bold text-blue-800">
+                                {recentCompletedMutationInfo.type}
+                              </span>
+                              <span className="text-blue-400">&bull;</span>
+                              <span id="badge-last-mutation-duration" data-testid="badge-last-mutation-duration" className="text-blue-700 font-medium">
+                                {recentCompletedMutationInfo.formattedDuration}
+                              </span>
+                            </span>
+                          </span>
+                        )}
 
                         {isDatabaseMutatingState ? (
                           <span
                             id="badge-export-paused"
                             data-testid="badge-export-paused"
                             className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-300 text-amber-950 border border-amber-500/90 shadow-2xs animate-pulse ml-0.5"
-                            title={`Database mutation is mid-process (${pendingMutationsCount} active pending): Serialization deferred to ensure data consistency`}
+                            title={`Database mutation is mid-process (${pendingMutationsCount} active pending): Export action deferred (${deferredWaitCountdown.formattedSeconds} expected wait time)`}
                           >
                             <Pause className="w-2.5 h-2.5 fill-amber-900 text-amber-900" />
-                            <span>Export Paused ({pendingMutationsCount})</span>
+                            <span>Export Paused ({deferredWaitCountdown.formattedSeconds})</span>
                           </span>
                         ) : isCacheInvalidatedPulsing ? (
                           <span
@@ -2381,6 +3735,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                     id="tooltip-cache-invalidation-fresh-read"
                     data-testid="tooltip-cache-invalidation-fresh-read"
                     data-tooltip="tooltip-header-export-csv"
+                    data-pinned={isTooltipPinned ? 'true' : 'false'}
+                    data-export-deferred={isDatabaseMutatingState ? 'true' : 'false'}
+                    data-deferred-wait-seconds={isDatabaseMutatingState ? deferredWaitCountdown.formattedSeconds : undefined}
                     role="tooltip"
                     onMouseEnter={handleExportMouseEnter}
                     onMouseLeave={handleExportMouseLeave}
@@ -2389,14 +3746,16 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                         ? 'border-rose-500/90 shadow-rose-500/20 ring-1 ring-rose-500/40'
                         : isDatabaseMutatingState
                         ? 'border-amber-400/90 shadow-amber-500/20 ring-1 ring-amber-400/30'
+                        : isTooltipPinned
+                        ? 'border-amber-500/80 shadow-amber-500/20 ring-1 ring-amber-500/40'
                         : 'border-zinc-700 shadow-zinc-950/50'
                     } transition-all duration-150 ${
-                      isExportHovered || isLiveMonitoring || isThresholdInputFocused || isExportPulsing
+                      isExportHovered || isTooltipPinned || isLiveMonitoring || isThresholdInputFocused || isExportPulsing
                         ? 'opacity-100 translate-y-0 visible pointer-events-auto'
                         : 'opacity-0 translate-y-1 invisible pointer-events-none'
                     }`}
                   >
-                      {/* Live Monitoring Toggle Bar */}
+                      {/* Live Monitoring & Click-to-Pin Bar */}
                       <div
                         id="control-live-monitoring"
                         data-testid="control-live-monitoring"
@@ -2426,7 +3785,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             <span>Live Monitoring</span>
                           </span>
                         </label>
-                        <div className="flex items-center gap-1.5 text-[10px]">
+                        <div className="flex items-center gap-2 text-[10px]">
                           {isLiveMonitoring ? (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
@@ -2435,6 +3794,90 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           ) : (
                             <span className="text-zinc-400 font-mono">1s interval</span>
                           )}
+
+                          {/* Pin Tooltip Toggle Button */}
+                          <button
+                            id="btn-pin-tooltip"
+                            data-testid="btn-pin-tooltip"
+                            data-id="btn-pin-tooltip"
+                            aria-label={isTooltipPinned ? 'Unpin tooltip' : 'Pin tooltip'}
+                            aria-pressed={isTooltipPinned}
+                            type="button"
+                            onClick={handleTogglePin}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all cursor-pointer ${
+                              isTooltipPinned
+                                ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-xs ring-1 ring-amber-400/40'
+                                : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-zinc-600'
+                            }`}
+                            title={isTooltipPinned ? 'Tooltip pinned open (click to unpin or click outside)' : 'Click to pin tooltip open permanently'}
+                          >
+                            <Pin
+                              id="icon-tooltip-pin"
+                              data-testid="icon-tooltip-pin"
+                              className={`w-2.5 h-2.5 transition-transform ${
+                                isTooltipPinned ? 'rotate-45 text-amber-400 fill-amber-400' : 'text-zinc-400'
+                              }`}
+                            />
+                            <span>{isTooltipPinned ? 'Pinned' : 'Pin'}</span>
+                          </button>
+
+                          {/* Cancel Button: instantly closes tooltip and resets isTooltipPinned */}
+                          {isTooltipPinned && (
+                            <button
+                              id="btn-cancel-pinned-tooltip"
+                              data-testid="btn-cancel-pinned-tooltip"
+                              aria-label="Cancel"
+                              type="button"
+                              onClick={handleCancelPinnedTooltip}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border border-rose-500/50 bg-rose-950/60 hover:bg-rose-900/80 active:bg-rose-800 text-rose-200 hover:text-white transition-colors cursor-pointer shadow-2xs"
+                              title="Instantly close tooltip and reset pinned state (alternative to clicking outside)"
+                            >
+                              <X className="w-2.5 h-2.5 text-rose-300" />
+                              <span>Cancel</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Show Confirmation Prompt Toggle Setting */}
+                      <div
+                        id="control-export-confirmation"
+                        data-testid="control-export-confirmation"
+                        className="px-2.5 py-2 mb-2 rounded bg-zinc-950/80 border border-zinc-700/80 text-[11px] space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <label
+                            htmlFor="toggle-export-confirmation-prompt"
+                            className="flex items-center gap-1.5 font-semibold text-zinc-200 cursor-pointer select-none"
+                          >
+                            <ShieldCheck className={`w-3.5 h-3.5 ${isExportConfirmationPromptEnabled ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                            <span>Show confirmation prompt</span>
+                          </label>
+                          <span
+                            id="badge-export-confirmation-status"
+                            data-testid="badge-export-confirmation-status"
+                            className={`text-[9.5px] font-mono px-1.5 py-0.2 rounded font-bold uppercase tracking-wider ${
+                              isExportConfirmationPromptEnabled
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                : 'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                            }`}
+                          >
+                            {isExportConfirmationPromptEnabled ? 'Enabled' : 'Off'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 pt-0.5">
+                          <p className="text-[10px] text-zinc-400 leading-snug">
+                            Display a modal requiring confirmation before triggering CSV or JSON serialization
+                          </p>
+                          <input
+                            id="toggle-export-confirmation-prompt"
+                            data-testid="toggle-export-confirmation-prompt"
+                            aria-label="Show confirmation prompt"
+                            type="checkbox"
+                            checked={isExportConfirmationPromptEnabled}
+                            onChange={(e) => setIsExportConfirmationPromptEnabled(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-400 focus:ring-offset-zinc-900 cursor-pointer accent-emerald-500 shrink-0"
+                          />
                         </div>
                       </div>
 
@@ -2570,6 +4013,38 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             <div className="flex items-center justify-between text-[9.5px] text-rose-300 mt-1">
                               <span>Exceeded threshold of {thresholdAlert.thresholdSeconds}s</span>
                               <span className="font-mono font-bold">{thresholdAlert.elapsedSeconds}s elapsed</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recently Completed Mutation Notice in Tooltip */}
+                      {recentCompletedMutationInfo && (
+                        <div
+                          id="card-recently-completed-mutation"
+                          data-testid="card-recently-completed-mutation"
+                          className="flex items-start gap-2 p-2 mb-2.5 rounded bg-blue-950/70 border border-blue-500/60 text-[11px] text-blue-200 animate-in fade-in"
+                        >
+                          <CheckCircle2 className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-bold text-blue-200 text-xs flex items-center gap-1">
+                                Last Mutation Completed
+                              </span>
+                              <span
+                                id="badge-tooltip-last-mutation-duration"
+                                data-testid="badge-tooltip-last-mutation-duration"
+                                className="font-mono text-[9.5px] px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 border border-blue-500/40 font-semibold"
+                              >
+                                {recentCompletedMutationInfo.formattedDuration}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-zinc-200 font-medium mt-0.5 truncate">
+                              {recentCompletedMutationInfo.description || `Transaction: ${recentCompletedMutationInfo.type}`}
+                            </p>
+                            <div className="flex items-center justify-between text-[9px] text-blue-300/90 mt-1 font-mono">
+                              <span>Type: <strong className="text-blue-200">{recentCompletedMutationInfo.type}</strong></span>
+                              <span>Finished {recentCompletedMutationInfo.formattedDuration}</span>
                             </div>
                           </div>
                         </div>
@@ -2764,6 +4239,15 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             </div>
                             <div className="flex items-center gap-1.5">
                               <span
+                                id="badge-export-deferred-countdown"
+                                data-testid="badge-export-deferred-countdown"
+                                className="font-mono text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-200 border border-amber-500/40 flex items-center gap-1"
+                                title={`Live countdown: ${deferredWaitCountdown.formattedSeconds} estimated wait time`}
+                              >
+                                <Timer className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
+                                <span>{deferredWaitCountdown.formattedSeconds}</span>
+                              </span>
+                              <span
                                 id="badge-pending-mutations-count"
                                 data-testid="badge-pending-mutations-count"
                                 className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-500/25 text-amber-200 border border-amber-500/50 flex items-center gap-1"
@@ -2784,6 +4268,140 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           </div>
 
                           <div className="mt-2.5 space-y-2.5">
+                            {/* Explicit Highlight: Export Action Currently Deferred with Live Wait Time Countdown */}
+                            <div
+                              id="banner-export-action-deferred"
+                              data-testid="banner-export-action-deferred"
+                              role="alert"
+                              aria-live="polite"
+                              className="p-3 rounded-lg bg-gradient-to-br from-amber-950/95 via-amber-900/70 to-zinc-950/95 border-2 border-amber-400/90 shadow-lg shadow-amber-500/20 ring-1 ring-amber-400/40 text-amber-100 space-y-2.5 animate-in fade-in"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <div className="relative flex items-center justify-center w-7 h-7 rounded-full bg-amber-500/25 border border-amber-400/80 shrink-0">
+                                    <Clock className="w-4 h-4 text-amber-300 animate-spin" style={{ animationDuration: '4s' }} />
+                                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-xs font-bold text-amber-200 tracking-wide uppercase">
+                                        Export Action Currently Deferred
+                                      </span>
+                                    </div>
+                                    <p className="text-[10px] text-amber-300/80 leading-tight">
+                                      Active database mutation in progress &bull; Serialization paused
+                                    </p>
+                                  </div>
+                                </div>
+                                <span
+                                  id="badge-export-deferred-status"
+                                  data-testid="badge-export-deferred-status"
+                                  className="text-[9.5px] font-mono uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-400 text-amber-950 border border-amber-300 shadow-xs shrink-0 animate-pulse"
+                                >
+                                  {deferredExportRequest ? 'Queued' : 'Deferred'}
+                                </span>
+                              </div>
+
+                              {/* Prominent Live Countdown of Expected Wait Time */}
+                              <div
+                                id="box-deferred-export-countdown"
+                                data-testid="box-deferred-export-countdown"
+                                className="p-2.5 rounded-md bg-zinc-950/85 border border-amber-500/60 shadow-inner flex items-center justify-between gap-3"
+                              >
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
+                                    <Timer className="w-3 h-3 text-amber-400 animate-pulse" />
+                                    <span>Expected Wait Time</span>
+                                  </div>
+                                  <p className="text-[9.5px] text-zinc-300 leading-tight">
+                                    Live countdown until serialization resumes
+                                  </p>
+                                </div>
+
+                                <div className="text-right shrink-0">
+                                  <div
+                                    id="export-live-countdown-timer"
+                                    data-testid="export-live-countdown-timer"
+                                    aria-label={`Expected wait time: ${deferredWaitCountdown.formattedSeconds}`}
+                                    className="font-mono text-base font-extrabold text-amber-300 tracking-tight flex items-baseline justify-end gap-1"
+                                  >
+                                    <span>{deferredWaitCountdown.formattedSeconds}</span>
+                                  </div>
+                                  <div
+                                    id="export-live-countdown-subtext"
+                                    data-testid="export-live-countdown-subtext"
+                                    className="text-[9px] font-mono text-amber-400/90"
+                                  >
+                                    {deferredWaitCountdown.remainingSeconds < 1
+                                      ? '<1s remaining'
+                                      : `~${deferredWaitCountdown.remainingSeconds.toFixed(1)}s remaining`}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Dynamic Countdown Progress Bar */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[9px] font-mono text-zinc-400">
+                                  <span>Snapshot Lock Resolution</span>
+                                  <span className="text-amber-300 font-semibold">{deferredWaitCountdown.percentComplete}%</span>
+                                </div>
+                                <div
+                                  id="progress-container-deferred-countdown"
+                                  data-testid="progress-container-deferred-countdown"
+                                  className="w-full bg-zinc-900 rounded-full h-1.5 overflow-hidden border border-amber-500/30"
+                                  title={`Estimated completion: ${deferredWaitCountdown.percentComplete}% (${deferredWaitCountdown.formattedSeconds} remaining)`}
+                                >
+                                  <div
+                                    id="progress-bar-deferred-countdown"
+                                    data-testid="progress-bar-deferred-countdown"
+                                    role="progressbar"
+                                    aria-valuenow={deferredWaitCountdown.percentComplete}
+                                    aria-valuemin={0}
+                                    aria-valuemax={100}
+                                    style={{ width: `${deferredWaitCountdown.percentComplete}%` }}
+                                    className="h-full rounded-full bg-linear-to-r from-amber-500 via-amber-400 to-emerald-400 transition-all duration-150 shadow-xs shadow-amber-400/50"
+                                  />
+                                </div>
+                              </div>
+
+                              {/* Deferred Export Queue / Auto-Execution Notice if triggered */}
+                              {deferredExportRequest ? (
+                                <div
+                                  id="notice-export-action-queued-status"
+                                  data-testid="notice-export-action-queued-status"
+                                  className="flex items-center justify-between gap-2 p-2 rounded bg-amber-500/15 border border-amber-400/40 text-[10.5px]"
+                                >
+                                  <div className="flex items-center gap-1.5 text-amber-200 font-medium">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                    <span>
+                                      <strong>Export Queued:</strong> Will automatically download {deferredExportRequest.format.toUpperCase()} when timer reaches 0.
+                                    </span>
+                                  </div>
+                                  <button
+                                    id="btn-cancel-deferred-export"
+                                    data-testid="btn-cancel-deferred-export"
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeferredExportRequest(null);
+                                    }}
+                                    className="text-[9.5px] px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-600 transition-colors cursor-pointer shrink-0"
+                                    title="Cancel queued automatic export"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <div
+                                  id="notice-export-action-deferral-reason"
+                                  data-testid="notice-export-action-deferral-reason"
+                                  className="text-[10px] text-zinc-300/90 leading-relaxed bg-zinc-950/60 p-2 rounded border border-zinc-800/80"
+                                >
+                                  Export serialization is currently deferred to ensure snapshot isolation and prevent dirty reads while in-flight transactions commit WAL frames.
+                                </div>
+                              )}
+                            </div>
+
                             {/* Explicit Data Consistency & Deferred Serialization Callout */}
                             <div
                               id="notice-export-paused-consistency"
@@ -3639,14 +5257,116 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             data-testid="panel-pdf-export-settings"
                             className="mb-2.5 p-2.5 rounded-md bg-zinc-900/95 border border-amber-500/40 shadow-sm text-zinc-200 space-y-2 animate-fadeIn"
                           >
-                            <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-1">
+                            <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-2">
                               <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300">
                                 <SlidersHorizontal className="w-3 h-3 text-amber-400" />
                                 <span>PDF Report Export Settings</span>
                               </div>
-                              <span className="text-[9.5px] text-zinc-400">
-                                Configure stakeholder layouts and section visibility for generated PDF reports
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  id="btn-toggle-pdf-descriptions"
+                                  data-testid="btn-toggle-pdf-descriptions"
+                                  type="button"
+                                  onClick={() => setShowPdfCardDescriptions((v) => !v)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                  title="Toggle visibility of descriptive text under section card titles for a compact view"
+                                >
+                                  {showPdfCardDescriptions ? (
+                                    <>
+                                      <EyeOff className="w-3 h-3 text-amber-300" />
+                                      <span>Hide Descriptions</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Eye className="w-3 h-3 text-amber-300" />
+                                      <span>Show Descriptions</span>
+                                    </>
+                                  )}
+                                </button>
+                                <button
+                                  id="btn-toggle-pdf-layout"
+                                  data-testid="btn-toggle-pdf-layout"
+                                  type="button"
+                                  onClick={() => setIsDetailedPdfLayout((v) => !v)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                  title="Toggle between Compact Layout (title and toggle only) and Detailed Layout (all configuration controls visible)"
+                                >
+                                  {isDetailedPdfLayout ? (
+                                    <>
+                                      <Minimize2 className="w-3 h-3 text-amber-300" />
+                                      <span>Compact Layout</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Maximize2 className="w-3 h-3 text-amber-300" />
+                                      <span>Detailed Layout</span>
+                                    </>
+                                  )}
+                                </button>
+                                  <button
+                                    id="btn-bulk-enable-all"
+                                    data-testid="btn-bulk-enable-all"
+                                    type="button"
+                                    onClick={() => handleBulkTogglePdfSections(true)}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                    title="Enable all sections at once"
+                                  >
+                                    Enable All
+                                  </button>
+                                  <button
+                                    id="btn-bulk-disable-all"
+                                    data-testid="btn-bulk-disable-all"
+                                    type="button"
+                                    onClick={() => handleBulkTogglePdfSections(false)}
+                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                    title="Disable all sections at once"
+                                  >
+                                    Disable All
+                                  </button>
+                                   <button
+                                     id="btn-copy-all-notes"
+                                     data-testid="btn-copy-all-notes"
+                                     type="button"
+                                     onClick={handleCopyAllNotes}
+                                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                     title="Aggregate and copy all custom notes from visible section cards as a formatted document outline to clipboard"
+                                   >
+                                     {copiedAllNotes ? (
+                                       <>
+                                         <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                         <span className="text-emerald-300 font-semibold">Notes Copied!</span>
+                                       </>
+                                     ) : (
+                                       <>
+                                         <Copy className="w-2.5 h-2.5 text-amber-400" />
+                                         <span>Copy All Notes</span>
+                                       </>
+                                     )}
+                                   </button>
+                                   <button
+                                     id="btn-toggle-page-numbers"
+                                     data-testid="btn-toggle-page-numbers"
+                                     type="button"
+                                     onClick={() => {
+                                       setPdfExportSections((prev) => ({
+                                         ...prev,
+                                         includePageNumbers: prev.includePageNumbers === false ? true : false
+                                       }));
+                                     }}
+                                     className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9.5px] font-medium transition-colors cursor-pointer ${
+                                       pdfExportSections.includePageNumbers !== false
+                                         ? 'bg-amber-950/40 border-amber-500/60 text-amber-300 hover:bg-amber-900/50'
+                                         : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-700'
+                                     }`}
+                                     title="Toggle inclusion of page numbers ('Page X of Y') in the PDF document footer"
+                                   >
+                                     <FileText className="w-2.5 h-2.5 text-amber-400" />
+                                     <span>Page Numbers: {pdfExportSections.includePageNumbers !== false ? 'On' : 'Off'}</span>
+                                   </button>
+                                <span className="text-[9.5px] text-zinc-400 hidden sm:inline">
+                                  Configure stakeholder layouts and section visibility for generated PDF reports
+                                </span>
+                              </div>
                             </div>
 
                             {/* Template Selector Dropdown & Stakeholder Configuration Controls */}
@@ -3761,254 +5481,482 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
-                              {/* Trend Sparklines Section Card */}
-                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
-                                <label
-                                  htmlFor="toggle-section-sparklines"
-                                  className="flex items-start gap-2 cursor-pointer select-none"
+                            {/* Section Search Filter Input */}
+                            <div className="relative flex items-center">
+                              <Search className="absolute left-2.5 w-3.5 h-3.5 text-zinc-400 pointer-events-none" />
+                              <input
+                                id="input-pdf-section-search"
+                                data-testid="input-pdf-section-search"
+                                type="text"
+                                placeholder="Filter PDF section cards by title, badge, or description..."
+                                value={pdfSectionSearchQuery}
+                                onChange={(e) => setPdfSectionSearchQuery(e.target.value)}
+                                className="w-full pl-8 pr-7 py-1.5 rounded bg-zinc-950/80 border border-zinc-800 text-zinc-200 placeholder:text-zinc-500 text-[10.5px] focus:outline-none focus:border-amber-500/80 transition-colors shadow-xs"
+                              />
+                              {pdfSectionSearchQuery && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPdfSectionSearchQuery('')}
+                                  className="absolute right-2 p-0.5 rounded text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                                  title="Clear search filter"
                                 >
-                                  <input
-                                    id="toggle-section-sparklines"
-                                    data-testid="toggle-section-sparklines"
-                                    type="checkbox"
-                                    checked={pdfExportSections.includeSparklines}
-                                    onChange={(e) =>
-                                      setPdfExportSections((prev) => ({ ...prev, includeSparklines: e.target.checked }))
-                                    }
-                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                  />
-                                  <div className="flex flex-col text-[10.5px]">
-                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                      <span>Trend Sparklines</span>
-                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/20 text-blue-300">
-                                        Visual Canvas
-                                      </span>
-                                    </span>
-                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                      Dual-panel latency response &amp; write mutation frequency charts with SLA limits
-                                    </span>
-                                  </div>
-                                </label>
-                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
-                                  <label
-                                    htmlFor="toggle-break-sparklines"
-                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
-                                      !pdfExportSections.includeSparklines ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
-                                    }`}
-                                    title="Force this section to start on a new page"
-                                  >
-                                    <input
-                                      id="toggle-break-sparklines"
-                                      data-testid="toggle-break-sparklines"
-                                      type="checkbox"
-                                      disabled={!pdfExportSections.includeSparklines}
-                                      checked={pdfExportSections.breakBeforeSparklines}
-                                      onChange={(e) =>
-                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeSparklines: e.target.checked }))
-                                      }
-                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
-                                    />
-                                    <span className="font-mono flex items-center gap-1">
-                                      <span className={pdfExportSections.breakBeforeSparklines ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
-                                        Force Page Break
-                                      </span>
-                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
-                                    </span>
-                                  </label>
-                                  {pdfExportSections.breakBeforeSparklines && pdfExportSections.includeSparklines && (
-                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                      New Page
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
 
-                              {/* Detailed Mutation History Section Card */}
-                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
-                                <label
-                                  htmlFor="toggle-section-mutation-history"
-                                  className="flex items-start gap-2 cursor-pointer select-none"
-                                >
-                                  <input
-                                    id="toggle-section-mutation-history"
-                                    data-testid="toggle-section-mutation-history"
-                                    type="checkbox"
-                                    checked={pdfExportSections.includeMutationHistory}
-                                    onChange={(e) =>
-                                      setPdfExportSections((prev) => ({ ...prev, includeMutationHistory: e.target.checked }))
-                                    }
-                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                  />
-                                  <div className="flex flex-col text-[10.5px]">
-                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                      <span>Detailed Mutation History</span>
-                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300">
-                                        Data Tables
-                                      </span>
-                                    </span>
-                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                      Mutation clusters, lock holding times, and chronological root-cause chain of events
-                                    </span>
-                                  </div>
-                                </label>
-                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
-                                  <label
-                                    htmlFor="toggle-break-mutation-history"
-                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
-                                      !pdfExportSections.includeMutationHistory ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
-                                    }`}
-                                    title="Force this section to start on a new page"
-                                  >
-                                    <input
-                                      id="toggle-break-mutation-history"
-                                      data-testid="toggle-break-mutation-history"
-                                      type="checkbox"
-                                      disabled={!pdfExportSections.includeMutationHistory}
-                                      checked={pdfExportSections.breakBeforeMutationHistory}
-                                      onChange={(e) =>
-                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeMutationHistory: e.target.checked }))
-                                      }
-                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
-                                    />
-                                    <span className="font-mono flex items-center gap-1">
-                                      <span className={pdfExportSections.breakBeforeMutationHistory ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
-                                        Force Page Break
-                                      </span>
-                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
-                                    </span>
-                                  </label>
-                                  {pdfExportSections.breakBeforeMutationHistory && pdfExportSections.includeMutationHistory && (
-                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                      New Page
-                                    </span>
-                                  )}
-                                </div>
+                            {/* Section Reordering Control Banner */}
+                            <div className="flex items-center justify-between text-[10px] px-2 py-1.5 rounded bg-zinc-950/70 border border-zinc-800/80 flex-wrap gap-2">
+                              <div className="flex items-center gap-1.5 text-zinc-300">
+                                <ArrowUpDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span className="font-semibold text-zinc-200">Drag-and-Drop Section Layout:</span>
+                                <span className="text-zinc-400 text-[9.5px]">
+                                  Drag cards or use arrows to visually customize report section order
+                                </span>
                               </div>
+                              <div className="flex items-center gap-2">
+                                {isOrderCustomized && (
+                                  <span
+                                    id="badge-pdf-custom-order"
+                                    data-testid="badge-pdf-custom-order"
+                                    className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold"
+                                  >
+                                    Custom Order Active
+                                  </span>
+                                )}
+                                <button
+                                  id="btn-copy-pdf-settings"
+                                   data-testid="btn-copy-pdf-settings"
+                                   type="button"
+                                   onClick={handleCopyPdfSettings}
+                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[9.5px] font-medium transition-colors cursor-pointer mr-1"
+                                   title="Copy current PDF export configuration JSON to clipboard"
+                                 >
+                                   {copiedPdfSettings ? (
+                                     <>
+                                       <ClipboardCheck className="w-2.5 h-2.5 text-emerald-400" />
+                                       <span className="text-emerald-300 font-semibold">Copied JSON!</span>
+                                     </>
+                                   ) : (
+                                     <>
+                                       <Copy className="w-2.5 h-2.5 text-amber-400" />
+                                       <span>Copy Settings</span>
+                                     </>
+                                   )}
+                                 </button>
+                                 <button
+                                   id="btn-reset-all-pdf-layouts"
+                                   data-testid="btn-reset-all-pdf-layouts"
+                                   type="button"
+                                   onClick={handleResetAllPdfLayouts}
+                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-600/20 hover:bg-amber-600/30 active:bg-amber-600/40 text-amber-300 hover:text-amber-200 border border-amber-500/40 text-[9.5px] font-semibold transition-colors cursor-pointer mr-1"
+                                   title="Reset section order, inclusion toggles, and page breaks for all cards simultaneously"
+                                 >
+                                   <RefreshCw className="w-2.5 h-2.5" />
+                                   <span>Reset All Layouts</span>
+                                 </button>
+                                 <button
+                                   id="btn-reset-pdf-section-order"
+                                  data-testid="btn-reset-pdf-section-order"
+                                  type="button"
+                                  onClick={handleResetPdfSectionOrder}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                  title="Reset sections to default sequential order"
+                                >
+                                  <RotateCcw className="w-2.5 h-2.5 text-amber-400" />
+                                  <span>Reset Order</span>
+                                </button>
+                              </div>
+                            </div>
 
-                              {/* Strategic Engineering Recommendations Card */}
-                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
-                                <label
-                                  htmlFor="toggle-section-recommendations"
-                                  className="flex items-start gap-2 cursor-pointer select-none"
-                                >
-                                  <input
-                                    id="toggle-section-recommendations"
-                                    data-testid="toggle-section-recommendations"
-                                    type="checkbox"
-                                    checked={pdfExportSections.includeRecommendations}
-                                    onChange={(e) =>
-                                      setPdfExportSections((prev) => ({ ...prev, includeRecommendations: e.target.checked }))
-                                    }
-                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                  />
-                                  <div className="flex flex-col text-[10.5px]">
-                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                      <span>Strategic Recommendations</span>
-                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
-                                        Action Plan
-                                      </span>
-                                    </span>
-                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                      Prioritized engineering remediation guidance (micro-batching, indexing, caching)
-                                    </span>
-                                  </div>
-                                </label>
-                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
-                                  <label
-                                    htmlFor="toggle-break-recommendations"
-                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
-                                      !pdfExportSections.includeRecommendations ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
-                                    }`}
-                                    title="Force this section to start on a new page"
-                                  >
-                                    <input
-                                      id="toggle-break-recommendations"
-                                      data-testid="toggle-break-recommendations"
-                                      type="checkbox"
-                                      disabled={!pdfExportSections.includeRecommendations}
-                                      checked={pdfExportSections.breakBeforeRecommendations}
-                                      onChange={(e) =>
-                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeRecommendations: e.target.checked }))
-                                      }
-                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
-                                    />
-                                    <span className="font-mono flex items-center gap-1">
-                                      <span className={pdfExportSections.breakBeforeRecommendations ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
-                                        Force Page Break
-                                      </span>
-                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
-                                    </span>
-                                  </label>
-                                  {pdfExportSections.breakBeforeRecommendations && pdfExportSections.includeRecommendations && (
-                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                      New Page
-                                    </span>
-                                  )}
+                            {/* Drag-and-drop Reorderable Section Cards */}
+                            <div
+                              id="container-pdf-export-sections"
+                              data-testid="container-pdf-export-sections"
+                              className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5"
+                            >
+                              {draggedPdfSectionIndex !== null && (
+                                <div className="col-span-full px-2.5 py-1 rounded bg-amber-500/15 border border-dashed border-amber-500/50 text-amber-300 text-[10px] font-medium flex items-center justify-between animate-pulse">
+                                  <span>📍 Dragging section. Drop over any card to reorder position.</span>
+                                  <span className="font-mono text-[9px]">Source Index: #{draggedPdfSectionIndex + 1}</span>
                                 </div>
-                              </div>
+                              )}
+                              {filteredSectionOrder.length === 0 ? (
+                                <div className="col-span-full py-6 text-center bg-zinc-950/60 rounded border border-zinc-800 text-zinc-400 text-[11px] flex flex-col items-center justify-center gap-1">
+                                  <span>No matching PDF section cards found for &ldquo;{pdfSectionSearchQuery}&rdquo;</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setPdfSectionSearchQuery('')}
+                                    className="text-amber-400 hover:text-amber-300 underline text-[10px] cursor-pointer mt-0.5"
+                                  >
+                                    Clear search filter
+                                  </button>
+                                </div>
+                              ) : (
+                                filteredSectionOrder.map((sectionId, index) => {
+                                  const item = PDF_SECTION_CONFIG_ITEMS[sectionId];
+                                  if (!item) return null;
+                                  const isIncluded = Boolean(pdfExportSections[item.includeKey]);
+                                  const isBreak = Boolean(pdfExportSections[item.breakKey]);
+                                  const isDragging = draggedPdfSectionIndex === index;
+                                  const isDragOver = dragOverPdfSectionIndex === index;
 
-                              {/* Executive Summary Takeaways Card */}
-                              <div className="flex flex-col justify-between p-2 rounded bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80 transition-colors">
-                                <label
-                                  htmlFor="toggle-section-executive-summary"
-                                  className="flex items-start gap-2 cursor-pointer select-none"
-                                >
-                                  <input
-                                    id="toggle-section-executive-summary"
-                                    data-testid="toggle-section-executive-summary"
-                                    type="checkbox"
-                                    checked={pdfExportSections.includeExecutiveSummary}
-                                    onChange={(e) =>
-                                      setPdfExportSections((prev) => ({ ...prev, includeExecutiveSummary: e.target.checked }))
-                                    }
-                                    className="mt-0.5 accent-amber-500 rounded cursor-pointer"
-                                  />
-                                  <div className="flex flex-col text-[10.5px]">
-                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                      <span>Executive Narrative Callout</span>
-                                      <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-purple-500/20 text-purple-300">
-                                        Briefing
-                                      </span>
-                                    </span>
-                                    <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
-                                      Non-technical explanation of table mutex locks and latency degradation causality
-                                    </span>
-                                  </div>
-                                </label>
-                                <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between">
-                                  <label
-                                    htmlFor="toggle-break-executive-summary"
-                                    className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
-                                      !pdfExportSections.includeExecutiveSummary ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
-                                    }`}
-                                    title="Force this section to start on a new page"
-                                  >
-                                    <input
-                                      id="toggle-break-executive-summary"
-                                      data-testid="toggle-break-executive-summary"
-                                      type="checkbox"
-                                      disabled={!pdfExportSections.includeExecutiveSummary}
-                                      checked={pdfExportSections.breakBeforeExecutiveSummary}
-                                      onChange={(e) =>
-                                        setPdfExportSections((prev) => ({ ...prev, breakBeforeExecutiveSummary: e.target.checked }))
-                                      }
-                                      className="accent-amber-500 rounded cursor-pointer w-3 h-3"
-                                    />
-                                    <span className="font-mono flex items-center gap-1">
-                                      <span className={pdfExportSections.breakBeforeExecutiveSummary ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
-                                        Force Page Break
-                                      </span>
-                                      <span className="text-zinc-500 text-[8.5px]">(Start on new page)</span>
-                                    </span>
-                                  </label>
-                                  {pdfExportSections.breakBeforeExecutiveSummary && pdfExportSections.includeExecutiveSummary && (
-                                    <span className="text-[8px] font-mono px-1 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                                      New Page
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
+                                  return (
+                                    <div
+                                      key={item.id}
+                                      id={`card-pdf-section-${item.id}`}
+                                      data-testid={`card-pdf-section-${item.id}`}
+                                      data-section-id={item.id}
+                                      data-order-index={index}
+                                      draggable={true}
+                                      onDragStart={(e) => handlePdfSectionDragStart(e, index)}
+                                      onDragOver={(e) => handlePdfSectionDragOver(e, index)}
+                                      onDragEnter={(e) => handlePdfSectionDragEnter(e, index)}
+                                      onDragLeave={(e) => handlePdfSectionDragLeave(e, index)}
+                                      onDrop={(e) => handlePdfSectionDrop(e, index)}
+                                      onDragEnd={handlePdfSectionDragEnd}
+                                      className={`relative group flex flex-col justify-between p-2 pl-3.5 rounded overflow-hidden transition-all select-none ${
+                                        isDragging
+                                          ? 'opacity-30 border-2 border-dashed border-amber-500 bg-amber-950/25 scale-[0.98]'
+                                          : isDragOver
+                                          ? 'border-2 border-dashed border-amber-400 ring-4 ring-amber-400/40 bg-amber-950/60 shadow-xl scale-[1.02]'
+                                          : draggedPdfSectionIndex !== null
+                                          ? 'border border-dashed border-zinc-700/80 bg-zinc-900/70 hover:border-amber-500/60'
+                                          : 'bg-zinc-950/60 border border-zinc-800/80 hover:border-zinc-700/80'
+                                      }`}
+                                    >
+                                      {/* Left Edge Categorical Indicator Bar */}
+                                      <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${item.barColor} opacity-90`} />
+
+                                      {/* Hover-activated Pro-Tip Tooltip Banner */}
+                                      <div className="absolute inset-x-2 bottom-2 z-30 p-2 rounded bg-zinc-900/95 border border-amber-500/50 shadow-2xl text-[10px] text-zinc-200 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-start gap-1.5 backdrop-blur-sm">
+                                        <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                                        <div className="flex flex-col gap-0.5">
+                                          <span className="font-semibold text-amber-300 font-mono text-[9px] uppercase tracking-wider">Data Provenance Pro-Tip</span>
+                                          <span className="text-[9.5px] text-zinc-300 leading-tight">{item.tip}</span>
+                                        </div>
+                                      </div>
+                                      {isDragOver && (
+                                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 px-2 py-0.5 rounded-full bg-amber-500 text-zinc-950 font-bold text-[9px] shadow-lg animate-bounce flex items-center gap-1">
+                                          <span>📍 Drop to Reorder (# {index + 1})</span>
+                                        </div>
+                                      )}
+                                      <div>
+                                        {/* Card Reordering Header Bar with Drag Handle & Position Badge */}
+                                        <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-zinc-800/70 text-[9.5px]">
+                                          <div className="flex items-center gap-1.5">
+                                            <div
+                                              data-testid={`drag-handle-${item.id}`}
+                                              className="cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-zinc-500 hover:text-amber-400 transition-colors flex items-center shrink-0"
+                                              title="Click & drag to reorder this section in the generated PDF report"
+                                              aria-label={`Drag handle to reorder ${item.title}`}
+                                            >
+                                              <GripVertical className="w-3.5 h-3.5" />
+                                            </div>
+                                            <span
+                                              data-testid={`badge-section-order-${item.id}`}
+                                              className="font-mono font-bold px-1.5 py-0.2 rounded bg-zinc-800 text-amber-300 border border-zinc-700 text-[8.5px]"
+                                              title={`Position #${index + 1} in generated PDF report sequence`}
+                                            >
+                                              Position #{index + 1}
+                                            </span>
+                                          </div>
+
+                                          <div className="flex items-center gap-0.5">
+                                            <button
+                                              id={`btn-move-up-section-${item.id}`}
+                                              data-testid={`btn-move-up-section-${item.id}`}
+                                              type="button"
+                                              disabled={index === 0}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleMovePdfSection(index, index - 1);
+                                              }}
+                                              className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-25 disabled:pointer-events-none transition-colors cursor-pointer"
+                                              title={`Move ${item.title} up in PDF report order`}
+                                              aria-label={`Move ${item.title} up in PDF report order`}
+                                            >
+                                              <ChevronUp className="w-3 h-3" />
+                                            </button>
+                                            <button
+                                              id={`btn-move-down-section-${item.id}`}
+                                              data-testid={`btn-move-down-section-${item.id}`}
+                                              type="button"
+                                              disabled={index === filteredSectionOrder.length - 1}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleMovePdfSection(index, index + 1);
+                                              }}
+                                              className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-25 disabled:pointer-events-none transition-colors cursor-pointer"
+                                              title={`Move ${item.title} down in PDF report order`}
+                                              aria-label={`Move ${item.title} down in PDF report order`}
+                                            >
+                                              <ChevronDown className="w-3 h-3" />
+                                            </button>
+                                             <button
+                                               id={`btn-reset-section-${item.id}`}
+                                               data-testid={`btn-reset-section-${item.id}`}
+                                               type="button"
+                                               onClick={(e) => {
+                                                 e.stopPropagation();
+                                                 handleResetSinglePdfSection(item.id);
+                                               }}
+                                               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-amber-200 border border-zinc-700 text-[8.5px] font-medium transition-colors cursor-pointer ml-1"
+                                               title={`Restore note, padding, and page break for ${item.title} to system defaults`}
+                                             >
+                                               <RotateCcw className="w-2.5 h-2.5 text-amber-400" />
+                                               <span>Restore Default</span>
+                                             </button>
+                                             <button
+                                               id={`btn-export-section-data-${item.id}`}
+                                               data-testid={`btn-export-section-data-${item.id}`}
+                                               type="button"
+                                               onClick={(e) => {
+                                                 e.stopPropagation();
+                                                 handleExportSectionData(item.id);
+                                               }}
+                                               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-emerald-300 border border-zinc-700 text-[8.5px] font-medium transition-colors cursor-pointer ml-1"
+                                               title={`Export data subset associated with ${item.title} as a standalone CSV file`}
+                                             >
+                                               <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-400" />
+                                               <span>Export Section Data</span>
+                                             </button>
+                                          </div>
+                                        </div>
+
+                                        {/* Main Section Enable Toggle */}
+                                        <label
+                                          htmlFor={item.inputSectionId}
+                                          className="flex items-start gap-2 cursor-pointer select-none"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          <input
+                                            id={item.inputSectionId}
+                                            data-testid={item.inputSectionId}
+                                            type="checkbox"
+                                            checked={isIncluded}
+                                            onChange={(e) => {
+                                              const val = e.target.checked;
+                                              setPdfExportSections((prev) => ({ ...prev, [item.includeKey]: val }));
+                                              handleGenerateSnapshot(item.id);
+                                            }}
+                                            className="mt-0.5 accent-amber-500 rounded cursor-pointer"
+                                          />
+                                           <div className="flex flex-col text-[10.5px] flex-1">
+                                             <div className="flex items-center justify-between gap-1 w-full">
+                                               <span
+                                                 onClick={() => handleScrollToSection(item.id)}
+                                                 className="font-semibold text-zinc-200 flex items-center gap-1.5 cursor-pointer hover:text-amber-300 transition-colors group/title"
+                                                 title="Click to smoothly scroll and highlight card configuration"
+                                               >
+                                                 <item.icon className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover/title:scale-110 transition-transform" />
+                                                 <span>{item.title}</span>
+                                                 <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${item.badgeClass}`}>
+                                                   {item.badge}
+                                                 </span>
+                                                 <span
+                                                   data-testid={`badge-data-points-${item.id}`}
+                                                   className="text-[8.5px] font-mono px-1.5 py-0.2 rounded bg-amber-950/40 text-amber-300 border border-amber-500/40"
+                                                   title={`Estimated rows / data points for ${item.title} based on current database query filters (${queryResult.records.length} records)`}
+                                                 >
+                                                   {item.id === 'sparklines'
+                                                     ? `${Math.max(12, Math.round(queryResult.records.length * 1.5))} pts`
+                                                     : item.id === 'mutationHistory'
+                                                     ? `${queryResult.records.length} records`
+                                                     : item.id === 'recommendations'
+                                                     ? `${Math.min(10, Math.max(3, Math.round(queryResult.records.length / 4)))} items`
+                                                     : `${Math.max(1, Math.round(queryResult.records.length / 8))} findings`}
+                                                 </span>
+                                               </span>
+                                               <span
+                                                 title={item.tip}
+                                                 className="text-zinc-400 hover:text-amber-300 transition-colors cursor-help p-0.5 inline-flex items-center shrink-0"
+                                                 aria-label={item.tip}
+                                               >
+                                                 <HelpCircle className="w-3 h-3 text-amber-400/80 hover:text-amber-300" />
+                                               </span>
+                                             </div>
+                                            {showPdfCardDescriptions && (
+                                            <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
+                                              {item.description}
+                                            </span>
+                                            )}
+                                          </div>
+                                        </label>
+                                      </div>
+
+                                       {isDetailedPdfLayout && (
+                                       <>
+                                      {/* Add Custom Note Input Field */}
+                                      <div className="mt-2 pt-1.5 border-t border-zinc-800/70">
+                                        <div className="flex flex-col gap-1">
+                                          <label
+                                            htmlFor={item.inputNoteId}
+                                            className={`text-[9.5px] font-medium flex items-center justify-between ${
+                                              !isIncluded ? 'opacity-40 pointer-events-none text-zinc-500' : 'text-zinc-300'
+                                            }`}
+                                          >
+                                            <span>Add Custom Note:</span>
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="text-[8.5px] text-zinc-500 font-mono">Section Commentary</span>
+                                              <button
+                                                id={`btn-copy-note-${item.id}`}
+                                                data-testid={`btn-copy-note-${item.id}`}
+                                                type="button"
+                                                disabled={!isIncluded || !String(pdfExportSections[item.noteKey] || '').trim()}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  const noteText = String(pdfExportSections[item.noteKey] || '');
+                                                  if (!noteText.trim()) return;
+                                                  navigator.clipboard.writeText(noteText).then(() => {
+                                                    setCopiedNoteSectionId(item.id);
+                                                    setTimeout(() => setCopiedNoteSectionId((curr) => curr === item.id ? null : curr), 2000);
+                                                  }).catch(() => {});
+                                                }}
+                                                className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[8.5px] font-medium transition-colors cursor-pointer disabled:opacity-25 disabled:pointer-events-none"
+                                                title={`Copy custom note for ${item.title} to clipboard for reuse elsewhere`}
+                                              >
+                                                {copiedNoteSectionId === item.id ? (
+                                                  <>
+                                                    <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                                    <span className="text-emerald-300 font-semibold">Copied!</span>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <Copy className="w-2.5 h-2.5 text-amber-400" />
+                                                    <span>Copy Note</span>
+                                                  </>
+                                                )}
+                                              </button>
+                                            </div>
+                                          </label>
+                                          <input
+                                            id={item.inputNoteId}
+                                            data-testid={item.inputNoteId}
+                                            type="text"
+                                            disabled={!isIncluded}
+                                            placeholder="Add custom note for this section..."
+                                            value={String(pdfExportSections[item.noteKey] || '')}
+                                            onChange={(e) => {
+                                              const val = e.target.value;
+                                              setPdfExportSections((prev) => ({
+                                                ...prev,
+                                                [item.noteKey]: val
+                                              }));
+                                              if (noteChangeTimeoutsRef.current[item.id]) {
+                                                clearTimeout(noteChangeTimeoutsRef.current[item.id]);
+                                              }
+                                              noteChangeTimeoutsRef.current[item.id] = setTimeout(() => {
+                                                handleGenerateSnapshot(item.id);
+                                              }, 500);
+                                            }}
+                                            onClick={(e) => e.stopPropagation()}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            draggable={false}
+                                            className="w-full px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 text-[10px] focus:outline-none focus:border-amber-500/80 disabled:opacity-30 disabled:pointer-events-none"
+                                          />
+                                        </div>
+                                      </div>
+
+                                      {/* Page Break & Metadata Controls */}
+                                      <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between gap-2">
+                                        <label
+                                          htmlFor={item.inputBreakId}
+                                          className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                            !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                          }`}
+                                          title="Force this section to start on a new page"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          <input
+                                            id={item.inputBreakId}
+                                            data-testid={item.inputBreakId}
+                                            type="checkbox"
+                                            disabled={!isIncluded}
+                                            checked={isBreak}
+                                            onChange={(e) => {
+                                              const val = e.target.checked;
+                                              setPdfExportSections((prev) => ({ ...prev, [item.breakKey]: val }));
+                                              handleGenerateSnapshot(item.id);
+                                            }}
+                                            className="accent-amber-500 rounded cursor-pointer w-3 h-3"
+                                          />
+                                          <span className="font-mono flex items-center gap-1">
+                                            <FileText className="w-3 h-3 text-amber-400 shrink-0" />
+                                            <span className={isBreak ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
+                                              Insert Page Break
+                                            </span>
+                                          </span>
+                                        </label>
+
+                                        <label
+                                          htmlFor={item.inputMetadataId}
+                                          className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                            !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                          }`}
+                                          title="Include section metadata footer row in PDF with timestamp & data point count"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          <input
+                                            id={item.inputMetadataId}
+                                            data-testid={item.inputMetadataId}
+                                            type="checkbox"
+                                            disabled={!isIncluded}
+                                            checked={Boolean(pdfExportSections[item.metadataKey])}
+                                            onChange={(e) => {
+                                              const val = e.target.checked;
+                                              setPdfExportSections((prev) => ({ ...prev, [item.metadataKey]: val }));
+                                              handleGenerateSnapshot(item.id);
+                                            }}
+                                            className="accent-amber-500 rounded cursor-pointer w-3 h-3"
+                                          />
+                                          <span className="font-mono flex items-center gap-1">
+                                            <span className={Boolean(pdfExportSections[item.metadataKey]) ? 'text-amber-300 font-semibold' : 'text-zinc-300'}>
+                                              Include Metadata
+                                            </span>
+                                          </span>
+                                        </label>
+                                       </div>
+
+                                       {/* Vertical Padding Slider Control */}
+                                       <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between gap-2">
+                                         <label
+                                           htmlFor={item.inputPaddingId}
+                                           className={`flex items-center gap-1.5 text-[9.5px] cursor-pointer select-none transition-colors ${
+                                             !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300'
+                                           }`}
+                                           title="Adjust vertical white space / padding around this section in generated PDF"
+                                           onClick={(e) => e.stopPropagation()}
+                                         >
+                                           <span className="font-mono text-zinc-400">Vertical Padding:</span>
+                                           <span className="text-amber-300 font-semibold font-mono">
+                                             {Number(pdfExportSections[item.paddingKey] ?? 10)}px
+                                           </span>
+                                         </label>
+                                         <input
+                                           id={item.inputPaddingId}
+                                           data-testid={item.inputPaddingId}
+                                           type="range"
+                                           min="0"
+                                           max="30"
+                                           step="2"
+                                           disabled={!isIncluded}
+                                           value={Number(pdfExportSections[item.paddingKey] ?? 10)}
+                                           onChange={(e) => {
+                                             const val = Number(e.target.value);
+                                             setPdfExportSections((prev) => ({ ...prev, [item.paddingKey]: val }));
+                                             handleGenerateSnapshot(item.id);
+                                           }}
+                                           onClick={(e) => e.stopPropagation()}
+                                           className="w-24 accent-amber-500 cursor-pointer h-1.5 bg-zinc-800 rounded"
+                                         />
+                                       </div>
+                                       </>
+                                       )}
+                                    </div>
+                                  );
+                                })
+                              )}
                             </div>
 
                             {/* Quick Presets and Done control */}
@@ -5072,6 +7020,130 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
           </div>
         </div>
       )}
+      {/* Export Confirmation Modal */}
+      {isExportConfirmationModalOpen && (
+        <div
+          id="modal-export-confirmation-backdrop"
+          data-testid="modal-export-confirmation-backdrop"
+          onClick={handleCloseExportConfirmationModal}
+          className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div
+            id="modal-export-confirmation"
+            data-testid="modal-export-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-export-confirmation-title"
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-md bg-zinc-900 border border-zinc-700/80 rounded-2xl shadow-2xl p-5 text-zinc-100 space-y-4 animate-in zoom-in-95 duration-150"
+          >
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3 border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3
+                    id="modal-export-confirmation-title"
+                    data-testid="modal-export-confirmation-title"
+                    className="text-sm font-bold text-white tracking-tight"
+                  >
+                    Confirm {pendingExportFormat.toUpperCase()} Export
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    User confirmation is required before proceeding with data serialization
+                  </p>
+                </div>
+              </div>
+              <button
+                id="btn-close-export-confirmation-modal"
+                data-testid="btn-close-export-confirmation-modal"
+                type="button"
+                onClick={handleCloseExportConfirmationModal}
+                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                aria-label="Close export confirmation modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Details Summary */}
+            <div className="p-3 bg-zinc-950/70 border border-zinc-800 rounded-xl space-y-2 text-xs">
+              <div className="flex items-center justify-between text-zinc-300">
+                <span className="text-zinc-400">Serialization Format:</span>
+                <span className="font-semibold text-white flex items-center gap-1.5 font-mono">
+                  {pendingExportFormat === 'json' ? (
+                    <>
+                      <FileCode className="w-3.5 h-3.5 text-amber-400" />
+                      JSON (Structured Records)
+                    </>
+                  ) : (
+                    <>
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                      CSV {includeCsvHeaders ? '(with headers)' : '(headerless)'}
+                    </>
+                  )}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-zinc-300">
+                <span className="text-zinc-400">Query Records:</span>
+                <span className="font-semibold font-mono text-emerald-300">
+                  {queryResult.records.length.toLocaleString()} rows
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-zinc-300">
+                <span className="text-zinc-400">Target Filename:</span>
+                <span className="font-mono text-zinc-300 text-[11px]">
+                  filtered_transactions.{pendingExportFormat}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-zinc-300">
+                <span className="text-zinc-400">Output Action:</span>
+                <span className="text-[11px] text-zinc-300">
+                  File Download & Clipboard Copy
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[11.5px] text-zinc-300 leading-relaxed">
+              Are you sure you want to serialize and export <span className="font-bold text-white font-mono">{queryResult.records.length.toLocaleString()}</span> records as <span className="font-bold text-white uppercase">{pendingExportFormat}</span>?
+            </p>
+
+            {/* Modal Action Buttons */}
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-zinc-800">
+              <button
+                id="btn-cancel-export-confirmation"
+                data-testid="btn-cancel-export-confirmation"
+                type="button"
+                onClick={handleCloseExportConfirmationModal}
+                className="px-3.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                id="btn-confirm-export"
+                data-testid="btn-confirm-export"
+                type="button"
+                onClick={() => {
+                  const wasPinned = isTooltipPinnedRef.current || isTooltipPinned;
+                  setIsExportConfirmationModalOpen(false);
+                  handleHeaderExport(pendingExportFormat, pendingExportIsFromShortcut, true);
+                  if (wasPinned) {
+                    setIsTooltipPinned(true);
+                    setIsExportHovered(true);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-semibold shadow-md shadow-emerald-950/40 transition-all cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export {pendingExportFormat.toUpperCase()}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Live PDF Report Preview Modal */}
       <DiagnosticPdfPreviewModal
         isOpen={showPdfPreviewModal}

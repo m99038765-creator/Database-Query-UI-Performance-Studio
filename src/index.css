@@ -18,3 +18,33 @@
 .animate-indeterminate {
   animation: indeterminate-progress 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
+
+@keyframes sparkle-twinkle {
+  0%, 100% {
+    transform: scale(0.92) rotate(0deg);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.15) rotate(12deg);
+    opacity: 1;
+  }
+}
+
+.animate-sparkle-twinkle {
+  animation: sparkle-twinkle 1.4s ease-in-out infinite;
+}
+
+@keyframes pinned-ring-shift {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.75), 0 1px 2px 0 rgba(245, 158, 11, 0.15);
+    border-color: #f59e0b;
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.95), 0 1px 3px 0 rgba(217, 119, 6, 0.25);
+    border-color: #d97706;
+  }
+}
+
+.animate-pinned-ring-shift {
+  animation: pinned-ring-shift 2.4s ease-in-out infinite;
+}

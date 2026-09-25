@@ -7,7 +7,36 @@ import {
   ThresholdViolationRecord
 } from './diagnosticCorrelationReportGenerator';
 
+export type DiagnosticPdfSectionId =
+  | 'sparklines'
+  | 'mutationHistory'
+  | 'recommendations'
+  | 'executiveSummary';
+
+export const DEFAULT_PDF_SECTION_ORDER: DiagnosticPdfSectionId[] = [
+  'sparklines',
+  'mutationHistory',
+  'recommendations',
+  'executiveSummary'
+];
+
+export interface DiagnosticPdfSectionGroup {
+  id: string;
+  title: string;
+  sectionIds: DiagnosticPdfSectionId[];
+  isCollapsed?: boolean;
+}
+
 export interface DiagnosticPdfSectionsConfig {
+  includePageNumbers?: boolean;
+  sparklinesDelimiter?: string;
+  mutationHistoryDelimiter?: string;
+  recommendationsDelimiter?: string;
+  executiveSummaryDelimiter?: string;
+  sparklinesFilenamePrefix?: string;
+  mutationHistoryFilenamePrefix?: string;
+  recommendationsFilenamePrefix?: string;
+  executiveSummaryFilenamePrefix?: string;
   includeSparklines?: boolean;
   includeMutationHistory?: boolean;
   includeRecommendations?: boolean;
@@ -16,6 +45,21 @@ export interface DiagnosticPdfSectionsConfig {
   breakBeforeMutationHistory?: boolean;
   breakBeforeRecommendations?: boolean;
   breakBeforeExecutiveSummary?: boolean;
+  sparklinesNote?: string;
+  mutationHistoryNote?: string;
+  recommendationsNote?: string;
+  executiveSummaryNote?: string;
+  includeMetadataSparklines?: boolean;
+  includeMetadataMutationHistory?: boolean;
+  includeMetadataRecommendations?: boolean;
+  includeMetadataExecutiveSummary?: boolean;
+  paddingSparklines?: number;
+  paddingMutationHistory?: number;
+  paddingRecommendations?: number;
+  paddingExecutiveSummary?: number;
+  sectionOrder?: DiagnosticPdfSectionId[];
+  sectionGroups?: DiagnosticPdfSectionGroup[];
+  groupByTag?: boolean;
 }
 
 export interface DiagnosticPdfReportOptions {
@@ -509,8 +553,10 @@ export async function generateDiagnosticCorrelationPdf(params: {
       doc.setTextColor(100, 116, 139); // slate-500
       doc.text('Confidential — Database System Performance & Incident Correlation Documentation', margin, pageHeight - 5);
 
-      const pageText = `Page ${i} of ${totalPages}`;
-      doc.text(pageText, pageWidth - margin - 18, pageHeight - 5);
+      if (sectionsConfig.includePageNumbers !== false) {
+        const pageText = `Page ${i} of ${totalPages}`;
+        doc.text(pageText, pageWidth - margin - 18, pageHeight - 5);
+      }
     }
   };
 
@@ -523,6 +569,7 @@ export async function generateDiagnosticCorrelationPdf(params: {
     breakBeforeMutationHistory: true,
     breakBeforeRecommendations: false,
     breakBeforeExecutiveSummary: false,
+    sectionOrder: [...DEFAULT_PDF_SECTION_ORDER],
     ...(options?.sections || {})
   };
 
@@ -544,6 +591,53 @@ export async function generateDiagnosticCorrelationPdf(params: {
       drawPageHeader(pageNum);
       currentY = 30;
     }
+  };
+
+  // Helper for rendering section metadata footer row
+  const renderSectionMetadataFooter = (includeMetadata?: boolean, lastModified?: string, dataPointCountText?: string) => {
+    if (!includeMetadata) return;
+    ensureSpace(8);
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(margin, currentY, contentWidth, 6, 1, 1, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('SECTION METADATA:', margin + 2.5, currentY + 4);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(51, 65, 85);
+    doc.text(`Last Modified: ${lastModified || `${formattedDate} ${formattedTime}`}`, margin + 30, currentY + 4);
+
+    doc.text(`Data Points: ${dataPointCountText || 'N/A'}`, margin + 120, currentY + 4);
+
+    currentY += 8;
+  };
+
+  // Helper for rendering custom analyst notes attached to each section
+  const renderSectionNote = (noteText?: string) => {
+    if (!noteText || !noteText.trim()) return;
+    ensureSpace(16);
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.3);
+    const splitNote = doc.splitTextToSize(noteText.trim(), contentWidth - 6);
+    const boxHeight = Math.max(10, splitNote.length * 3.5 + 4);
+    doc.roundedRect(margin, currentY, contentWidth, boxHeight, 1, 1, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(71, 85, 105);
+    doc.text('ANALYST CUSTOM NOTE:', margin + 3, currentY + 4);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(51, 65, 85);
+    doc.text(splitNote, margin + 3, currentY + 8);
+
+    currentY += boxHeight + 3;
   };
 
   // ================= PAGE 1 =================
@@ -662,8 +756,12 @@ export async function generateDiagnosticCorrelationPdf(params: {
 
   currentY += kpiCardHeight + 5;
 
-  // Executive Plain-English Takeaway Callout Box (Conditional)
-  if (sectionsConfig.includeExecutiveSummary) {
+  let sectionCounter = 1;
+
+  // Section 1: Executive Plain-English Takeaway Callout Box (Conditional)
+  const renderExecutiveSummary = () => {
+    if (!sectionsConfig.includeExecutiveSummary) return;
+
     if (sectionsConfig.breakBeforeExecutiveSummary) {
       forcePageBreak();
     } else {
@@ -692,10 +790,15 @@ export async function generateDiagnosticCorrelationPdf(params: {
     doc.text(splitExecutiveText, margin + 4, currentY + 10.5);
 
     currentY += 27;
-  }
+    renderSectionNote(sectionsConfig.executiveSummaryNote);
+    renderSectionMetadataFooter(sectionsConfig.includeMetadataExecutiveSummary, `${formattedDate} ${formattedTime}`, `${diagnosticData.executiveSummary.totalActiveThresholdAlerts} threshold alerts`);
+    currentY += 4 + ((sectionsConfig.paddingExecutiveSummary ?? 10) * 0.25);
+  };
 
-  // Visual Trend Sparklines (Conditional)
-  if (sectionsConfig.includeSparklines) {
+  // Section 2: Visual Trend Sparklines (Conditional)
+  const renderSparklines = () => {
+    if (!sectionsConfig.includeSparklines) return;
+
     if (sectionsConfig.breakBeforeSparklines) {
       forcePageBreak();
     } else {
@@ -764,12 +867,15 @@ export async function generateDiagnosticCorrelationPdf(params: {
     );
 
     currentY += 15;
-  }
+    renderSectionNote(sectionsConfig.sparklinesNote);
+    renderSectionMetadataFooter(sectionsConfig.includeMetadataSparklines, `${formattedDate} ${formattedTime}`, `${trendHistory.length} telemetry points`);
+    currentY += 4 + ((sectionsConfig.paddingSparklines ?? 10) * 0.25);
+  };
 
-  let sectionCounter = 1;
+  // Section 3: Detailed Mutation History Section (Conditional)
+  const renderMutationHistory = () => {
+    if (!sectionsConfig.includeMutationHistory) return;
 
-  // Detailed Mutation History Section (Conditional)
-  if (sectionsConfig.includeMutationHistory) {
     if (sectionsConfig.breakBeforeMutationHistory) {
       forcePageBreak();
     } else {
@@ -902,10 +1008,15 @@ export async function generateDiagnosticCorrelationPdf(params: {
     });
 
     currentY = (doc as any).lastAutoTable?.finalY + 8 || currentY + 40;
-  }
+    renderSectionNote(sectionsConfig.mutationHistoryNote);
+    renderSectionMetadataFooter(sectionsConfig.includeMetadataMutationHistory, `${formattedDate} ${formattedTime}`, `${diagnosticData.mutationClusters.length} mutation clusters (${mutationHistory.length} writes)`);
+    currentY += 4 + ((sectionsConfig.paddingMutationHistory ?? 10) * 0.25);
+  };
 
-  // Section 3: Strategic Recommendations for Stakeholders (Conditional)
-  if (sectionsConfig.includeRecommendations) {
+  // Section 4: Strategic Recommendations for Stakeholders (Conditional)
+  const renderRecommendations = () => {
+    if (!sectionsConfig.includeRecommendations) return;
+
     if (sectionsConfig.breakBeforeRecommendations) {
       forcePageBreak();
     } else {
@@ -979,7 +1090,66 @@ export async function generateDiagnosticCorrelationPdf(params: {
 
       currentY += boxHeight + 2.5;
     });
+    renderSectionNote(sectionsConfig.recommendationsNote);
+    renderSectionMetadataFooter(sectionsConfig.includeMetadataRecommendations, `${formattedDate} ${formattedTime}`, '3 engineering rules');
+    currentY += 4 + ((sectionsConfig.paddingRecommendations ?? 10) * 0.25);
+  };
+
+  // Build the effective section order, ensuring all 4 sections are accounted for
+  const configuredOrder = sectionsConfig.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
+  const effectiveSectionOrder: DiagnosticPdfSectionId[] = [];
+  configuredOrder.forEach((id) => {
+    if (DEFAULT_PDF_SECTION_ORDER.includes(id) && !effectiveSectionOrder.includes(id)) {
+      effectiveSectionOrder.push(id);
+    }
+  });
+  DEFAULT_PDF_SECTION_ORDER.forEach((id) => {
+    if (!effectiveSectionOrder.includes(id)) {
+      effectiveSectionOrder.push(id);
+    }
+  });
+
+  const SECTION_TAGS: Record<DiagnosticPdfSectionId, string> = {
+    sparklines: 'Metrics',
+    mutationHistory: 'Logs',
+    recommendations: 'Strategy',
+    executiveSummary: 'Summary'
+  };
+
+  if (sectionsConfig.groupByTag) {
+    effectiveSectionOrder.sort((a, b) => {
+      const tagA = SECTION_TAGS[a] || 'Other';
+      const tagB = SECTION_TAGS[b] || 'Other';
+      return tagA.localeCompare(tagB);
+    });
   }
+
+  // Render each section in the customized visual order
+  let lastTag: string | null = null;
+  effectiveSectionOrder.forEach((sectionId) => {
+    const currentTag = SECTION_TAGS[sectionId] || 'Other';
+    if (sectionsConfig.groupByTag && currentTag !== lastTag) {
+      lastTag = currentTag;
+      ensureSpace(12);
+      doc.setFillColor(30, 41, 59);
+      doc.roundedRect(margin, currentY, contentWidth, 7, 1, 1, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(245, 158, 11);
+      doc.text(`DATA DOMAIN CATEGORY: ${currentTag.toUpperCase()}`, margin + 3, currentY + 4.5);
+      currentY += 9;
+    }
+
+    if (sectionId === 'executiveSummary') {
+      renderExecutiveSummary();
+    } else if (sectionId === 'sparklines') {
+      renderSparklines();
+    } else if (sectionId === 'mutationHistory') {
+      renderMutationHistory();
+    } else if (sectionId === 'recommendations') {
+      renderRecommendations();
+    }
+  });
 
   // Add standard page footers to all pages
   addPageFooters();
