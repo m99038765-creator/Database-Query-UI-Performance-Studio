@@ -484,7 +484,6 @@ function formatInvalidationLogsForClipboard(
   const lines: string[] = [
     divider,
     'CACHE INVALIDATION & CHURN AUDIT LOGS',
-    `Timestamp: ${now.toISOString()} (${now.toLocaleTimeString()})`,
     `Database State: ${
       isMutating
         ? `PAUSED (${pendingCount} active pending mutation${pendingCount === 1 ? '' : 's'})`
@@ -798,7 +797,6 @@ export default function App() {
       }
 
       const newEntry: InvalidationTriggerEntry = {
-        id: `inv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         reason: reason || 'database_mutation',
         label: formatTriggerLabel(reason),
         timestamp: Date.now(),
@@ -900,10 +898,9 @@ export default function App() {
     const minutes = Math.floor(remainingSeconds / 60);
     const seconds = Math.floor(remainingSeconds % 60);
     const tenths = Math.floor((remainingSeconds * 10) % 10);
-    const formattedTimer = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${tenths}`;
     const formattedSeconds = remainingSeconds >= 60
       ? `${minutes}m ${seconds}s`
-      : `${remainingSeconds.toFixed(1)}s`;
+      : `${seconds}s`;
 
     const progressPct = Math.min(
       98,
@@ -929,9 +926,7 @@ export default function App() {
     }
     const { remainingSeconds } = deferredWaitCountdown;
     if (remainingSeconds < 1) {
-      return `~${remainingSeconds.toFixed(1)}s (<1s remaining)`;
     }
-    return `~${remainingSeconds.toFixed(1)}s remaining`;
   }, [isDatabaseMutatingState, pendingMutationsCount, activeMutationsList, deferredWaitCountdown]);
 
   // Compute total estimated completion percentage across all active pending database mutations
@@ -1041,7 +1036,6 @@ export default function App() {
     const formatted = `[Active Threshold Alert]
 Mutation: ${item.mutationDescription}
 Duration: ${item.elapsedSeconds}s (Threshold: ${item.thresholdSeconds}s)
-Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
     if (navigator?.clipboard?.writeText) {
       navigator.clipboard.writeText(formatted).catch(() => {});
@@ -1088,7 +1082,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         if (val === null || val === undefined) return '""';
         const str = String(val);
         if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-          return `"${str.replace(/"/g, '""')}"`;
         }
         return `"${str}"`;
       };
@@ -1416,7 +1409,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         summary: 'High-level management briefing that translates low-level table mutex locks into clear business risk and performance impact narratives.',
         metrics: [
           { label: 'Strategic Callouts', value: `${callouts} core non-technical summary findings explaining system degradation causality` },
-          { label: 'SLA Adherence Ratio', value: `${violationsCount === 0 ? '100% (Nominal)' : `${Math.max(70, 100 - violationsCount * 3)}% (Degraded)`} compliance during observation period` },
           { label: 'Downtime Risk Level', value: `${violationsCount > 5 ? 'Elevated' : violationsCount > 0 ? 'Moderate' : 'Low'} operational risk assessment` },
           { label: 'Remediation Roadmap', value: 'Executive summary sign-off roadmap for engineering leadership and stakeholders' }
         ],
@@ -1530,7 +1522,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
           }
         }
       });
-      const combinedText = `# PDF Report Document Outline & Custom Notes\nGenerated: ${new Date().toLocaleString()}\n\n` +
         (notesList.length > 0 ? notesList.join('\n\n') : '*(No custom notes entered for visible section cards)*');
       await navigator.clipboard.writeText(combinedText);
       setCopiedAllNotes(true);
@@ -1631,7 +1622,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleDuplicatePdfSection = (baseId: string) => {
     const item = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId];
     if (!item) return;
-    const newId = `${baseId}_dup_${Math.random().toString(36).substring(2, 7)}`;
     setPdfExportSections((prev) => {
       const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)];
       order.push(newId as any);
@@ -1682,7 +1672,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     if (selectedSectionsForGroup.length === 0) return;
     const groupTitle = newGroupTitleInput.trim() || `Folder Group ${(pdfExportSections.sectionGroups?.length || 0) + 1}`;
     const newGroup = {
-      id: `group_${Date.now()}`,
       title: groupTitle,
       sectionIds: [...selectedSectionsForGroup],
       isCollapsed: false
@@ -1893,7 +1882,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     const newGroups = Object.entries(categoryMap)
       .filter(([_, ids]) => ids.length > 0)
       .map(([catName, ids], idx) => ({
-        id: `auto_group_${idx}_${Date.now()}`,
         title: `${catName} Domain Group`,
         sectionIds: ids,
         isCollapsed: false
@@ -2467,6 +2455,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const [newPresetFolderInput, setNewPresetFolderInput] = useState<string>('General');
   const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [presetActionFeedback, setPresetActionFeedback] = useState<string | null>(null);
+  const [deletedPresetsUndoState, setDeletedPresetsUndoState] = useState<{ presets: ExportPresetItem[]; timer: any } | null>(null);
   const [previewPresetItem, setPreviewPresetItem] = useState<ExportPresetItem | null>(null);
   const [presetSearchQuery, setPresetSearchQuery] = useState<string>('');
   const [presetTimeFilter, setPresetTimeFilter] = useState<'all' | '7days' | '30days'>('all');
@@ -2500,11 +2489,24 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   }, [exportPresetsList]);
 
   const handleSaveNewExportPreset = () => {
-    const presetName = newPresetNameInput.trim() || `Export Preset #${exportPresetsList.length + 1}`;
+    const rawName = newPresetNameInput.trim();
+    if (!rawName) {
+      setPresetActionFeedback('Warning: Preset name cannot be empty.');
+      setTimeout(() => setPresetActionFeedback(null), 3000);
+      return;
+    }
+    const nameExists = exportPresetsList.some(
+      (p) => p.name.trim().toLowerCase() === rawName.toLowerCase()
+    );
+    if (nameExists) {
+      setPresetActionFeedback(`Warning: Preset name "${rawName}" already exists! Please use a unique name.`);
+      setTimeout(() => setPresetActionFeedback(null), 3500);
+      return;
+    }
+
     const folderName = newPresetFolderInput.trim() || 'General';
     const newPreset: ExportPresetItem = {
-      id: `preset_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      name: presetName,
+      name: rawName,
       folder: folderName,
       createdAt: Date.now(),
       sections: JSON.parse(JSON.stringify(pdfExportSections))
@@ -2519,7 +2521,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       }
     }
     setNewPresetNameInput('');
-    setPresetActionFeedback(`Saved preset "${presetName}" in folder "${folderName}"!`);
+    setPresetActionFeedback(`Saved preset "${rawName}" in folder "${folderName}"!`);
     setTimeout(() => setPresetActionFeedback(null), 3000);
   };
 
@@ -2539,6 +2541,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
   const handleBatchDeletePresets = () => {
     if (selectedPresetIds.length === 0) return;
+    const targets = exportPresetsList.filter((p) => selectedPresetIds.includes(p.id));
     const updated = exportPresetsList.filter((p) => !selectedPresetIds.includes(p.id));
     setExportPresetsList(updated);
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -2548,6 +2551,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         console.error('Failed to update export presets list:', err);
       }
     }
+    if (deletedPresetsUndoState?.timer) {
+      clearTimeout(deletedPresetsUndoState.timer);
+    }
+    const timer = setTimeout(() => {
+      setDeletedPresetsUndoState(null);
+    }, 5000);
+    setDeletedPresetsUndoState({ presets: targets, timer });
     setPresetActionFeedback(`Deleted ${selectedPresetIds.length} presets.`);
     setSelectedPresetIds([]);
     setTimeout(() => setPresetActionFeedback(null), 2500);
@@ -2575,7 +2585,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(itemsToExport, null, 2));
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", `export_presets_batch_${Date.now()}.json`);
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
@@ -2584,6 +2593,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   };
 
   const handleDeleteExportPreset = (presetId: string) => {
+    const target = exportPresetsList.find((p) => p.id === presetId);
+    if (!target) return;
     const updated = exportPresetsList.filter((p) => p.id !== presetId);
     setExportPresetsList(updated);
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -2593,8 +2604,34 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         console.error('Failed to update export presets list:', err);
       }
     }
+    if (deletedPresetsUndoState?.timer) {
+      clearTimeout(deletedPresetsUndoState.timer);
+    }
+    const timer = setTimeout(() => {
+      setDeletedPresetsUndoState(null);
+    }, 5000);
+    setDeletedPresetsUndoState({ presets: [target], timer });
     setPresetActionFeedback('Deleted preset.');
     setTimeout(() => setPresetActionFeedback(null), 2500);
+  };
+
+  const handleUndoDeletePresets = () => {
+    if (!deletedPresetsUndoState) return;
+    if (deletedPresetsUndoState.timer) {
+      clearTimeout(deletedPresetsUndoState.timer);
+    }
+    const restored = [...deletedPresetsUndoState.presets, ...exportPresetsList];
+    setExportPresetsList(restored);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(EXPORT_PRESETS_LIST_STORAGE_KEY, JSON.stringify(restored));
+      } catch (err) {
+        console.error('Failed to restore export presets:', err);
+      }
+    }
+    setPresetActionFeedback(`Restored ${deletedPresetsUndoState.presets.length} preset(s)!`);
+    setDeletedPresetsUndoState(null);
+    setTimeout(() => setPresetActionFeedback(null), 3000);
   };
 
   const handleMovePresetFolder = (presetId: string, targetFolder: any) => {
@@ -2742,7 +2779,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
           alertedMutationIdsRef.current.add(alertKey);
           const elapsedSec = Math.round((elapsedMs / 1000) * 10) / 10;
           const newAlertItem = {
-            id: `alert-${m.id}-${Date.now()}`,
             mutationId: m.id,
             mutationDescription: m.description,
             thresholdSeconds: currentThreshold,
@@ -2840,7 +2876,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const cacheRefreshSecondsAgo = useMemo(() => {
     if (!lastCacheRefreshedAt) return '0.0s';
     const diff = Math.max(0, (Date.now() - lastCacheRefreshedAt) / 1000);
-    return `${diff.toFixed(1)}s`;
   }, [lastCacheRefreshedAt, isExportHovered, liveMonitoringClock]);
 
   // Copy Logs state and export tooltip interaction helpers
@@ -3036,7 +3071,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       `• Total Est. Completion: ${mutationProgressPercent}%`,
       `• Serialization Status: ${isDatabaseMutatingState ? 'PAUSED (Serialization Deferred)' : 'READY (Fresh Read Active)'}`,
       `• Lock Scope: Heap Rows & B-Tree Indexes (Snapshot Isolation)`,
-      `• Timestamp: ${new Date().toISOString()}`
     ].join('\n');
 
     try {
@@ -3178,7 +3212,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `cache-invalidation-triggers-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -3210,7 +3243,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         if (val === null || val === undefined) return '""';
         const str = String(val);
         if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-          return `"${str.replace(/"/g, '""')}"`;
         }
         return `"${str}"`;
       };
@@ -3252,7 +3284,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `cache-invalidation-audit-history-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -3552,8 +3583,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
     const formatBytes = (bytes: number): string => {
       if (bytes < 1024) return `${bytes} B`;
-      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-      return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
     };
 
     const csvEstMs = Math.max(0.1, Number(((rowCount / 35000) * 1000).toFixed(1)));
@@ -3620,7 +3649,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     }
 
     const newPoint: LatencyTrendPoint = {
-      id: `pt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       timestamp: Date.now(),
       timeFormatted,
       executionTimeMs: queryResult.executionTimeMs,
@@ -3712,7 +3740,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     const timeFormatted = now.toTimeString().split(' ')[0];
     setTrendHistory([
       {
-        id: `pt-${Date.now()}`,
         timestamp: Date.now(),
         timeFormatted,
         executionTimeMs: queryResult.executionTimeMs,
@@ -3741,7 +3768,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         : 'Online B-Tree Indexed';
 
     const newPoint: LatencyTrendPoint = {
-      id: `pt-bulk-${Date.now()}`,
       timestamp: Date.now(),
       timeFormatted,
       executionTimeMs: result.readQueryLatencyAfterMs,
@@ -3749,7 +3775,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       activeQueriesCount: 1,
       cacheHit: false,
       flags: { ...flags },
-      triggerEvent: `Bulk Ingest +${result.recordsAdded.toLocaleString()} (${modeLabel})`,
       deltaMs: Number((result.readQueryLatencyAfterMs - result.readQueryLatencyBeforeMs).toFixed(2)),
       simulatedError: null
     };
@@ -3768,7 +3793,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     const now = new Date();
     const timeFormatted = now.toTimeString().split(' ')[0];
     const newPoint: LatencyTrendPoint = {
-      id: `pt-reset-${Date.now()}`,
       timestamp: Date.now(),
       timeFormatted,
       executionTimeMs: 1.82,
@@ -3825,7 +3849,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     setExportHistory((prev) => {
       const lastIndex = prev.length > 0 ? prev[prev.length - 1].runIndex : 0;
       const newPoint: ExportHistoryPoint = {
-        id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         runIndex: lastIndex + 1,
         timestamp: Date.now(),
         timeFormatted,
@@ -4078,9 +4101,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
           setIsExportHovered(true);
         }
       } catch (err: unknown) {
-        console.error(`Failed to export ${format.toUpperCase()} from Table & Explain Plan header:`, err);
         const errorLog: SerializationLogEntry = {
-          id: `err-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           timestamp: Date.now(),
           timeFormatted: new Date().toTimeString().split(' ')[0],
           severity: 'error',
@@ -4284,7 +4305,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     const now = new Date();
     const timeFormatted = now.toTimeString().split(' ')[0];
     const newPoint: LatencyTrendPoint = {
-      id: `pt-del-${Date.now()}`,
       timestamp: Date.now(),
       timeFormatted,
       executionTimeMs: queryResult.executionTimeMs,
@@ -4292,7 +4312,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       activeQueriesCount: queryResult.activeQueriesCount,
       cacheHit: false,
       flags: { ...flags },
-      triggerEvent: `Batch Delete (${result.deletedCount.toLocaleString()} rows removed)`,
       simulatedError: queryResult.simulatedError
     };
     setTrendHistory((prev) => [...prev, newPoint].slice(-60));
@@ -4311,7 +4330,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       <Header
         flags={flags}
         onToggleAll={handleToggleAll}
-        onRunBenchmark={() => setIsBenchmarkOpen(true)}
         isBenchmarking={isBenchmarkOpen}
         hasErrors={hasErrors}
         activeErrorCount={activeErrorsCount}
@@ -4320,7 +4338,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         trendCount={trendHistory.length}
         totalRecords={totalDatabaseRecords}
         isIndexSynchronized={isIndexSynchronized}
-        onOpenBulkImport={() => setIsBulkImportOpen(true)}
       />
 
       {/* Main Body */}
@@ -4343,7 +4360,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                 <ShieldCheck className="w-5 h-5" />
               ) : (
                 <AlertTriangle className="w-5 h-5" />
-              )}
             </div>
             <div>
               <div className="text-sm font-bold flex items-center gap-2">
@@ -4361,11 +4377,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                       Bottlenecks Detected
                     </span>
                   </>
-                )}
               </div>
               <p className="text-xs opacity-85 mt-0.5">
                 {!hasErrors
-                  ? `All ${totalDatabaseRecords.toLocaleString()} transaction records query in ~1.5ms using B-Tree indexing and batch eager joins. Virtual scrolling maintains a smooth 60 FPS.`
                   : 'Unbatched N+1 queries, unindexed table scans, and unwindowed DOM nodes are degrading database latency and frame rate.'}
               </p>
             </div>
@@ -4375,7 +4389,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             {!hasErrors ? (
               <button
                 type="button"
-                onClick={() => handleToggleAll(false)}
                 className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-900 transition-colors cursor-pointer"
               >
                 Inspect Unoptimized State
@@ -4383,14 +4396,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             ) : (
               <button
                 type="button"
-                onClick={() => handleToggleAll(true)}
                 className="text-xs font-semibold px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-colors cursor-pointer"
               >
                 Apply All Optimizations
               </button>
-            )}
           </div>
-        </div>
+        
 
         {/* 1. Live Telemetry Metrics */}
         <MetricsBar
@@ -4399,7 +4410,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
           currentFps={currentFps}
           renderedDomCount={domNodeCount}
           totalDatabaseRecords={totalDatabaseRecords}
-          onOpenBulkImport={() => setIsBulkImportOpen(true)}
         />
 
         {/* View Mode Tabs Navigation & View Action Header */}
@@ -4408,7 +4418,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             <button
               id="main-tab-grid"
               type="button"
-              onClick={() => setActiveView('grid')}
               className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 activeView === 'grid'
                   ? 'bg-white text-zinc-900 shadow-xs'
@@ -4421,7 +4430,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             <button
               id="main-tab-trends"
               type="button"
-              onClick={() => setActiveView('trends')}
               className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 activeView === 'trends'
                   ? 'bg-white text-emerald-900 shadow-xs'
@@ -4438,8 +4446,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
           {/* Secondary Header Actions */}
           <div className="flex items-center gap-2.5">
-            {activeView === 'grid' ? (
-              <>
                 <span className="text-xs text-zinc-500 hidden md:inline-block">
                   Virtual grid with RFC 4180 CSV / JSON export and query execution tree
                 </span>
@@ -4448,7 +4454,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                 <button
                   id="btn-open-historical-data-tape"
                   type="button"
-                  onClick={() => setIsDataTapeModalOpen(true)}
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold shadow-2xs transition-colors cursor-pointer ${
                     isQueueAutoSaveEnabled
                       ? 'bg-emerald-50 border-emerald-300 text-emerald-900 hover:bg-emerald-100'
@@ -4468,7 +4473,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                       className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"
                       title="Queue Auto-Save is actively recording"
                     />
-                  )}
                 </button>
 
                 {/* Export Dropdown Split Button */}
@@ -4572,7 +4576,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               <FileCode className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-amber-600'}`} />
                             ) : (
                               <FileSpreadsheet className={`w-3.5 h-3.5 ${isExportPulsing ? 'text-amber-700 animate-pulse' : 'text-emerald-600'}`} />
-                            )}
                             <span>
                               {selectedExportFormat === 'json'
                                 ? 'Export JSON'
@@ -4581,7 +4584,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                 : 'Export CSV (No Headers)'}
                             </span>
                           </>
-                        )}
                         {/* Dynamic pill-shaped format badge ('CSV' or 'JSON') with high-performance preparation sparkle indicator */}
                         <span className="relative inline-flex items-center">
                           <span
@@ -4635,12 +4637,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             id="badge-header-export-duration"
                             data-testid="badge-header-export-duration"
                             className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-mono text-[9px] font-semibold tracking-tight border bg-emerald-50 text-emerald-700 border-emerald-200/90 shadow-2xs select-none transition-colors"
-                            title={`Last serialization duration: ${formattedLastExportDuration.replace('Last: ', '')}`}
                           >
                             <Zap className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
                             <span>{formattedLastExportDuration}</span>
                           </span>
-                        )}
                         <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded font-bold border transition-colors ${
                           isExportPulsing
                             ? 'bg-amber-100 text-amber-900 border-amber-300'
@@ -4674,7 +4674,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             <Pin className="w-2.5 h-2.5 rotate-45 fill-amber-700 text-amber-700" />
                             <span>Pinned</span>
                           </span>
-                        )}
 
                         {/* Small 'Last Mutation' badge appearing only when a database mutation recently completed */}
                         {recentCompletedMutationInfo && (
@@ -4700,7 +4699,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               </span>
                             </span>
                           </span>
-                        )}
 
                         {isDatabaseMutatingState ? (
                           <span
@@ -4729,9 +4727,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           >
                             {shortcutKeyLabel}
                           </kbd>
-                        )}
                       </>
-                    )}
                   </button>
 
                   {/* Custom Tooltip: includes Performance Comparison Table, 'Export Paused' state during mid-process mutations, Last 3 Invalidation Triggers & Export All Logs Audit CSV */}
@@ -4797,7 +4793,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             </span>
                           ) : (
                             <span className="text-zinc-400 font-mono">1s interval</span>
-                          )}
 
                           {/* Pin Tooltip Toggle Button */}
                           <button
@@ -4839,7 +4834,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               <X className="w-2.5 h-2.5 text-rose-300" />
                               <span>Cancel</span>
                             </button>
-                          )}
                         </div>
                       </div>
 
@@ -4879,7 +4873,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             aria-label="Show confirmation prompt"
                             type="checkbox"
                             checked={isExportConfirmationPromptEnabled}
-                            onChange={(e) => setIsExportConfirmationPromptEnabled(e.target.checked)}
                             className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800 text-emerald-500 focus:ring-emerald-400 focus:ring-offset-zinc-900 cursor-pointer accent-emerald-500 shrink-0"
                           />
                         </div>
@@ -4914,8 +4907,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               max="120"
                               step="0.5"
                               value={mutationThreshold || ''}
-                              onFocus={() => setIsThresholdInputFocused(true)}
-                              onBlur={() => setIsThresholdInputFocused(false)}
                               onChange={(e) => {
                                 const val = parseFloat(e.target.value);
                                 if (!isNaN(val) && val > 0) {
@@ -4936,7 +4927,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               <button
                                 key={preset}
                                 type="button"
-                                onClick={() => setMutationThreshold(preset)}
                                 className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors cursor-pointer border ${
                                   mutationThreshold === preset
                                     ? 'bg-amber-500/20 text-amber-300 border-amber-500/60 font-bold'
@@ -4946,7 +4936,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               >
                                 {preset}s
                               </button>
-                            ))}
                           </div>
                         </div>
                         <div className="flex items-center justify-between pt-1 border-t border-zinc-800/80 text-[10px]">
@@ -4958,7 +4947,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               </span>
                             ) : (
                               <span>Notify if mutation exceeds duration</span>
-                            )}
                           </span>
                           <button
                             id="btn-simulate-long-mutation"
@@ -4969,7 +4957,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               const targetDuration = Math.max(3000, ((mutationThreshold || 5) + 1) * 1000);
                               const release = beginDatabaseMutation(
                                 'bulk_ingestion',
-                                `Simulated Bulk Ingest (${(targetDuration / 1000).toFixed(0)}s)`,
                                 100,
                                 targetDuration
                               );
@@ -5004,7 +4991,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               <button
                                 id="btn-dismiss-threshold-alert"
                                 data-testid="btn-dismiss-threshold-alert"
-                                onClick={() => setThresholdAlert(null)}
                                 className="text-rose-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
                                 aria-label="Dismiss alert"
                               >
@@ -5020,7 +5006,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             </div>
                           </div>
                         </div>
-                      )}
 
                       {/* Recently Completed Mutation Notice in Tooltip */}
                       {recentCompletedMutationInfo && (
@@ -5050,9 +5035,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               <span>Type: <strong className="text-blue-200">{recentCompletedMutationInfo.type}</strong></span>
                               <span>Finished {recentCompletedMutationInfo.formattedDuration}</span>
                             </div>
-                          </div>
-                        </div>
-                      )}
+                          
+                           </div>
+                           </div>
 
                       {/* Format Performance & File Size Comparison Table based on filtered row count */}
                       <div
@@ -5119,7 +5104,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       >
                                         Active
                                       </span>
-                                    )}
                                   </div>
                                 </td>
                                 <td
@@ -5166,7 +5150,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       >
                                         Active
                                       </span>
-                                    )}
                                   </div>
                                 </td>
                                 <td
@@ -5201,7 +5184,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               id="btn-select-format-csv-tooltip"
                               data-testid="btn-select-format-csv-tooltip"
                               type="button"
-                              onClick={() => setSelectedExportFormat('csv')}
                               className={`px-1.5 py-0.5 rounded text-[9.5px] font-medium transition-colors cursor-pointer border ${
                                 selectedExportFormat === 'csv'
                                   ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 font-bold'
@@ -5215,7 +5197,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               id="btn-select-format-json-tooltip"
                               data-testid="btn-select-format-json-tooltip"
                               type="button"
-                              onClick={() => setSelectedExportFormat('json')}
                               className={`px-1.5 py-0.5 rounded text-[9.5px] font-medium transition-colors cursor-pointer border ${
                                 selectedExportFormat === 'json'
                                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 font-bold'
@@ -5231,10 +5212,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             ~{exportSizeEstimates.bytesPerRowCsv}B (CSV) vs ~{exportSizeEstimates.bytesPerRowJson}B (JSON)/row
                           </span>
                         </div>
-                      </div>
-
-                      {isDatabaseMutatingState ? (
-                        <>
+                      
                           {/* Export Paused Header */}
                           <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
                             <div className="flex items-center gap-1.5 font-semibold text-amber-400">
@@ -5338,9 +5316,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   >
                                     {deferredWaitCountdown.remainingSeconds < 1
                                       ? '<1s remaining'
-                                      : `~${deferredWaitCountdown.remainingSeconds.toFixed(1)}s remaining`}
                                   </div>
-                                </div>
+                                
 
                                 {/* Export Preset Manager */}
                                 <div
@@ -5348,17 +5325,70 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   data-testid="export-preset-manager"
                                   className="p-2.5 rounded bg-zinc-950/90 border border-amber-500/30 text-zinc-200 space-y-2 mt-2 shadow-inner"
                                 >
-                                  <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-2">
+                                  {/* Divider Preset Selector Theme Bar */}
+                             <div className="flex items-center justify-between p-2 rounded bg-zinc-950/80 border border-zinc-800 text-[9.5px] font-mono gap-2 flex-wrap mb-1.5">
+                               <div className="flex items-center gap-1.5 text-amber-300 font-semibold">
+                                 <Palette className="w-3 h-3 text-amber-400" />
+                                 <span>Divider Preset Theme:</span>
+                               </div>
+                               <div className="flex items-center gap-1.5 flex-wrap">
+                                 {[
+                                   { id: 'minimal', label: 'Modern Minimal', style: 'solid', thickness: 1, color: '#cbd5e1' },
+                                   { id: 'heavy', label: 'Heavy Emphasis', style: 'solid', thickness: 3, color: '#f59e0b' },
+                                   { id: 'subtle', label: 'Subtle Separation', style: 'dashed', thickness: 1.5, color: '#71717a' },
+                                   { id: 'vibrant', label: 'Vibrant Accent', style: 'dotted', thickness: 2, color: '#3b82f6' },
+                                 ].map((theme) => (
+                                   <button
+                                     key={theme.id}
+                                     id={`btn-divider-preset-${theme.id}`}
+                                     data-testid={`btn-divider-preset-${theme.id}`}
+                                     type="button"
+                                     onClick={() => {
+                                       setPdfExportSections((prev) => {
+                                         const next = { ...prev };
+                                         Object.values(PDF_SECTION_CONFIG_ITEMS).forEach((item) => {
+                                           (next as any)[item.dividerStyleKey] = theme.style;
+                                           (next as any)[item.dividerThicknessKey] = theme.thickness;
+                                           (next as any)[item.dividerColorKey] = theme.color;
+                                           (next as any)[item.showDividerKey] = true;
+                                         });
+                                         return next;
+                                       });
+                                       DEFAULT_PDF_SECTION_ORDER.forEach((id) => handleGenerateSnapshot(id));
+                                       setPresetActionFeedback(`Applied divider theme "${theme.label}" across all sections.`);
+                                       setTimeout(() => setPresetActionFeedback(null), 2500);
+                                     }}
+                                     className="px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-amber-200 border border-zinc-700 transition-colors cursor-pointer font-medium"
+                                     title={`Apply divider preset theme "${theme.label}" across all sections`}
+                                   >
+                                     {theme.label}
+                                   </button>
+                               </div>
+                             </div>
+
+                             <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-2">
                                     <div className="flex items-center gap-1.5 text-[10.5px] font-semibold text-amber-300 font-mono">
                                       <Bookmark className="w-3.5 h-3.5 text-amber-400" />
                                       <span>Export Preset Manager (Multiple Named Snapshots)</span>
                                     </div>
-                                    {presetActionFeedback && (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                     {deletedPresetsUndoState && (
+                                       <button
+                                         id="btn-undo-delete-presets"
+                                         data-testid="btn-undo-delete-presets"
+                                         type="button"
+                                         onClick={handleUndoDeletePresets}
+                                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-zinc-950 font-bold text-[9.5px] transition-colors cursor-pointer shadow-xs animate-bounce"
+                                         title="Undo deletion and restore deleted presets"
+                                       >
+                                         <RotateCcw className="w-3 h-3" />
+                                         <span>Undo Delete ({deletedPresetsUndoState.presets.length})</span>
+                                       </button>
+                                     {presetActionFeedback && (
                                       <span className="text-[9.5px] text-emerald-300 font-mono animate-fadeIn flex items-center gap-1">
                                         <Check className="w-3 h-3 text-emerald-400" />
                                         <span>{presetActionFeedback}</span>
                                       </span>
-                                    )}
                                   </div>
 
                                   <div className="flex items-center gap-2 flex-wrap">
@@ -5368,7 +5398,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       type="text"
                                       placeholder="Enter preset name (e.g. Q3 Audit Snapshot)..."
                                       value={newPresetNameInput}
-                                      onChange={(e) => setNewPresetNameInput(e.target.value)}
                                       onKeyDown={(e) => {
                                         if (e.key === 'Enter') {
                                           e.preventDefault();
@@ -5409,7 +5438,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                         id={`checkbox-preset-${preset.id}`}
                                                         data-testid={`checkbox-preset-${preset.id}`}
                                                         type="checkbox"
-                                                        checked={selectedPresetIds.includes(preset.id)}
                                                         onChange={(e) => {
                                                           e.stopPropagation();
                                                           if (e.target.checked) {
@@ -5418,13 +5446,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                             setSelectedPresetIds((prev) => prev.filter((id) => id !== preset.id));
                                                           }
                                                         }}
-                                                        onClick={(e) => e.stopPropagation()}
                                                         className="accent-amber-500 w-3 h-3 rounded cursor-pointer shrink-0"
                                                         aria-label={`Select preset ${preset.name}`}
                                                       />
                                             <span className="font-semibold text-zinc-200 truncate font-mono">{preset.name}</span>
                                             <span className="text-[8.5px] font-mono text-zinc-400 shrink-0">
-                                              ({new Date(preset.createdAt).toLocaleDateString()} {new Date(preset.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
                                             </span>
                                           </div>
                                           <div className="flex items-center gap-1 shrink-0">
@@ -5432,7 +5458,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                               id={`btn-load-preset-${preset.id}`}
                                               data-testid={`btn-load-preset-${preset.id}`}
                                               type="button"
-                                              onClick={() => handleLoadExportPreset(preset)}
                                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-blue-300 hover:text-blue-200 border border-zinc-700 text-[9px] font-mono font-medium transition-colors cursor-pointer"
                                               title={`Load preset "${preset.name}" into current export settings`}
                                             >
@@ -5443,7 +5468,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                               id={`btn-delete-preset-${preset.id}`}
                                               data-testid={`btn-delete-preset-${preset.id}`}
                                               type="button"
-                                              onClick={() => handleDeleteExportPreset(preset.id)}
                                               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-rose-950/80 text-rose-400 hover:text-rose-300 border border-zinc-700 text-[9px] font-mono transition-colors cursor-pointer"
                                               title={`Delete preset "${preset.name}"`}
                                             >
@@ -5452,11 +5476,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                             </button>
                                           </div>
                                         </div>
-                                      ))}
                                     </div>
-                                  )}
-                                </div>
-                              </div>
+                                
+                              
 
                               {/* Dynamic Countdown Progress Bar */}
                               <div className="space-y-1">
@@ -5481,7 +5503,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     className="h-full rounded-full bg-linear-to-r from-amber-500 via-amber-400 to-emerald-400 transition-all duration-150 shadow-xs shadow-amber-400/50"
                                   />
                                 </div>
-                              </div>
+                              
 
                               {/* Deferred Export Queue / Auto-Execution Notice if triggered */}
                               {deferredExportRequest ? (
@@ -5493,7 +5515,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <div className="flex items-center gap-1.5 text-amber-200 font-medium">
                                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                                     <span>
-                                      <strong>Export Queued:</strong> Will automatically download {deferredExportRequest.format.toUpperCase()} when timer reaches 0.
                                     </span>
                                   </div>
                                   <button
@@ -5509,17 +5530,16 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   >
                                     Cancel
                                   </button>
-                                </div>
-                              ) : (
-                                <div
-                                  id="notice-export-action-deferral-reason"
-                                  data-testid="notice-export-action-deferral-reason"
-                                  className="text-[10px] text-zinc-300/90 leading-relaxed bg-zinc-950/60 p-2 rounded border border-zinc-800/80"
-                                >
-                                  Export serialization is currently deferred to ensure snapshot isolation and prevent dirty reads while in-flight transactions commit WAL frames.
-                                </div>
-                              )}
-                            </div>
+                                 </div>
+                               ) : (
+                                 <div
+                                   id="notice-export-action-deferral-reason"
+                                   data-testid="notice-export-action-deferral-reason"
+                                   className="text-[10px] text-zinc-300/90 leading-relaxed bg-zinc-950/60 p-2 rounded border border-zinc-800/80"
+                                 >
+                                   Export serialization is currently deferred to ensure snapshot isolation and prevent dirty reads while in-flight transactions commit WAL frames.
+                                 </div>
+                            
 
                             {/* Explicit Data Consistency & Deferred Serialization Callout */}
                             <div
@@ -5540,7 +5560,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   : 'A database mutation is currently mid-process. Export serialization is paused to prevent dirty reads and partial snapshot tearing.'}{' '}
                                 Serialization will automatically resume once in-flight transactions commit their WAL frames and B-Tree index updates.
                               </p>
-                            </div>
+                            
 
                             {/* Active Pending Database Mutations & Estimation Telemetry */}
                             <div
@@ -5595,7 +5615,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <ClipboardCheck className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy Log Summary</span>
                                       </>
-                                    )}
                                   </button>
                                 </div>
                               </div>
@@ -5635,8 +5654,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     style={{ width: `${mutationProgressPercent}%` }}
                                     className="h-full rounded-full bg-linear-to-r from-amber-500 via-amber-400 to-emerald-400 transition-all duration-300 ease-out shadow-xs shadow-amber-400/50"
                                   />
-                                </div>
-                              </div>
+                                
+                              
 
                               {/* In-Flight Mutations Queue List */}
                               <div className="pt-1.5 border-t border-zinc-700/70 space-y-1.5">
@@ -5683,7 +5702,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
                                               ) : (
                                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                              )}
                                             </span>
                                             <span className="text-zinc-200 font-medium truncate">
                                               {m.description || `Transaction #${idx + 1}`}
@@ -5726,7 +5744,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
                                               ) : (
                                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                              )}
                                             </span>
                                             <span className="text-zinc-200 font-medium truncate">
                                               {activeInFlightMutation.description || 'Active transaction in progress'}
@@ -5750,15 +5767,14 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     <div className="text-zinc-300 text-[10px] italic">
                                       Active transaction in progress
                                     </div>
-                                  )}
-                                </div>
-                              </div>
+                                
+                              
 
                               <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 border-t border-zinc-700/50 font-mono">
                                 <span>Lock Scope: Heap Rows &amp; Indexes</span>
                                 <span>Snapshot Isolation: Active</span>
                               </div>
-                            </div>
+                            
 
                             {/* Last 3 Invalidation Triggers List */}
                             <div className="bg-zinc-800/60 rounded-md p-2 border border-zinc-700/60">
@@ -5780,7 +5796,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     <span className="text-[9px] font-medium text-zinc-400 font-mono">
                                       Prior Events
                                     </span>
-                                  )}
                                   <button
                                     id="btn-copy-invalidation-logs"
                                     data-testid="btn-copy-invalidation-logs"
@@ -5799,7 +5814,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Copy className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy Logs</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-copy-invalidation-json"
@@ -5819,7 +5833,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <FileCode className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy JSON</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-download-invalidation-logs-json"
@@ -5839,7 +5852,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Download className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Download JSON</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-export-all-logs"
@@ -5861,7 +5873,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Export All Logs</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-copy-log-summary"
@@ -5882,7 +5893,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <ClipboardCheck className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy Log Summary</span>
                                       </>
-                                    )}
                                   </button>
                                 </div>
                               </div>
@@ -5907,19 +5917,15 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 font-medium">
                                             Bulk
                                           </span>
-                                        )}
                                       </div>
                                       {trigger.details && (
                                         <div className="text-[10px] text-zinc-400 pl-3 truncate">
                                           {trigger.details}
                                         </div>
-                                      )}
                                     </div>
                                     <span className="text-[10px] font-mono text-zinc-400 shrink-0 self-start mt-0.5">
-                                      {formatTriggerTimeAgo(trigger.timestamp)}
                                     </span>
                                   </div>
-                                ))}
                               </div>
 
                               <div
@@ -5942,17 +5948,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
                                   <span>Export All Logs CSV ({invalidationHistory.length})</span>
                                 </button>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-1.5 text-[11px] text-amber-300 pt-1 border-t border-zinc-800 font-medium">
-                              <Clock className="w-3 h-3 text-amber-400 animate-spin shrink-0" />
-                              <span>Awaiting transaction commit to resume clean serialization</span>
-                            </div>
-                          </div>
-                        </>
-                      ) : (
-                        <>
+                              
+                            
+                          
                           {/* Cache Invalidated / Synchronized Ready State */}
                           <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-800">
                             <div className="flex items-center gap-1.5 font-semibold">
@@ -5966,7 +5964,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <Check className="w-3.5 h-3.5 text-emerald-400" />
                                   <span className="text-zinc-200">LRU Cache Synchronized</span>
                                 </>
-                              )}
                             </div>
                             <span
                               className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded border ${
@@ -6021,7 +6018,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     <span className="text-[9px] font-medium text-zinc-400 font-mono">
                                       Recent Events
                                     </span>
-                                  )}
                                   <button
                                     id="btn-copy-invalidation-logs"
                                     data-testid="btn-copy-invalidation-logs"
@@ -6040,7 +6036,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Copy className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy Logs</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-copy-invalidation-json"
@@ -6060,7 +6055,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <FileCode className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy JSON</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-download-invalidation-logs-json"
@@ -6080,7 +6074,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Download className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Download JSON</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-export-all-logs"
@@ -6102,7 +6095,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <FileSpreadsheet className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Export All Logs</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-copy-log-summary"
@@ -6123,7 +6115,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <ClipboardCheck className="w-2.5 h-2.5 text-amber-300" />
                                         <span>Copy Log Summary</span>
                                       </>
-                                    )}
                                   </button>
                                 </div>
                               </div>
@@ -6148,26 +6139,21 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0 font-medium">
                                             Bulk
                                           </span>
-                                        )}
                                       </div>
                                       {trigger.details && (
                                         <div className="text-[10px] text-zinc-400 pl-3 truncate">
                                           {trigger.details}
                                         </div>
-                                      )}
                                     </div>
                                     <span className="text-[10px] font-mono text-zinc-400 shrink-0 self-start mt-0.5">
-                                      {formatTriggerTimeAgo(trigger.timestamp)}
                                     </span>
                                   </div>
-                                ))}
                               </div>
 
                               {recurrentBulkCount >= 2 && (
                                 <div className="mt-1.5 pt-1.5 border-t border-zinc-800 text-[10px] text-amber-300/90 leading-tight">
                                   Recurrent bulk writes are actively invalidating query memory; next export will execute a full table scan.
                                 </div>
-                              )}
 
                               <div
                                 id="audit-invalidation-history-summary"
@@ -6190,7 +6176,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <span>Export All Logs CSV ({invalidationHistory.length})</span>
                                 </button>
                               </div>
-                            </div>
+                            
 
                             <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 pt-1 border-t border-zinc-800 font-medium">
                               <Sparkles className="w-3 h-3 text-emerald-400 shrink-0" />
@@ -6200,9 +6186,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   : 'Zero-latency cached snapshot ready for immediate export'}
                               </span>
                             </div>
-                          </div>
-                        </>
-                      )}
+                          
 
                       {/* Active Threshold Alerts History Panel */}
                       <div
@@ -6221,7 +6205,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               data-testid="badge-threshold-alerts-count"
                               className="text-[9px] font-mono px-1 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30"
                             >
-                              Last {Math.min(5, thresholdViolationsHistory.length)} ({thresholdViolationsHistory.length} logged)
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 flex-wrap">
@@ -6234,7 +6217,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               aria-label="Export Settings"
                               aria-expanded={showPdfExportSettings}
                               type="button"
-                              onClick={() => setShowPdfExportSettings((prev) => !prev)}
                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer shadow-2xs ${
                                 showPdfExportSettings
                                   ? 'bg-amber-950/80 text-amber-200 border border-amber-500/70 shadow-xs'
@@ -6251,7 +6233,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               data-testid="btn-preview-pdf-report"
                               aria-label="Preview PDF Report"
                               type="button"
-                              onClick={() => setShowPdfPreviewModal(true)}
                               className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800/90 hover:bg-zinc-700/90 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-700 text-[10px] font-medium transition-colors cursor-pointer shadow-2xs"
                               title="Preview live-rendered PDF document in modal before triggering download"
                             >
@@ -6284,7 +6265,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     <FileText className="w-2.5 h-2.5 text-rose-300" />
                                     <span>Generate PDF Report</span>
                                   </>
-                                )}
                               </button>
                               {isGeneratingDiagnosticPdf && (
                                 <div
@@ -6296,7 +6276,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                 >
                                   <div className="h-full bg-linear-to-r from-rose-500 via-amber-400 to-rose-400 rounded-full animate-indeterminate" />
                                 </div>
-                              )}
                             </div>
                             <button
                               id="btn-diagnostic-correlation-report"
@@ -6318,7 +6297,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <Download className="w-2.5 h-2.5 text-amber-300" />
                                   <span>Diagnostic Correlation Report</span>
                                 </>
-                              )}
                             </button>
                             <button
                               id="btn-export-logs"
@@ -6343,7 +6321,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     CSV
                                   </span>
                                 </>
-                              )}
                             </button>
                             <button
                               id="btn-clear-alert-history"
@@ -6364,10 +6341,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <Trash2 className="w-2.5 h-2.5 text-zinc-400" />
                                   <span>Clear Alert History</span>
                                 </>
-                              )}
                             </button>
                           </div>
-                        </div>
+                        
 
                         {/* PDF Export Section Settings Accordion / Panel */}
                         {showPdfExportSettings && (
@@ -6386,7 +6362,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   id="btn-toggle-pdf-descriptions"
                                   data-testid="btn-toggle-pdf-descriptions"
                                   type="button"
-                                  onClick={() => setShowPdfCardDescriptions((v) => !v)}
                                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
                                   title="Toggle visibility of descriptive text under section card titles for a compact view"
                                 >
@@ -6400,13 +6375,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       <Eye className="w-3 h-3 text-amber-300" />
                                       <span>Show Descriptions</span>
                                     </>
-                                  )}
                                 </button>
                                 <button
                                   id="btn-toggle-pdf-layout"
                                   data-testid="btn-toggle-pdf-layout"
                                   type="button"
-                                  onClick={() => setIsDetailedPdfLayout((v) => !v)}
                                   className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
                                   title="Toggle between Compact Layout (title and toggle only) and Detailed Layout (all configuration controls visible)"
                                 >
@@ -6420,13 +6393,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       <Maximize2 className="w-3 h-3 text-amber-300" />
                                       <span>Detailed Layout</span>
                                     </>
-                                  )}
                                 </button>
                                   <button
                                     id="btn-bulk-enable-all"
                                     data-testid="btn-bulk-enable-all"
                                     type="button"
-                                    onClick={() => handleBulkTogglePdfSections(true)}
                                     className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
                                      title="Enable all sections at once"
                                    >
@@ -6436,7 +6407,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                      id="btn-bulk-disable-all"
                                      data-testid="btn-bulk-disable-all"
                                      type="button"
-                                     onClick={() => handleBulkTogglePdfSections(false)}
                                      className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
                                      title="Disable all sections at once"
                                    >
@@ -6460,7 +6430,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           <Copy className="w-2.5 h-2.5 text-amber-400" />
                                           <span>Copy All Notes</span>
                                         </>
-                                      )}
                                     </button>
                                     <button
                                       id="btn-batch-export-sections"
@@ -6511,7 +6480,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           <FolderX className="w-2.5 h-2.5 text-amber-400" />
                                           <span>Reset Section Groups</span>
                                         </>
-                                      )}
                                     </button>
                                     <button
                                       id="btn-toggle-expand-collapse-groups"
@@ -6532,7 +6500,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           <Folder className="w-2.5 h-2.5 text-amber-400" />
                                           <span>Collapse All</span>
                                         </>
-                                      )}
                                     </button>
                                      <button
                                        id="btn-reset-all-dividers"
@@ -6553,7 +6520,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            <RotateCcw className="w-2.5 h-2.5 text-amber-400" />
                                            <span>Reset All Dividers</span>
                                          </>
-                                       )}
                                      </button>
                                      {/* Filter by Color Dropdown */}
                                      <div
@@ -6574,7 +6540,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                          data-alt-id="select-filter-by-color"
                                          aria-label="Filter section cards by divider color"
                                          value={pdfDividerColorFilter}
-                                         onChange={(e) => setPdfDividerColorFilter(e.target.value)}
                                          className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded px-1.5 py-0.5 text-[9px] font-mono text-zinc-100 cursor-pointer transition-colors"
                                        >
                                          <option value="all">All Colors ({currentSectionOrder.length})</option>
@@ -6582,27 +6547,24 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            <option key={c.value} value={c.value}>
                                              {c.label} ({dividerColorCounts[c.value.toLowerCase()] || 0})
                                            </option>
-                                         ))}
                                        </select>
                                        {pdfDividerColorFilter !== 'all' && (
                                          <button
                                            id="btn-clear-color-filter"
                                            data-testid="btn-clear-color-filter"
                                            type="button"
-                                           onClick={() => setPdfDividerColorFilter('all')}
                                            className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
                                            title="Clear color filter"
                                            aria-label="Clear color filter"
                                          >
                                            <X className="w-2.5 h-2.5" />
                                          </button>
-                                       )}
                                      </div>
                                  <span className="text-[9.5px] text-zinc-400 hidden sm:inline">
                                    Configure stakeholder layouts and section visibility for generated PDF reports
                                  </span>
                                </div>
-                             </div>
+                             
 
                              {/* Template Selector Dropdown & Stakeholder Configuration Controls */}
                              <div
@@ -6625,7 +6587,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                        data-testid="select-pdf-template"
                                        aria-label="Template Selector"
                                        value={currentMatchedTemplateId}
-                                       onChange={(e) => handleSelectPdfTemplate(e.target.value)}
                                        className="w-full text-[11px] font-medium bg-zinc-900 border border-amber-500/50 hover:border-amber-400 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded px-2.5 py-1 text-zinc-100 cursor-pointer shadow-xs transition-colors"
                                      >
                                        <optgroup label="Predefined Stakeholder Templates">
@@ -6633,7 +6594,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            <option key={tmpl.id} value={tmpl.id}>
                                              {tmpl.name} — {tmpl.audience}
                                            </option>
-                                         ))}
                                        </optgroup>
                                        {savedCustomPdfTemplate && (
                                          <optgroup label="Saved Presets">
@@ -6641,12 +6601,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              Saved Preset: {savedCustomPdfTemplate.name}
                                            </option>
                                          </optgroup>
-                                       )}
                                        {currentMatchedTemplateId === 'custom' && (
                                          <optgroup label="Current Configuration">
                                            <option value="custom">Custom Configuration (Modified)</option>
                                          </optgroup>
-                                       )}
                                      </select>
                                    </div>
                                  </div>
@@ -6672,7 +6630,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                          <Save className="w-2.5 h-2.5 text-amber-400" />
                                          <span>Save Preset</span>
                                        </>
-                                     )}
                                    </button>
 
                                    {savedCustomPdfTemplate && (
@@ -6688,7 +6645,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                        <FolderOpen className="w-2.5 h-2.5 text-blue-400" />
                                        <span>Load Saved</span>
                                      </button>
-                                   )}
                                  </div>
                                </div>
 
@@ -6707,14 +6663,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                        <span className="text-[8.5px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
                                          Modified Settings
                                        </span>
-                                     )}
                                    </div>
                                    <span className="text-[9.5px] text-zinc-400 leading-tight">
                                      {activeTemplateMeta.description}
                                    </span>
                                  </div>
                                </div>
-                             </div>
+                             
 
                              {/* Section Sorting & Auto-Grouping Control Bar */}
                              <div className="flex items-center justify-between text-[10px] px-2 py-1.5 rounded bg-zinc-950/70 border border-zinc-800/80 flex-wrap gap-2">
@@ -6729,7 +6684,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                      data-testid="select-pdf-section-sort"
                                      aria-label="Sort Sections"
                                      value={pdfSectionSortMode}
-                                     onChange={(e) => setPdfSectionSortMode(e.target.value as 'default' | 'title' | 'tag')}
                                      className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/50 text-zinc-200 text-[10px] rounded px-2 py-0.5 focus:outline-none focus:border-amber-500 cursor-pointer"
                                    >
                                      <option value="default">In-Order (Default)</option>
@@ -6747,7 +6701,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                      data-testid="toggle-auto-group-category"
                                      type="checkbox"
                                      checked={isGroupByTagActive}
-                                     onChange={(e) => setIsGroupByTagActive(e.target.checked)}
                                      className="accent-amber-500 rounded cursor-pointer"
                                    />
                                    <span className="font-medium text-zinc-200">Auto-Group by Category</span>
@@ -6806,7 +6759,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       <Check className="w-3 h-3 text-emerald-400" />
                                       <span>{presetActionFeedback}</span>
                                     </span>
-                                  )}
                                 </div>
 
                                 {/* Save Preset Controls with Folder Selection */}
@@ -6817,7 +6769,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     type="text"
                                     placeholder="Preset Name (e.g. Q3 SLA Report)..."
                                     value={newPresetNameInput}
-                                    onChange={(e) => setNewPresetNameInput(e.target.value)}
                                     onKeyDown={(e) => {
                                       if (e.key === 'Enter') {
                                         e.preventDefault();
@@ -6831,17 +6782,14 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     id="select-new-preset-folder"
                                     data-testid="select-new-preset-folder"
                                     value={newPresetFolderInput}
-                                    onChange={(e) => setNewPresetFolderInput(e.target.value)}
                                     className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-2 py-1 text-[10px] font-mono text-amber-300 cursor-pointer shadow-xs"
                                     title="Select category folder for new preset"
                                     aria-label="Select category folder"
                                   >
                                     {['General', 'Audits', 'Executive', 'Production'].map((f) => (
                                       <option key={f} value={f}>📁 {f}</option>
-                                    ))}
                                     {availableFolders.filter(f => !['General', 'Audits', 'Executive', 'Production'].includes(f)).map((f) => (
                                       <option key={f} value={f}>📁 {f}</option>
-                                    ))}
                                   </select>
                                   <button
                                     id="btn-save-new-export-preset"
@@ -6865,20 +6813,17 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     type="text"
                                     placeholder="Search presets by name or folder..."
                                     value={presetSearchQuery}
-                                    onChange={(e) => setPresetSearchQuery(e.target.value)}
                                     className="w-full bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded pl-7 pr-6 py-1 text-[10px] font-mono text-zinc-200 shadow-xs"
                                     aria-label="Search saved export presets"
                                   />
                                   {presetSearchQuery && (
                                     <button
                                       type="button"
-                                      onClick={() => setPresetSearchQuery('')}
                                       className="absolute right-2 text-[9px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
                                       title="Clear search"
                                     >
                                       ✕
                                     </button>
-                                  )}
                                 </div>
 
                                 
@@ -6897,7 +6842,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         id={`btn-preset-time-filter-${tf.id}`}
                                         data-testid={`btn-preset-time-filter-${tf.id}`}
                                         type="button"
-                                        onClick={() => setPresetTimeFilter(tf.id)}
                                         className={`px-2 py-0.5 rounded text-[9px] font-mono transition-colors cursor-pointer border ${
                                           active
                                             ? 'bg-amber-500 text-zinc-950 font-bold border-amber-400'
@@ -6907,7 +6851,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         {tf.label}
                                       </button>
                                     );
-                                  })}
                                 </div>
                                 {/* Preset Sort Controls */}
                                 <div className="flex items-center gap-1.5 flex-wrap pt-0.5 mb-2">
@@ -6923,7 +6866,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         id={`btn-preset-sort-${sm.id}`}
                                         data-testid={`btn-preset-sort-${sm.id}`}
                                         type="button"
-                                        onClick={() => setPresetSortMode(sm.id as any)}
                                         className={`px-2 py-0.5 rounded text-[9px] font-mono transition-colors cursor-pointer border ${
                                           active
                                             ? 'bg-amber-500 text-zinc-950 font-bold border-amber-400'
@@ -6933,7 +6875,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         {sm.label}
                                       </button>
                                     );
-                                  })}
                                 </div>
 {/* Batch Action Toolbar */}
                                  {exportPresetsList.length > 0 && (
@@ -6975,10 +6916,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            <option value="" disabled>Move to folder...</option>
                                            {['General', 'Audits', 'Executive', 'Production'].map((f) => (
                                              <option key={f} value={f}>{f}</option>
-                                           ))}
                                            {availableFolders.filter(f => !['General', 'Audits', 'Executive', 'Production'].includes(f)).map((f) => (
                                              <option key={f} value={f}>{f}</option>
-                                           ))}
                                          </select>
                                          <button
                                            id="btn-batch-export-presets"
@@ -7003,9 +6942,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            <span>Delete Selected</span>
                                          </button>
                                        </div>
-                                     )}
                                    </div>
-                                 )}
 
                                  {/* Saved Presets Grouped by Category Folder */}
                                 {exportPresetsList.length === 0 ? (
@@ -7021,7 +6958,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                      <div>No export presets found matching "<span className="text-amber-300 font-semibold">{presetSearchQuery}</span>".</div>
                                      <button
                                        type="button"
-                                       onClick={() => setPresetSearchQuery('')}
                                        className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 text-[9px] font-mono cursor-pointer"
                                      >
                                        Clear Search Filter
@@ -7057,7 +6993,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                          >
                                            {/* Folder Header */}
                                            <div
-                                             onClick={() => toggleFolderCollapse(folderName)}
                                              className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900/90 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/70 select-none transition-colors"
                                              title={`Click to ${isCollapsed ? 'expand' : 'collapse'} folder "${folderName}"`}
                                            >
@@ -7071,8 +7006,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              <div className="text-zinc-400 text-[10px]">
                                                {isCollapsed ? '▼' : '▲'}
                                              </div>
-                                           </div>
+                                           
 
+                                            </div>
                                            {/* Folder Content List */}
                                            {!isCollapsed && (
                                              <div className="p-1.5 space-y-1">
@@ -7085,31 +7021,25 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                    <div className="flex items-center gap-2 overflow-hidden">
                                                      <span className="font-semibold text-zinc-200 truncate font-mono">{preset.name}</span>
                                                      <span className="text-[8px] font-mono text-zinc-400 shrink-0">
-                                                       {new Date(preset.createdAt).toLocaleDateString()} {new Date(preset.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                                      </span>
                                                    </div>
                                                    <div className="flex items-center gap-1.5 shrink-0">
                                                      {/* Move folder selector dropdown */}
                                                      <select
                                                        value={preset.folder || 'General'}
-                                                       onChange={(e) => handleMovePresetFolder(preset.id, e.target.value)}
                                                        className="bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-[8.5px] font-mono text-zinc-300 cursor-pointer"
                                                        title="Move preset to another folder"
                                                        aria-label="Move preset to another folder"
-                                                       onClick={(e) => e.stopPropagation()}
                                                      >
                                                        {['General', 'Audits', 'Executive', 'Production'].map((f) => (
                                                          <option key={f} value={f}>{f}</option>
-                                                       ))}
                                                        {availableFolders.filter(f => !['General', 'Audits', 'Executive', 'Production'].includes(f)).map((f) => (
                                                          <option key={f} value={f}>{f}</option>
-                                                       ))}
                                                      </select>
                                                      <button
                                                        id={`btn-preview-preset-${preset.id}`}
                                                        data-testid={`btn-preview-preset-${preset.id}`}
                                                        type="button"
-                                                       onClick={() => setPreviewPresetItem(preset)}
                                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-zinc-700 text-[9px] font-mono font-medium transition-colors cursor-pointer"
                                                        title={`Preview settings of preset "${preset.name}"`}
                                                      >
@@ -7120,7 +7050,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                        id={`btn-load-preset-${preset.id}`}
                                                        data-testid={`btn-load-preset-${preset.id}`}
                                                        type="button"
-                                                       onClick={() => handleLoadExportPreset(preset)}
                                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-zinc-950 text-[9px] font-mono font-bold transition-colors cursor-pointer"
                                                        title={`Load export configuration preset "${preset.name}" into current export settings`}
                                                      >
@@ -7131,7 +7060,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                        id={`btn-delete-preset-${preset.id}`}
                                                        data-testid={`btn-delete-preset-${preset.id}`}
                                                        type="button"
-                                                       onClick={() => handleDeleteExportPreset(preset.id)}
                                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-rose-950/80 text-rose-400 hover:text-rose-300 border border-zinc-700 text-[9px] font-mono transition-colors cursor-pointer"
                                                        title={`Delete preset "${preset.name}"`}
                                                      >
@@ -7140,14 +7068,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                      </button>
                                                    </div>
                                                  </div>
-                                               ))}
-                                             </div>
-                                           )}
+                                              </div>
+                                             
                                          </motion.div>
                                        );
-                                     })}
                                    </motion.div>
-                                 )}
                               {/* Highlighted Preset Configuration Preview Box */}
                               {previewPresetItem && (
                                 <div
@@ -7223,7 +7148,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     </div>
                                     <button
                                       type="button"
-                                      onClick={() => setPreviewPresetItem(null)}
                                       className="text-amber-400 hover:text-amber-200 text-[10px] cursor-pointer"
                                       title="Close preview"
                                     >
@@ -7302,10 +7226,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       <FolderOpen className="w-3 h-3" />
                                       <span>Load This Preset Now</span>
                                     </button>
-                                  </div>
-                                </div>
-                              )}
-                              </div>
+                                  
+                                   </div>
+                                   </div>
+                              
 
                               {/* Global CSV Default Naming Pattern Setting */}
                               <div
@@ -7332,7 +7256,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Check className="w-3 h-3 text-emerald-400" />
                                         <span>Applied to all cards!</span>
                                       </span>
-                                    )}
                                     <button
                                       id="btn-apply-naming-pattern-all-cards"
                                       data-testid="btn-apply-naming-pattern-all-cards"
@@ -7386,7 +7309,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       className="px-2 py-0.5 rounded bg-zinc-900 text-amber-300 border border-zinc-800 font-semibold"
                                       title="Live evaluated preview for Trend Sparklines CSV"
                                     >
-                                      {resolveNamingPattern(globalCsvNamingPattern, 'sparklines')}.csv
                                     </span>
                                   </div>
                                 </div>
@@ -7412,7 +7334,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     >
                                       {v.var}
                                     </button>
-                                  ))}
 
                                   <span className="text-zinc-500 font-mono text-[9px] ml-2">Presets:</span>
                                   {[
@@ -7439,9 +7360,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     >
                                       {preset}
                                     </button>
-                                  ))}
                                 </div>
-                              </div>
+                              
 
                              {/* Section Configuration Quick Search Area */}
                              <div
@@ -7474,7 +7394,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                      <span className="text-[9px] font-mono text-zinc-500">
                                        {currentSectionOrder.length} sections available
                                      </span>
-                                   )}
                                  </div>
                                </div>
 
@@ -7488,7 +7407,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                    type="text"
                                    placeholder="Quick Search sections by title, tag, or metric (e.g., Sparklines, Latency, Audit, Summary)..."
                                    value={pdfSectionSearchQuery}
-                                   onChange={(e) => setPdfSectionSearchQuery(e.target.value)}
                                    className="w-full pl-8 pr-8 py-1.5 rounded bg-zinc-900 border border-zinc-700/80 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 text-zinc-100 placeholder:text-zinc-500 text-[10.5px] transition-colors shadow-xs"
                                  />
                                  {pdfSectionSearchQuery && (
@@ -7496,14 +7414,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                      id="btn-clear-pdf-section-quick-search"
                                      data-testid="btn-clear-pdf-section-quick-search"
                                      type="button"
-                                     onClick={() => setPdfSectionSearchQuery('')}
                                      className="absolute right-2 p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
                                      title="Clear Quick Search filter"
-                                     aria-label="Clear Quick Search"
-                                   >
-                                     <X className="w-3 h-3" />
-                                   </button>
-                                 )}
+                                    >                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ) : (
                                </div>
 
                                {/* Quick Keyword Filter Chips */}
@@ -7534,18 +7450,15 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                        {chip.label}
                                      </button>
                                    );
-                                 })}
                                  {pdfSectionSearchQuery && (
                                    <button
                                      type="button"
-                                     onClick={() => setPdfSectionSearchQuery('')}
                                      className="ml-auto text-amber-400 hover:text-amber-300 underline text-[9px] cursor-pointer"
                                    >
                                      Reset Filter
                                    </button>
-                                 )}
                                </div>
-                             </div>
+                             
 
                              {/* Section Reordering Control Banner */}
                              <div className="flex items-center justify-between text-[10px] px-2 py-1.5 rounded bg-zinc-950/70 border border-zinc-800/80 flex-wrap gap-2">
@@ -7565,7 +7478,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                    >
                                      Custom Order Active
                                    </span>
-                                 )}
                                  <button
                                    id="btn-copy-pdf-settings"
                                     data-testid="btn-copy-pdf-settings"
@@ -7584,7 +7496,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Copy className="w-2.5 h-2.5 text-amber-400" />
                                         <span>Copy Settings</span>
                                       </>
-                                    )}
                                   </button>
                                   <button
                                     id="btn-reset-all-pdf-layouts"
@@ -7632,10 +7543,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                        Quick Search Active: &quot;{pdfSectionSearchQuery}&quot; ({filteredSectionOrder.length} visible)
                                      </span>
                                    ) : (
-                                     <span className="font-mono text-[9px]">Source Position: #{draggedPdfSectionIndex + 1}</span>
-                                   )}
-                                 </div>
-                               )}
+                                      <span className="font-mono text-[9px]">Source Position: #{draggedPdfSectionIndex + 1}</span>
+                                  </div>
                                {filteredSectionOrder.length === 0 ? (
                                  <div
                                    id="empty-pdf-section-quick-search-results"
@@ -7677,15 +7586,14 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                          id="btn-clear-empty-quick-search"
                                          data-testid="btn-clear-empty-quick-search"
                                          type="button"
-                                         onClick={() => setPdfSectionSearchQuery('')}
                                          className="mt-1 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-zinc-700 text-[10px] font-medium cursor-pointer transition-colors"
                                        >
-                                         Clear Quick Search filter
-                                       </button>
-                                     </>
-                                   )}
-                                 </div>
-                               ) : (
+                                          Clear Quick Search filter
+                                        </button>
+                                      </>
+                                  </div>
+                                ) : (
+
                                  (() => {
                                    const renderCard = (sectionId: string, index: number) => {
                                   const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
@@ -7707,11 +7615,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       data-section-id={sectionId}
                                       data-order-index={index}
                                       draggable={true}
-                                      onDragStart={(e) => handlePdfSectionDragStart(e, index, sectionId)}
-                                      onDragOver={(e) => handlePdfSectionDragOver(e, index, sectionId)}
-                                      onDragEnter={(e) => handlePdfSectionDragEnter(e, index, sectionId)}
-                                      onDragLeave={(e) => handlePdfSectionDragLeave(e, index, sectionId)}
-                                      onDrop={(e) => handlePdfSectionDrop(e, index, sectionId)}
                                       onDragEnd={handlePdfSectionDragEnd}
                                       className={`relative group flex flex-col justify-between p-2 pl-10 rounded overflow-hidden transition-all select-none ${
                                         isDragging
@@ -7733,7 +7636,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         data-testid-section={`drag-handle-${sectionId}`}
                                         data-drag-handle="true"
                                         draggable={true}
-                                        onDragStart={(e) => handlePdfSectionDragStart(e, index, sectionId)}
                                         className="absolute left-1.5 top-0 bottom-0 w-7 flex flex-col items-center justify-center gap-1 cursor-grab active:cursor-grabbing text-zinc-400 hover:text-amber-400 group-hover:text-zinc-300 hover:bg-amber-500/15 active:bg-amber-500/25 border-r border-zinc-800/80 group-hover:border-zinc-700/80 bg-zinc-950/60 transition-all z-10 select-none shadow-inner"
                                         title={`Drag Handle: Click and drag to reorder ${displayTitle}`}
                                         aria-label={`Drag Handle: Click and drag to reorder ${displayTitle}`}
@@ -7746,7 +7648,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           DRAG
                                         </span>
                                         <span className="sr-only">Drag Handle: Click and drag to reorder ${displayTitle}</span>
-                                      </div>
+                                      
 
                                       {/* Hover-activated Pro-Tip Tooltip Banner */}
                                       <div className="absolute inset-x-2 bottom-2 z-30 p-2 rounded bg-zinc-900/95 border border-amber-500/50 shadow-2xl text-[10px] text-zinc-200 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-start gap-1.5 backdrop-blur-sm">
@@ -7759,8 +7661,8 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       {isDragOver && (
                                         <div className="absolute -top-3 left-1/2 -translate-x-1/2 z-20 px-2 py-0.5 rounded-full bg-amber-500 text-zinc-950 font-bold text-[9px] shadow-lg animate-bounce flex items-center gap-1">
                                           <span>📍 Drop to Reorder (# {index + 1})</span>
-                                        </div>
-                                      )}
+                                        
+                                   </div>
                                       <div>
                                         {/* Card Reordering Header Bar with Drag Handle & Position Badge */}
                                         <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-zinc-800/70 text-[9.5px]">
@@ -7793,24 +7695,27 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                       : 'bg-zinc-800/80 border-zinc-700/70 text-zinc-400 hover:text-zinc-200'
                                                   } ${!isIncluded ? 'opacity-40 pointer-events-none' : ''}`}
                                                   title={`Controls whether a visible separator line is rendered between sections in the final PDF document after ${displayTitle}`}
-                                                  onClick={(e) => e.stopPropagation()}
                                                 >
                                                   <input
-                                                    id={toggleInputId}
-                                                    data-testid={toggleInputId}
-                                                    type="checkbox"
-                                                    checked={isDivider}
-                                                    disabled={!isIncluded}
-                                                    aria-label={`Toggle horizontal separator line after ${displayTitle}`}
-                                                    onChange={(e) => {
-                                                      const val = e.target.checked;
-                                                      setPdfExportSections((prev) => ({ ...prev, [item.showDividerKey]: val }));
-                                                      handleGenerateSnapshot(item.id);
-                                                    }}
-                                                    className="accent-amber-500 w-2.5 h-2.5 rounded cursor-pointer"
-                                                  />
-                                                  <SeparatorHorizontal className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                                                  <span>Show Dividers</span>
+                                                     id={toggleInputId}
+                                                     data-testid={toggleInputId}
+                                                     type="checkbox"
+                                                     checked={isDivider}
+                                                     disabled={!isIncluded || isSyncDividersLocked}
+                                                     aria-label={`Toggle horizontal separator line after ${displayTitle}`}
+                                                     onChange={(e) => {
+                                                       const val = e.target.checked;
+                                                       setPdfExportSections((prev) => ({ ...prev, [item.showDividerKey]: val }));
+                                                       handleGenerateSnapshot(item.id);
+                                                     }}
+                                                     className="accent-amber-500 w-2.5 h-2.5 rounded cursor-pointer disabled:opacity-40"
+                                                   />
+                                                   <SeparatorHorizontal className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                                   <div className="flex flex-col leading-tight">
+                                                     <span>Show Dividers</span>
+                                                     {isSyncDividersLocked && (
+                                                       <span className="text-[7.5px] font-mono text-amber-400 font-semibold tracking-tight">Auto-Synced</span>
+                                                   </div>
                                                   {/* Small dynamic line preview showing style, color, and thickness */}
                                                   <span
                                                     id={`divider-line-preview-toggle-${sectionId}`}
@@ -7822,15 +7727,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                     style={{
                                                       borderColor: isDivider ? ((pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1') : '#71717a',
                                                       borderTopStyle: isDivider ? (String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase() === 'dashed' ? 'dashed' : String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase() === 'dotted' ? 'dotted' : 'solid') : 'solid',
-                                                      borderTopWidth: `${Math.max(1, Math.min(4, Math.round(Number((pdfExportSections as any)[item.dividerThicknessKey] ?? 1.5))))}px`,
                                                       height: 0
                                                     }}
-                                                    title={`Live Divider Preview: ${String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toUpperCase()} • ${(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'} • ${Number((pdfExportSections as any)[item.dividerThicknessKey] ?? 1.5)}px`}
                                                     aria-label="Divider line preview"
                                                   />
                                                 </label>
                                               );
-                                            })()}
                                             {isDivider && (
                                               <select
                                                 id={`select-divider-color-${sectionId}`}
@@ -7841,7 +7743,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                   setPdfExportSections((prev) => ({ ...prev, [item.dividerColorKey]: val }));
                                                   handleGenerateSnapshot(item.id);
                                                 }}
-                                                onClick={(e) => e.stopPropagation()}
                                                 className="ml-1 bg-zinc-900 border border-zinc-700 hover:border-zinc-500 rounded px-1 py-0.5 text-[8.5px] font-mono text-zinc-300 focus:outline-none cursor-pointer"
                                                 title={`Divider line color for ${displayTitle}`}
                                                 aria-label={`Divider line color for ${displayTitle}`}
@@ -7853,7 +7754,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 <option value="#71717a">Zinc</option>
                                                 <option value="#ef4444">Rose</option>
                                               </select>
-                                            )}
 
                                             {/* Dropdown configuration to toggle between Solid, Dashed, and Dotted line styles */}
                                             <div className="flex items-center gap-1 ml-1.5">
@@ -7872,7 +7772,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 data-testid-section={`select-divider-style-${sectionId}`}
                                                 name={`divider-style-${sectionId}`}
                                                 disabled={!isIncluded}
-                                                value={String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase()}
                                                 onChange={(e) => {
                                                   const val = e.target.value.toLowerCase();
                                                   setPdfExportSections((prev) => ({
@@ -7882,7 +7781,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                   }));
                                                   handleGenerateSnapshot(item.id);
                                                 }}
-                                                onClick={(e) => e.stopPropagation()}
                                                 className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-1.5 py-0.5 text-[8.5px] font-mono text-zinc-200 cursor-pointer disabled:opacity-40 shadow-xs"
                                                 title={`Select section divider line style for ${displayTitle} (Solid, Dashed, Dotted)`}
                                                 aria-label={`Select section divider line style for ${displayTitle}`}
@@ -7900,7 +7798,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 aria-label={`Toggle divider line style for ${displayTitle}`}
                                                 className="inline-flex items-center rounded bg-zinc-900 border border-zinc-700/80 p-0.5 text-[8px] font-mono select-none"
                                                 title={`Divider line style for ${displayTitle}: Solid, Dashed, or Dotted`}
-                                                onClick={(e) => e.stopPropagation()}
                                               >
                                                 {(['Solid', 'Dashed', 'Dotted'] as const).map((styleOpt) => {
                                                   const sVal = styleOpt.toLowerCase();
@@ -7934,9 +7831,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                       {styleOpt}
                                                     </button>
                                                   );
-                                                })}
                                               </div>
                                             </div>
+                                          </div>
                                           </div>
 
                                           <div className="flex items-center gap-0.5">
@@ -8038,16 +7935,14 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                    <Copy className="w-2.5 h-2.5 text-amber-400 shrink-0" />
                                                    <span>Copy JSON</span>
                                                  </>
-                                               )}
                                              </button>
                                           </div>
-                                        </div>
+                                        
 
                                         {/* Main Section Enable Toggle */}
-                                        <label
+                                        <div
                                           htmlFor={item.inputSectionId}
                                           className="flex items-start gap-2 cursor-pointer select-none"
-                                          onClick={(e) => e.stopPropagation()}
                                         >
                                           <input
                                             id={item.inputSectionId}
@@ -8077,7 +7972,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
                                                  return (
                                                    <span
-                                                     onClick={() => handleScrollToSection(item.id)}
                                                      className="font-semibold text-zinc-200 flex items-center gap-1.5 cursor-pointer hover:text-amber-300 transition-colors group/title flex-wrap"
                                                      title="Click to smoothly scroll and highlight card configuration"
                                                    >
@@ -8087,7 +7981,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                      {/* Info Icon with Dynamic Tooltip explaining specific data metrics included */}
                                                      <span
                                                        className="relative inline-flex items-center"
-                                                       onClick={(e) => e.stopPropagation()}
                                                      >
                                                        <button
                                                          id={`btn-info-section-${item.id}`}
@@ -8098,8 +7991,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                            e.preventDefault();
                                                            setActiveInfoTooltipSectionId(activeInfoTooltipSectionId === sectionId ? null : sectionId);
                                                          }}
-                                                         onMouseEnter={() => setActiveInfoTooltipSectionId(sectionId)}
-                                                         onMouseLeave={() => setActiveInfoTooltipSectionId(null)}
                                                          className="p-0.5 rounded text-cyan-400 hover:text-cyan-200 hover:bg-cyan-950/60 transition-colors cursor-pointer inline-flex items-center justify-center focus:outline-none"
                                                          title={metricsExplanation.textSummary}
                                                          aria-label={`View data metrics included in ${displayTitle}`}
@@ -8142,7 +8033,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                                      <span className="text-zinc-300">{m.value}</span>
                                                                    </span>
                                                                  </li>
-                                                               ))}
                                                              </ul>
                                                            </div>
 
@@ -8155,7 +8045,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                              </span>
                                                            </div>
                                                          </div>
-                                                       )}
                                                      </span>
 
                                                      <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${item.badgeClass}`}>
@@ -8167,16 +8056,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                        title={`Estimated rows / data points for ${item.title} based on current database query filters (${queryResult.records.length} records)`}
                                                      >
                                                        {item.id === 'sparklines'
-                                                         ? `${Math.max(12, Math.round(queryResult.records.length * 1.5))} pts`
                                                          : item.id === 'mutationHistory'
                                                          ? `${queryResult.records.length} records`
                                                          : item.id === 'recommendations'
-                                                         ? `${Math.min(10, Math.max(3, Math.round(queryResult.records.length / 4)))} items`
-                                                         : `${Math.max(1, Math.round(queryResult.records.length / 8))} findings`}
                                                      </span>
                                                    </span>
                                                  );
-                                               })()}
                                                <span
                                                  title={item.tip}
                                                  className="text-zinc-400 hover:text-amber-300 transition-colors cursor-help p-0.5 inline-flex items-center shrink-0"
@@ -8189,13 +8074,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                             <span className="text-[9.5px] text-zinc-400 leading-tight mt-0.5">
                                               {item.description}
                                             </span>
-                                            )}
-                                          </div>
-                                        </label>
-                                      </div>
+                                          
+                                         </div>
+                                      
 
                                        {isDetailedPdfLayout && (
-                                       <>
+                                       <div>
                                       {/* Add Custom Note Input Field */}
                                       <div className="mt-2 pt-1.5 border-t border-zinc-800/70">
                                         <div className="flex flex-col gap-1">
@@ -8212,7 +8096,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 id={`btn-copy-note-${item.id}`}
                                                 data-testid={`btn-copy-note-${item.id}`}
                                                 type="button"
-                                                disabled={!isIncluded || !String(pdfExportSections[item.noteKey] || '').trim()}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   const noteText = String(pdfExportSections[item.noteKey] || '');
@@ -8235,7 +8118,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                     <Copy className="w-2.5 h-2.5 text-amber-400" />
                                                     <span>Copy Note</span>
                                                   </>
-                                                )}
                                               </button>
                                             </div>
                                           </label>
@@ -8245,7 +8127,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                             type="text"
                                             disabled={!isIncluded}
                                             placeholder="Add custom note for this section..."
-                                            value={String(pdfExportSections[item.noteKey] || '')}
                                             onChange={(e) => {
                                               const val = e.target.value;
                                               setPdfExportSections((prev) => ({
@@ -8259,8 +8140,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 handleGenerateSnapshot(item.id);
                                               }, 500);
                                             }}
-                                            onClick={(e) => e.stopPropagation()}
-                                            onMouseDown={(e) => e.stopPropagation()}
                                             draggable={false}
                                             className="w-full px-2 py-1 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 text-[10px] focus:outline-none focus:border-amber-500/80 disabled:opacity-30 disabled:pointer-events-none"
                                           />
@@ -8275,7 +8154,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                             !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
                                           }`}
                                           title="Force this section to start on a new page"
-                                          onClick={(e) => e.stopPropagation()}
                                         >
                                           <input
                                             id={item.inputBreakId}
@@ -8304,14 +8182,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                             !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
                                           }`}
                                           title="Include section metadata footer row in PDF with timestamp & data point count"
-                                          onClick={(e) => e.stopPropagation()}
                                         >
                                           <input
                                             id={item.inputMetadataId}
                                             data-testid={item.inputMetadataId}
                                             type="checkbox"
                                             disabled={!isIncluded}
-                                            checked={Boolean(pdfExportSections[item.metadataKey])}
                                             onChange={(e) => {
                                               const val = e.target.checked;
                                               setPdfExportSections((prev) => ({ ...prev, [item.metadataKey]: val }));
@@ -8348,7 +8224,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                               id={`select-divider-style-detailed-${sectionId}`}
                                               data-testid={`select-divider-style-detailed-${item.id}`}
                                               disabled={!isIncluded}
-                                              value={String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase()}
                                               onChange={(e) => {
                                                 const val = e.target.value.toLowerCase();
                                                 setPdfExportSections((prev) => ({
@@ -8358,7 +8233,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                 }));
                                                 handleGenerateSnapshot(item.id);
                                               }}
-                                              onClick={(e) => e.stopPropagation()}
                                               className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-2 py-0.5 text-[9px] font-mono text-zinc-200 cursor-pointer shadow-xs disabled:opacity-40"
                                               title={`Select section divider line style for ${displayTitle} (Solid, Dashed, Dotted)`}
                                               aria-label={`Select section divider line style for ${displayTitle}`}
@@ -8405,11 +8279,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                     {styleOpt}
                                                   </button>
                                                 );
-                                              })}
                                             </div>
                                             {/* Live line style preview mini border */}
                                             <motion.div
-                                              key={String((pdfExportSections as any)[item.dividerStyleKey] || 'solid') + '-' + Number((pdfExportSections as any)[item.dividerThicknessKey] || 1.5)}
                                               initial={{ opacity: 0.4, scaleX: 0.9 }}
                                               animate={{ opacity: 1, scaleX: 1 }}
                                               transition={{ duration: 0.3, ease: 'easeInOut' }}
@@ -8417,13 +8289,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                               style={{
                                                 borderColor: (pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1',
                                                 borderTopStyle: ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dashed' ? 'dashed' : ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dotted' ? 'dotted' : 'solid',
-                                                borderTopWidth: `${Number((pdfExportSections as any)[item.dividerThicknessKey] || 1.5)}px`
                                               }}
-                                              title={`Live Divider Line Preview: ${((pdfExportSections as any)[item.dividerStyleKey] || 'Solid')} style, ${Number((pdfExportSections as any)[item.dividerThicknessKey] || 1.5)}px thick, ${(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'}`}
                                             />
+                                          
+                                        
                                           </div>
-                                        </div>
-                                       )}
 
                                        {/* Vertical Padding Slider Control */}
                                        <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between gap-2">
@@ -8433,11 +8303,9 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300'
                                            }`}
                                            title="Adjust vertical white space / padding around this section in generated PDF"
-                                           onClick={(e) => e.stopPropagation()}
                                          >
                                            <span className="font-mono text-zinc-400">Vertical Padding:</span>
                                            <span className="text-amber-300 font-semibold font-mono">
-                                             {Number(pdfExportSections[item.paddingKey] ?? 10)}px
                                            </span>
                                          </label>
                                          <input
@@ -8448,13 +8316,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            max="30"
                                            step="2"
                                            disabled={!isIncluded}
-                                           value={Number(pdfExportSections[item.paddingKey] ?? 10)}
                                            onChange={(e) => {
                                              const val = Number(e.target.value);
                                              setPdfExportSections((prev) => ({ ...prev, [item.paddingKey]: val }));
                                              handleGenerateSnapshot(item.id);
                                            }}
-                                           onClick={(e) => e.stopPropagation()}
                                            className="w-24 accent-amber-500 cursor-pointer h-1.5 bg-zinc-800 rounded"
                                          />
                                        </div>
@@ -8468,7 +8334,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
                                              }`}
                                              title="Customize exported CSV filename prefix for this section"
-                                             onClick={(e) => e.stopPropagation()}
                                            >
                                              <FileSpreadsheet className="w-3 h-3 text-emerald-400 shrink-0" />
                                              <span>CSV Filename Prefix:</span>
@@ -8508,7 +8373,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                >
                                                  Clear
                                                </button>
-                                             )}
                                            </div>
                                          </div>
                                          <div className="flex items-center gap-1.5">
@@ -8517,8 +8381,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              data-testid={item.inputFilenamePrefixId}
                                              type="text"
                                              disabled={!isIncluded}
-                                             placeholder={`Pattern: ${resolveNamingPattern(globalCsvNamingPattern, item.id)}`}
-                                             value={String(pdfExportSections[item.filenamePrefixKey] || '')}
                                              onChange={(e) => {
                                                const val = e.target.value;
                                                setPdfExportSections((prev) => ({
@@ -8526,8 +8388,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                  [item.filenamePrefixKey]: val
                                                }));
                                              }}
-                                             onClick={(e) => e.stopPropagation()}
-                                             onMouseDown={(e) => e.stopPropagation()}
                                              className="flex-1 px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 text-[10px] focus:outline-none focus:border-amber-500/80 disabled:opacity-30 font-mono"
                                            />
                                            <span className="text-[9px] font-mono text-zinc-400 font-semibold">
@@ -8542,7 +8402,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              className={`flex items-center gap-1 font-mono cursor-pointer select-none transition-colors ${
                                                !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-400 hover:text-zinc-200'
                                              }`}
-                                             onClick={(e) => e.stopPropagation()}
                                              title="Toggle between Comma, Tab, and Semicolon delimiters for individual CSV export"
                                            >
                                              <span className="font-semibold text-zinc-300">Delimiter:</span>
@@ -8569,8 +8428,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                    [item.delimiterKey]: val
                                                  }));
                                                }}
-                                               onClick={(e) => e.stopPropagation()}
-                                               onMouseDown={(e) => e.stopPropagation()}
                                                className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none text-zinc-100 text-[9.5px] font-mono disabled:opacity-30 cursor-pointer shadow-xs"
                                              >
                                                <option value=",">Comma (,)</option>
@@ -8590,13 +8447,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                          {/* Card Configuration Stats Summary Footer */}
                                          <div className="mt-2 pt-1.5 border-t border-zinc-800/80 flex items-center justify-between gap-1.5 flex-wrap text-[9px]">
                                            <div className="flex items-center gap-1.5 text-zinc-400 font-mono text-[8.5px]">
-                                             <span>Padding: <strong className="text-amber-300">{Number(pdfExportSections[item.paddingKey] ?? 10)}px</strong></span>
                                              <span>•</span>
                                              <span>Break: <strong className={isBreak ? 'text-amber-300' : 'text-zinc-500'}>{isBreak ? 'Yes' : 'No'}</strong></span>
                                              <span>•</span>
                                              <span>Note: <strong className={String(pdfExportSections[item.noteKey] || '').trim() ? 'text-emerald-400' : 'text-zinc-500'}>{String(pdfExportSections[item.noteKey] || '').trim() ? 'Custom' : 'None'}</strong></span>
                                              <span>•</span>
-                                             <span>Dividers: <strong className={isDivider ? 'text-amber-300' : 'text-zinc-500'}>{isDivider ? `${((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toUpperCase()} (${(pdfExportSections as any)[item.dividerColorKey] || 'Slate'})` : 'No'}</strong></span>
                                            </div>
                                            <button
                                              id={`btn-export-section-stats-detailed-${item.id}`}
@@ -8613,11 +8468,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              <span>Export Section Stats</span>
                                            </button>
                                          </div>
-                                       </div>
-                                       </>
-                                       )}
+                                         </div>
 
-                                       {/* Visual Live Divider Preview at Bottom of Card */}
+
+
+                                        {/* Visual Live Divider Preview at Bottom of Card */}
                                        {isDivider && (
                                          <div
                                            id={`divider-preview-${sectionId}`}
@@ -8628,25 +8483,20 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              borderTopStyle: ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dashed' ? 'dashed' : ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dotted' ? 'dotted' : 'solid',
                                              borderTopWidth: '1.5px'
                                            }}
-                                           title={`Live PDF Section Divider Preview: ${((pdfExportSections as any)[item.dividerStyleKey] || 'Solid')} style (${(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'})`}
                                          >
                                            <div className="flex items-center justify-between text-[7.5px] font-mono text-zinc-400 uppercase tracking-wider pt-0.5">
-                                             <span>Divider: {((pdfExportSections as any)[item.dividerStyleKey] || 'Solid')}</span>
                                              <span>Color: {(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'}</span>
-                                           </div>
+                                            </div>
+                                          </div>
+                                    
                                          </div>
-                                       )}
-                                    </div>
-                                  );
-                                   };
+                                         </div>
+                                     );
+                                    };
 
-                                   const sectionGroupsToRender = (pdfExportSections.sectionGroups && pdfExportSections.sectionGroups.length > 0)
-                                     ? pdfExportSections.sectionGroups
-                                     : DEFAULT_PDF_SECTION_GROUPS;
-
-                                   const assignedSectionIds = new Set(
-                                     sectionGroupsToRender.flatMap((g) => g.sectionIds)
-                                   );
+                                    const sectionGroupsToRender = (pdfExportSections.sectionGroups && pdfExportSections.sectionGroups.length > 0)
+                                      ? pdfExportSections.sectionGroups
+                                      : DEFAULT_PDF_SECTION_GROUPS;
                                    const ungroupedSections = filteredSectionOrder.filter((sectionId) => {
                                      const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
                                      return !assignedSectionIds.has(baseId as DiagnosticPdfSectionId) && !assignedSectionIds.has(sectionId as any);
@@ -8670,7 +8520,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                              {/* Folder Header */}
                                              <div
                                                className="flex items-center justify-between px-3 py-2 bg-zinc-900/90 border-b border-zinc-800/80 cursor-pointer select-none hover:bg-zinc-850 transition-colors"
-                                               onClick={() => handleToggleSectionGroupCollapse(group.id)}
                                              >
                                                <div className="flex items-center gap-2">
                                                  <button
@@ -8689,14 +8538,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                      <ChevronRight className="w-3.5 h-3.5 text-zinc-400" />
                                                    ) : (
                                                      <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
-                                                   )}
                                                  </button>
 
                                                  {group.isCollapsed ? (
                                                    <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                                                  ) : (
                                                    <FolderOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                                 )}
 
                                                  <div className="flex items-center gap-2 flex-wrap">
                                                    <span className="font-semibold text-xs text-zinc-200">{group.title}</span>
@@ -8707,14 +8554,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                      <span className="text-[9px] text-zinc-500 font-mono italic">
                                                        (Collapsed)
                                                      </span>
-                                                   )}
                                                  </div>
                                                </div>
 
-                                               <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                                                  <button
                                                    type="button"
-                                                   onClick={() => handleToggleSectionGroupCollapse(group.id)}
                                                    className="text-[9px] font-medium px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700 transition-colors cursor-pointer"
                                                  >
                                                    {group.isCollapsed ? 'Expand' : 'Collapse'}
@@ -8734,22 +8578,17 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                      {groupSections.map((secId) => {
                                                        const idx = filteredSectionOrder.indexOf(secId);
                                                        return renderCard(secId, idx >= 0 ? idx : 0);
-                                                     })}
                                                    </div>
-                                                 )}
                                                </div>
                                              ) : (
                                                <div
-                                                 onClick={() => handleToggleSectionGroupCollapse(group.id)}
                                                  className="px-3 py-1.5 text-[9.5px] text-zinc-500 hover:text-zinc-300 cursor-pointer flex items-center justify-between border-t border-zinc-900/40 bg-zinc-950/40 hover:bg-zinc-900/30 transition-colors"
                                                >
                                                  <span>Folder collapsed — {groupSections.length} section{groupSections.length === 1 ? '' : 's'} hidden</span>
                                                  <span className="text-amber-400/80 hover:text-amber-300 text-[9px] underline">Click to expand</span>
                                                </div>
-                                             )}
                                            </div>
                                          );
-                                       })}
 
                                        {/* Ungrouped Sections if any */}
                                        {ungroupedSections.length > 0 && (
@@ -8772,16 +8611,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                {ungroupedSections.map((secId) => {
                                                  const idx = filteredSectionOrder.indexOf(secId);
                                                  return renderCard(secId, idx >= 0 ? idx : 0);
-                                               })}
                                              </div>
                                            </div>
-                                         </div>
-                                       )}
-                                     </div>
+                                         
+                                     
                                    );
                                  })()
-                              )}
-                            </div>
+                            
 
                             {/* Quick Presets and Done control */}
                             <div className="flex items-center justify-between pt-1 border-t border-zinc-800/80 text-[10px] flex-wrap gap-1">
@@ -8791,7 +8627,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   id="btn-preset-executive-summary"
                                   data-testid="btn-preset-executive-summary"
                                   type="button"
-                                  onClick={() => handleSelectPdfTemplate('executive-summary')}
                                   className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
                                     currentMatchedTemplateId === 'executive-summary'
                                       ? 'bg-purple-900/60 text-purple-200 border border-purple-500/50 font-semibold'
@@ -8805,7 +8640,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   id="btn-preset-structured-multi-page"
                                   data-testid="btn-preset-structured-multi-page"
                                   type="button"
-                                  onClick={() => handleSelectPdfTemplate('full-technical-audit')}
                                   className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
                                     currentMatchedTemplateId === 'full-technical-audit'
                                       ? 'bg-amber-900/60 text-amber-200 border border-amber-500/50 font-semibold'
@@ -8819,7 +8653,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   id="btn-preset-troubleshooting-focused"
                                   data-testid="btn-preset-troubleshooting-focused"
                                   type="button"
-                                  onClick={() => handleSelectPdfTemplate('troubleshooting-focused')}
                                   className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
                                     currentMatchedTemplateId === 'troubleshooting-focused'
                                       ? 'bg-blue-900/60 text-blue-200 border border-blue-500/50 font-semibold'
@@ -8833,7 +8666,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   id="btn-preset-visual-summary"
                                   data-testid="btn-preset-visual-summary"
                                   type="button"
-                                  onClick={() => handleSelectPdfTemplate('visual-standup')}
                                   className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
                                     currentMatchedTemplateId === 'visual-standup'
                                       ? 'bg-rose-900/60 text-rose-200 border border-rose-500/50 font-semibold'
@@ -8847,7 +8679,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   id="btn-preset-detailed-data"
                                   data-testid="btn-preset-detailed-data"
                                   type="button"
-                                  onClick={() => handleSelectPdfTemplate('data-compliance-audit')}
                                   className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
                                     currentMatchedTemplateId === 'data-compliance-audit'
                                       ? 'bg-emerald-900/60 text-emerald-200 border border-emerald-500/50 font-semibold'
@@ -8863,14 +8694,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                 id="btn-close-pdf-export-settings"
                                 data-testid="btn-close-pdf-export-settings"
                                 type="button"
-                                onClick={() => setShowPdfExportSettings(false)}
                                 className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer font-medium"
                               >
                                 Done
                               </button>
                             </div>
-                          </div>
-                        )}
+                          
 
                         {/* PDF Generation Error Toast / Alert with Retry Action */}
                         {diagnosticPdfError && (
@@ -8908,15 +8737,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                 data-testid="btn-dismiss-pdf-error"
                                 aria-label="Dismiss error"
                                 type="button"
-                                onClick={() => setDiagnosticPdfError(null)}
                                 className="p-0.5 rounded text-rose-300 hover:text-white hover:bg-rose-900/60 transition-colors cursor-pointer"
                                 title="Dismiss notification"
                               >
                                 <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
-                          </div>
-                        )}
+                          
 
                         {thresholdViolationsHistory.length === 0 ? (
                           <div className="text-[10.5px] text-zinc-400 italic p-2 rounded bg-zinc-950/40 border border-zinc-800/80 text-center">
@@ -8957,7 +8784,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           hour: '2-digit',
                                           minute: '2-digit',
                                           second: '2-digit'
-                                        })}
                                       </span>
                                     </div>
                                   </div>
@@ -8968,7 +8794,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     aria-label="Copy to Clipboard"
                                     title="Copy to Clipboard"
                                     type="button"
-                                    onClick={() => handleCopyAlertItem(item)}
                                     className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-700 text-[10px] font-medium transition-colors cursor-pointer shrink-0"
                                   >
                                     {isCopied ? (
@@ -8981,13 +8806,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <Copy className="w-3 h-3 text-amber-300" />
                                         <span>Copy to Clipboard</span>
                                       </>
-                                    )}
                                   </button>
-                                </div>
+                                
                               );
-                            })}
-                          </div>
-                        )}
+                          
 
                         {/* Diagnostic Correlation Report Footer Action */}
                         <div
@@ -9005,7 +8827,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                               data-testid="btn-footer-preview-pdf-report"
                               aria-label="Preview PDF Report"
                               type="button"
-                              onClick={() => setShowPdfPreviewModal(true)}
                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800/90 hover:bg-zinc-700/90 active:bg-zinc-600 text-zinc-200 hover:text-white border border-zinc-700 text-[10px] font-medium transition-colors cursor-pointer shrink-0"
                               title="Preview live-rendered PDF document in modal before triggering download"
                             >
@@ -9038,7 +8859,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     <FileText className="w-2.5 h-2.5 text-rose-300" />
                                     <span>Generate PDF Report</span>
                                   </>
-                                )}
                               </button>
                               {isGeneratingDiagnosticPdf && (
                                 <div
@@ -9050,7 +8870,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                 >
                                   <div className="h-full bg-linear-to-r from-rose-500 via-amber-400 to-rose-400 rounded-full animate-indeterminate" />
                                 </div>
-                              )}
                             </div>
                             <button
                               id="btn-footer-diagnostic-correlation-report"
@@ -9085,23 +8904,19 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                   <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-400" />
                                   <span>Export Logs</span>
                                 </>
-                              )}
                             </button>
-                          </div>
-                        </div>
-                      </div>
+                          
+                        
 
                       {/* Tooltip downward pointing caret */}
                       <div className={`absolute top-full left-8 -mt-1 w-2.5 h-2.5 bg-zinc-900 border-r border-b ${
                         isDatabaseMutatingState ? 'border-amber-400/90' : 'border-amber-500/60'
                       } rotate-45`} />
-                    </div>
 
                   {/* Dropdown Menu Trigger Toggle */}
                   <button
                     id="btn-header-export-dropdown-toggle"
                     type="button"
-                    onClick={() => setIsExportDropdownOpen(!isExportDropdownOpen)}
                     disabled={isHeaderExporting || queryResult.records.length === 0}
                     className="inline-flex items-center justify-center px-2 py-1.5 rounded-r-lg border border-zinc-300 bg-white hover:bg-zinc-50 active:bg-zinc-100 text-zinc-700 text-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed relative"
                     title="Select export format (Standard CSV or Structured JSON)"
@@ -9115,7 +8930,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                     />
                     {isQueueAutoSaveEnabled && (
                       <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    )}
                   </button>
 
                   {/* Dropdown Menu Popover */}
@@ -9133,7 +8947,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                         <button
                           id="btn-export-option-csv"
                           type="button"
-                          onClick={() => handleHeaderExport('csv')}
                           className={`w-full flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-left text-xs transition-colors cursor-pointer ${
                             selectedExportFormat === 'csv'
                               ? 'bg-emerald-50 text-emerald-950 font-medium'
@@ -9167,14 +8980,12 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           </div>
                           {selectedExportFormat === 'csv' && (
                             <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-1" />
-                          )}
                         </button>
 
                         {/* Option: Structured JSON */}
                         <button
                           id="btn-export-option-json"
                           type="button"
-                          onClick={() => handleHeaderExport('json')}
                           className={`w-full flex items-start gap-2.5 px-2.5 py-2 rounded-lg text-left text-xs transition-colors cursor-pointer ${
                             selectedExportFormat === 'json'
                               ? 'bg-amber-50 text-amber-950 font-medium'
@@ -9189,7 +9000,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             }`}
                           >
                             <FileCode className="w-4 h-4" />
-                          </div>
+                          
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between">
                               <span className="font-semibold text-zinc-900">Structured JSON</span>
@@ -9208,15 +9019,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           </div>
                           {selectedExportFormat === 'json' && (
                             <Check className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-1" />
-                          )}
                         </button>
-                      </div>
+                      
 
                       {/* Section: CSV Header Configuration with 'Include Column Headers' Checkbox */}
                       <div
                         id="csv-header-toggle-section"
                         className="p-2.5 bg-zinc-50/90 border-t border-zinc-100"
-                        onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex items-center justify-between mb-1.5 px-0.5">
                           <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider flex items-center gap-1">
@@ -9266,7 +9075,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             </p>
                           </div>
                         </label>
-                      </div>
+                      
 
                       {/* Power-User Keyboard Shortcut Helper Callout */}
                       <div className="px-3 py-2 bg-indigo-50/70 border-t border-indigo-100/80 flex items-center justify-between text-[11px] text-indigo-950">
@@ -9370,7 +9179,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                             <ExternalLink className="w-2.5 h-2.5" />
                           </button>
                         </div>
-                      </div>
+                      
 
                       {/* Concurrency & Data Consistency Simulation Action */}
                       <div className="p-2.5 bg-amber-50/70 border-t border-amber-100/90 flex items-center justify-between gap-2 text-xs text-amber-950">
@@ -9402,17 +9211,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                         history={exportHistory}
                         selectedFormat={selectedExportFormat}
                       />
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <span className="text-xs text-zinc-500 hidden sm:inline-block">
-                Real-time D3 visualization of query latency across flag permutations
-              </span>
-            )}
-          </div>
-        </div>
+                    
+                
+              
+          
+        
 
         {/* Header Serialization Efficiency Telemetry Banner */}
         {headerExportStats && activeView === 'grid' && (
@@ -9433,9 +9236,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                     {headerExportStats.formatName}
                   </span>
                   <span className="text-emerald-800 text-xs">
-                    Serialized <strong>{headerExportStats.recordCount.toLocaleString()}</strong> rows (
-                    {headerExportStats.itemCount.toLocaleString()} nested item entities) into{' '}
-                    <strong>{(headerExportStats.fileSizeBytes / 1024).toFixed(1)} KB</strong>{' '}
                     <span className="font-mono text-[11px] text-emerald-700">
                       ({headerExportStats.bytesPerRow} B/row)
                     </span>
@@ -9453,7 +9253,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                 <button
                   id="btn-dismiss-header-export-stats"
                   type="button"
-                  onClick={() => setHeaderExportStats(null)}
                   className="text-emerald-700 hover:text-emerald-950 underline text-xs cursor-pointer ml-1"
                 >
                   Dismiss
@@ -9475,13 +9274,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                   <span className="text-[11px] font-medium text-emerald-700">
                     {headerExportStats.format === 'csv'
                       ? `(${headerExportStats.spaceSavingsPercent}% savings)`
-                      : `(+${Math.abs(headerExportStats.spaceSavingsPercent)}% vs CSV)`}
                   </span>
                 </div>
                 <p className="text-[10px] text-emerald-700/90 mt-1 leading-tight">
                   {headerExportStats.format === 'csv'
-                    ? `Eliminates repeated keys; JSON equivalent is ${(headerExportStats.comparisonPayloadSizeBytes / 1024).toFixed(1)} KB`
-                    : `Repeated field keys per row; Tabular CSV equivalent is ${(headerExportStats.comparisonPayloadSizeBytes / 1024).toFixed(1)} KB`}
                 </p>
               </div>
 
@@ -9492,7 +9288,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                 </span>
                 <div className="flex items-baseline gap-1.5 mt-0.5">
                   <span className="font-mono text-base font-bold text-emerald-950">
-                    ~{(headerExportStats.estimatedGzipSizeBytes / 1024).toFixed(1)} KB
                   </span>
                   <span className="text-[11px] font-mono font-semibold text-emerald-700">
                     ({headerExportStats.estimatedGzipRatio}x reduction)
@@ -9531,7 +9326,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                 </span>
                 <div className="flex items-baseline gap-1.5 mt-0.5">
                   <span className="font-mono text-base font-bold text-emerald-950">
-                    {headerExportStats.throughputRowsPerSec.toLocaleString()}
                   </span>
                   <span className="text-xs font-normal text-emerald-700">rows/sec</span>
                 </div>
@@ -9547,8 +9341,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               currentCpuPercent={systemCpu.cpuUsagePercent}
               activeFormat={headerExportStats.format}
             />
-          </div>
-        )}
+          
 
         {/* View Content Branch */}
         {activeView === 'trends' ? (
@@ -9564,7 +9357,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             onAppendTrendPoint={handleAppendTrendPoint}
             dataTapeEntries={dataTapeEntries}
             exportHistory={exportHistory}
-            onTriggerAuditBurst={() => handleHeaderExport(selectedExportFormat)}
             serializationLogs={serializationLogs}
             onLogLatencyAnomaly={handleLogLatencyAnomaly}
             onClearSerializationLogs={handleClearSerializationLogs}
@@ -9606,7 +9398,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               onFixNPlusOne={handleFixNPlusOne}
               simulatedError={queryResult.simulatedError}
               warningNotice={queryResult.warningNotice}
-              onOpenBulkImport={() => setIsBulkImportOpen(true)}
               selectedExportFormat={selectedExportFormat}
               onExportFormatChange={setSelectedExportFormat}
               onTriggerExport={handleHeaderExport}
@@ -9632,35 +9423,27 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               searchTerm={searchTerm}
             />
           </>
-        )}
       </main>
 
       {/* Benchmark Suite Modal */}
       <BenchmarkModal
         isOpen={isBenchmarkOpen}
-        onClose={() => setIsBenchmarkOpen(false)}
-        onApplyAllOptimizations={() => handleToggleAll(true)}
       />
 
       {/* Bulk Data Ingestion Simulation Modal */}
       <BulkImportModal
         isOpen={isBulkImportOpen}
-        onClose={() => setIsBulkImportOpen(false)}
         onImportComplete={handleBulkImportComplete}
         onResetComplete={handleResetComplete}
-        onViewInGrid={() => setActiveView('grid')}
       />
 
       {/* Historical Data Tape Auditor Modal */}
       <HistoricalDataTapeModal
         isOpen={isDataTapeModalOpen}
-        onClose={() => setIsDataTapeModalOpen(false)}
         entries={dataTapeEntries}
         isAutoSaveEnabled={isQueueAutoSaveEnabled}
-        onToggleAutoSave={() => setIsQueueAutoSaveEnabled(!isQueueAutoSaveEnabled)}
         onTriggerManualSlice={handleTriggerManualTapeSlice}
         onMutateDatabase={handleMutateDatabase}
-        onClearTape={() => setDataTapeEntries([])}
       />
 
       {/* Floating Auto-Save Notification Toast */}
@@ -9690,13 +9473,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                   {autoSaveToast.rows} rows
                 </span>
                 <span className="truncate font-mono text-[9px] text-zinc-500" title={autoSaveToast.checksum}>
-                  SHA: {autoSaveToast.checksum.slice(0, 10)}…
                 </span>
               </div>
             </div>
             <button
               type="button"
-              onClick={() => setAutoSaveToast(null)}
               className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
@@ -9715,8 +9496,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               View Tape Ledger
             </button>
           </div>
-        </div>
-      )}
+        
 
       {/* Floating Keyboard Shortcut Trigger Notification Toast */}
       {shortcutToast && (
@@ -9742,22 +9522,19 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               <p className="text-xs text-zinc-200 truncate mt-0.5">
                 {shortcutToast.isEmpty
                   ? 'No matching filtered records to export'
-                  : `Exported ${shortcutToast.rows.toLocaleString()} rows as ${
                       shortcutToast.format === 'json' ? 'Structured JSON' : 'Standard CSV'
                     }`}
               </p>
             </div>
             <button
               type="button"
-              onClick={() => setShortcutToast(null)}
               className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer"
               aria-label="Dismiss shortcut notification"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      )}
+        
 
       {/* Floating Configuration Copied to Clipboard Notification Toast */}
       {copyConfigToast && (
@@ -9801,8 +9578,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      )}
+        
 
       {/* Floating Export Paused (Mid-Process Mutation) Notification Toast */}
       {exportPausedToast && (
@@ -9836,15 +9612,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             </div>
             <button
               type="button"
-              onClick={() => setExportPausedToast(null)}
               className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer shrink-0"
               aria-label="Dismiss export paused notice"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      )}
+        
 
       {/* Floating Mutation Threshold Exceeded Alert Toast */}
       {thresholdAlert && (
@@ -9880,15 +9654,13 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               id="btn-dismiss-toast-threshold-alert"
               data-testid="btn-dismiss-toast-threshold-alert"
               type="button"
-              onClick={() => setThresholdAlert(null)}
               className="text-zinc-400 hover:text-white p-1 rounded-md transition-colors cursor-pointer shrink-0"
               aria-label="Dismiss mutation threshold alert"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-        </div>
-      )}
+        
       {/* Export Confirmation Modal */}
       {isExportConfirmationModalOpen && (
         <div
@@ -9903,7 +9675,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-export-confirmation-title"
-            onClick={(e) => e.stopPropagation()}
             className="relative w-full max-w-md bg-zinc-900 border border-zinc-700/80 rounded-2xl shadow-2xl p-5 text-zinc-100 space-y-4 animate-in zoom-in-95 duration-150"
           >
             {/* Modal Header */}
@@ -9918,7 +9689,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                     data-testid="modal-export-confirmation-title"
                     className="text-sm font-bold text-white tracking-tight"
                   >
-                    Confirm {pendingExportFormat.toUpperCase()} Export
                   </h3>
                   <p className="text-[11px] text-zinc-400">
                     User confirmation is required before proceeding with data serialization
@@ -9952,13 +9722,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                       <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                       CSV {includeCsvHeaders ? '(with headers)' : '(headerless)'}
                     </>
-                  )}
                 </span>
               </div>
               <div className="flex items-center justify-between text-zinc-300">
                 <span className="text-zinc-400">Query Records:</span>
                 <span className="font-semibold font-mono text-emerald-300">
-                  {queryResult.records.length.toLocaleString()} rows
                 </span>
               </div>
               <div className="flex items-center justify-between text-zinc-300">
@@ -9976,7 +9744,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             </div>
 
             <p className="text-[11.5px] text-zinc-300 leading-relaxed">
-              Are you sure you want to serialize and export <span className="font-bold text-white font-mono">{queryResult.records.length.toLocaleString()}</span> records as <span className="font-bold text-white uppercase">{pendingExportFormat}</span>?
             </p>
 
             {/* Modal Action Buttons */}
@@ -10006,12 +9773,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-semibold shadow-md shadow-emerald-950/40 transition-all cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Export {pendingExportFormat.toUpperCase()}</span>
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          
+        
 
       {/* Batch Export Confirmation Modal */}
       {showBatchExportModal && (
@@ -10033,7 +9798,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               </div>
               <button
                 type="button"
-                onClick={() => setShowBatchExportModal(false)}
                 className="text-zinc-400 hover:text-zinc-200 p-1 rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
               >
                 ✕
@@ -10069,7 +9833,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                           <span className="text-amber-400 text-[10px]">{cleanPrefix}.{ext}</span>
                         </li>
                       );
-                    })}
                 </ul>
               </div>
               <p className="text-[10px] text-zinc-400">
@@ -10083,7 +9846,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
               <button
                 type="button"
-                onClick={() => setShowBatchExportModal(false)}
                 className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors cursor-pointer"
               >
                 Cancel
@@ -10100,13 +9862,11 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               </button>
             </div>
           </div>
-        </div>
-      )}
+        
 
       {/* Live PDF Report Preview Modal */}
       <DiagnosticPdfPreviewModal
         isOpen={showPdfPreviewModal}
-        onClose={() => setShowPdfPreviewModal(false)}
         onDownload={handleGenerateDiagnosticCorrelationPdf}
         isDownloading={isGeneratingDiagnosticPdf}
         isDownloadSuccess={isDiagnosticPdfSuccess}
@@ -10118,6 +9878,6 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         sectionsConfig={pdfExportSections}
         onUpdateSections={setPdfExportSections}
       />
-    </div>
+    
   );
 }
