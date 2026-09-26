@@ -31,6 +31,7 @@ import {
   exportDiagnosticCorrelationPdf,
   DiagnosticPdfSectionId,
   DiagnosticPdfSectionsConfig,
+  DiagnosticPdfSectionGroup,
   DEFAULT_PDF_SECTION_ORDER
 } from './utils/diagnosticCorrelationPdfGenerator';
 import {
@@ -80,7 +81,9 @@ import {
   Clock,
   Check,
   ChevronDown,
+  ChevronRight,
   FileSpreadsheet,
+  FileJson,
   FileCode,
   Layers,
   Zap,
@@ -98,11 +101,14 @@ import {
   Trash2,
   FileText,
   SlidersHorizontal,
+  SeparatorHorizontal,
   Eye,
   EyeOff,
   Bookmark,
   Save,
+  Folder,
   FolderOpen,
+  FolderX,
   Users,
   Pin,
   Timer,
@@ -112,7 +118,9 @@ import {
   Maximize2,
   RotateCcw,
   ArrowUpDown,
-  HelpCircle
+  HelpCircle,
+  Info,
+  Palette
 } from 'lucide-react';
 import {
   PREDEFINED_PDF_TEMPLATES,
@@ -121,6 +129,13 @@ import {
   saveCustomTemplate,
   matchTemplateId
 } from './utils/pdfReportTemplates';
+
+export const DEFAULT_PDF_SECTION_GROUPS: DiagnosticPdfSectionGroup[] = [
+  { id: 'group_metrics', title: 'Metrics Domain Group', sectionIds: ['sparklines'], isCollapsed: false },
+  { id: 'group_logs', title: 'Logs Domain Group', sectionIds: ['mutationHistory'], isCollapsed: false },
+  { id: 'group_strategy', title: 'Strategy Domain Group', sectionIds: ['recommendations'], isCollapsed: false },
+  { id: 'group_summary', title: 'Summary Domain Group', sectionIds: ['executiveSummary'], isCollapsed: false }
+];
 
 const PDF_SECTION_CONFIG_ITEMS: Record<
   DiagnosticPdfSectionId,
@@ -145,6 +160,13 @@ const PDF_SECTION_CONFIG_ITEMS: Record<
     inputFilenamePrefixId: string;
     delimiterKey: 'sparklinesDelimiter' | 'mutationHistoryDelimiter' | 'recommendationsDelimiter' | 'executiveSummaryDelimiter';
     inputDelimiterId: string;
+    showDividerKey: 'showDividerSparklines' | 'showDividerMutationHistory' | 'showDividerRecommendations' | 'showDividerExecutiveSummary';
+    dividerColorKey: 'dividerColorSparklines' | 'dividerColorMutationHistory' | 'dividerColorRecommendations' | 'dividerColorExecutiveSummary';
+    dividerStyleKey: 'dividerStyleSparklines' | 'dividerStyleMutationHistory' | 'dividerStyleRecommendations' | 'dividerStyleExecutiveSummary';
+    dividerThicknessKey: 'dividerThicknessSparklines' | 'dividerThicknessMutationHistory' | 'dividerThicknessRecommendations' | 'dividerThicknessExecutiveSummary';
+    inputDividerToggleId: string;
+    inputDividerStyleId: string;
+    inputDividerThicknessId: string;
     tip: string;
     icon: React.ComponentType<{ className?: string }>;
     barColor: string;
@@ -173,6 +195,13 @@ const PDF_SECTION_CONFIG_ITEMS: Record<
     inputFilenamePrefixId: 'input-filename-prefix-sparklines',
     delimiterKey: 'sparklinesDelimiter',
     inputDelimiterId: 'select-delimiter-sparklines',
+    showDividerKey: 'showDividerSparklines',
+    dividerColorKey: 'dividerColorSparklines',
+    dividerStyleKey: 'dividerStyleSparklines',
+    dividerThicknessKey: 'dividerThicknessSparklines',
+    inputDividerToggleId: 'toggle-show-dividers-sparklines',
+    inputDividerStyleId: 'select-divider-style-sparklines',
+    inputDividerThicknessId: 'select-divider-thickness-sparklines',
     tip: 'Pro-tip: Derived from real-time telemetry buffer recording 50Hz latency sample windows and write mutation frequency counters against SLA thresholds.'
   },
   mutationHistory: {
@@ -198,6 +227,13 @@ const PDF_SECTION_CONFIG_ITEMS: Record<
     inputFilenamePrefixId: 'input-filename-prefix-mutation-history',
     delimiterKey: 'mutationHistoryDelimiter',
     inputDelimiterId: 'select-delimiter-mutation-history',
+    showDividerKey: 'showDividerMutationHistory',
+    dividerColorKey: 'dividerColorMutationHistory',
+    dividerStyleKey: 'dividerStyleMutationHistory',
+    dividerThicknessKey: 'dividerThicknessMutationHistory',
+    inputDividerToggleId: 'toggle-show-dividers-mutation-history',
+    inputDividerStyleId: 'select-divider-style-mutation-history',
+    inputDividerThicknessId: 'select-divider-thickness-mutation-history',
     tip: 'Pro-tip: Aggregated from transaction mutex acquisition logs, deadlock detectors, and chronological root-cause tracing events.'
   },
   recommendations: {
@@ -223,6 +259,13 @@ const PDF_SECTION_CONFIG_ITEMS: Record<
     inputFilenamePrefixId: 'input-filename-prefix-recommendations',
     delimiterKey: 'recommendationsDelimiter',
     inputDelimiterId: 'select-delimiter-recommendations',
+    showDividerKey: 'showDividerRecommendations',
+    dividerColorKey: 'dividerColorRecommendations',
+    dividerStyleKey: 'dividerStyleRecommendations',
+    dividerThicknessKey: 'dividerThicknessRecommendations',
+    inputDividerToggleId: 'toggle-show-dividers-recommendations',
+    inputDividerStyleId: 'select-divider-style-recommendations',
+    inputDividerThicknessId: 'select-divider-thickness-recommendations',
     tip: 'Pro-tip: Generated via automated heuristic rule engines analyzing lock contention hot-spots, index scan efficiency, and query cache hit rates.'
   },
   executiveSummary: {
@@ -248,9 +291,38 @@ const PDF_SECTION_CONFIG_ITEMS: Record<
     inputFilenamePrefixId: 'input-filename-prefix-executive-summary',
     delimiterKey: 'executiveSummaryDelimiter',
     inputDelimiterId: 'select-delimiter-executive-summary',
+    showDividerKey: 'showDividerExecutiveSummary',
+    dividerColorKey: 'dividerColorExecutiveSummary',
+    dividerStyleKey: 'dividerStyleExecutiveSummary',
+    dividerThicknessKey: 'dividerThicknessExecutiveSummary',
+    inputDividerToggleId: 'toggle-show-dividers-executive-summary',
+    inputDividerStyleId: 'select-divider-style-executive-summary',
+    inputDividerThicknessId: 'select-divider-thickness-executive-summary',
     tip: 'Pro-tip: Synthesized using executive summarization algorithms that translate low-level table mutex locks into business impact metrics.'
   }
 };
+
+export const DIVIDER_THICKNESS_OPTIONS = [
+  { value: 1, label: '1px (Thin)' },
+  { value: 1.5, label: '1.5px (Default)' },
+  { value: 2, label: '2px (Medium)' },
+  { value: 3, label: '3px (Thick)' },
+] as const;
+
+export const DIVIDER_STYLE_OPTIONS = [
+  { value: 'solid', label: 'Solid' },
+  { value: 'dashed', label: 'Dashed' },
+  { value: 'dotted', label: 'Dotted' },
+] as const;
+
+export const DIVIDER_COLOR_OPTIONS = [
+  { value: '#cbd5e1', label: 'Slate (Default)', bgClass: 'bg-slate-300' },
+  { value: '#f59e0b', label: 'Amber', bgClass: 'bg-amber-400' },
+  { value: '#10b981', label: 'Emerald', bgClass: 'bg-emerald-400' },
+  { value: '#3b82f6', label: 'Blue', bgClass: 'bg-blue-400' },
+  { value: '#71717a', label: 'Zinc', bgClass: 'bg-zinc-400' },
+  { value: '#ef4444', label: 'Rose', bgClass: 'bg-rose-400' },
+];
 
 interface InvalidationTriggerEntry {
   id: string;
@@ -1101,54 +1173,264 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const [diagnosticPdfError, setDiagnosticPdfError] = useState<string | null>(null);
   const [showPdfExportSettings, setShowPdfExportSettings] = useState(false);
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
-  const [pdfExportSections, setPdfExportSections] = useState<DiagnosticPdfSectionsConfig>({
-    includePageNumbers: true,
-    includeSparklines: true,
-    includeMutationHistory: true,
-    includeRecommendations: true,
-    includeExecutiveSummary: true,
-    breakBeforeSparklines: false,
-    breakBeforeMutationHistory: true,
-    breakBeforeRecommendations: true,
-    breakBeforeExecutiveSummary: false,
-    sparklinesNote: '',
-    mutationHistoryNote: '',
-    recommendationsNote: '',
-    executiveSummaryNote: '',
-    includeMetadataSparklines: true,
-    includeMetadataMutationHistory: true,
-    includeMetadataRecommendations: true,
-    includeMetadataExecutiveSummary: true,
-    paddingSparklines: 10,
-    paddingMutationHistory: 10,
-    paddingRecommendations: 10,
-    paddingExecutiveSummary: 10,
-    sectionOrder: [...DEFAULT_PDF_SECTION_ORDER]
+  const PDF_EXPORT_SECTIONS_STORAGE_KEY = 'benchmark_pdf_export_sections_config';
+
+  const [pdfExportSections, setPdfExportSections] = useState<DiagnosticPdfSectionsConfig>(() => {
+    const defaultSections: DiagnosticPdfSectionsConfig = {
+      includePageNumbers: true,
+      includeSparklines: true,
+      includeMutationHistory: true,
+      includeRecommendations: true,
+      includeExecutiveSummary: true,
+      breakBeforeSparklines: false,
+      breakBeforeMutationHistory: true,
+      breakBeforeRecommendations: true,
+      breakBeforeExecutiveSummary: false,
+      sparklinesNote: '',
+      mutationHistoryNote: '',
+      recommendationsNote: '',
+      executiveSummaryNote: '',
+      includeMetadataSparklines: true,
+      includeMetadataMutationHistory: true,
+      includeMetadataRecommendations: true,
+      includeMetadataExecutiveSummary: true,
+      paddingSparklines: 10,
+      paddingMutationHistory: 10,
+      paddingRecommendations: 10,
+      paddingExecutiveSummary: 10,
+      sparklinesDelimiter: ',',
+      mutationHistoryDelimiter: ',',
+      recommendationsDelimiter: ',',
+      executiveSummaryDelimiter: ',',
+      sparklinesFilenamePrefix: '',
+      mutationHistoryFilenamePrefix: '',
+      recommendationsFilenamePrefix: '',
+      executiveSummaryFilenamePrefix: '',
+      showDividerSparklines: true,
+      showDividerMutationHistory: true,
+      showDividerRecommendations: true,
+      showDividerExecutiveSummary: true,
+      dividerColor: '#cbd5e1',
+      dividerColorSparklines: '#cbd5e1',
+      dividerColorMutationHistory: '#cbd5e1',
+      dividerColorRecommendations: '#cbd5e1',
+      dividerColorExecutiveSummary: '#cbd5e1',
+      dividerStyle: 'solid',
+      dividerStyleSparklines: 'solid',
+      dividerStyleMutationHistory: 'solid',
+      dividerStyleRecommendations: 'solid',
+      dividerStyleExecutiveSummary: 'solid',
+      dividerThickness: 1.5,
+      dividerThicknessSparklines: 1.5,
+      dividerThicknessMutationHistory: 1.5,
+      dividerThicknessRecommendations: 1.5,
+      dividerThicknessExecutiveSummary: 1.5,
+      sectionOrder: [...DEFAULT_PDF_SECTION_ORDER],
+      sectionGroups: DEFAULT_PDF_SECTION_GROUPS.map((g) => ({ ...g }))
+    };
+
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const stored = localStorage.getItem(PDF_EXPORT_SECTIONS_STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          return {
+            ...defaultSections,
+            ...parsed,
+            showDividerSparklines: parsed.showDividerSparklines !== undefined ? parsed.showDividerSparklines : true,
+            showDividerMutationHistory: parsed.showDividerMutationHistory !== undefined ? parsed.showDividerMutationHistory : true,
+            showDividerRecommendations: parsed.showDividerRecommendations !== undefined ? parsed.showDividerRecommendations : true,
+            showDividerExecutiveSummary: parsed.showDividerExecutiveSummary !== undefined ? parsed.showDividerExecutiveSummary : true,
+            dividerColor: parsed.dividerColor || '#cbd5e1',
+            dividerColorSparklines: parsed.dividerColorSparklines || '#cbd5e1',
+            dividerColorMutationHistory: parsed.dividerColorMutationHistory || '#cbd5e1',
+            dividerColorRecommendations: parsed.dividerColorRecommendations || '#cbd5e1',
+            dividerColorExecutiveSummary: parsed.dividerColorExecutiveSummary || '#cbd5e1',
+            dividerStyle: parsed.dividerStyle || 'solid',
+            dividerStyleSparklines: parsed.dividerStyleSparklines || 'solid',
+            dividerStyleMutationHistory: parsed.dividerStyleMutationHistory || 'solid',
+            dividerStyleRecommendations: parsed.dividerStyleRecommendations || 'solid',
+            dividerStyleExecutiveSummary: parsed.dividerStyleExecutiveSummary || 'solid',
+            dividerThickness: parsed.dividerThickness !== undefined ? parsed.dividerThickness : 1.5,
+            dividerThicknessSparklines: parsed.dividerThicknessSparklines !== undefined ? parsed.dividerThicknessSparklines : 1.5,
+            dividerThicknessMutationHistory: parsed.dividerThicknessMutationHistory !== undefined ? parsed.dividerThicknessMutationHistory : 1.5,
+            dividerThicknessRecommendations: parsed.dividerThicknessRecommendations !== undefined ? parsed.dividerThicknessRecommendations : 1.5,
+            dividerThicknessExecutiveSummary: parsed.dividerThicknessExecutiveSummary !== undefined ? parsed.dividerThicknessExecutiveSummary : 1.5,
+          };
+        }
+      } catch (err) {
+        console.error('Failed to load stored PDF sections config:', err);
+      }
+    }
+    return defaultSections;
   });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(PDF_EXPORT_SECTIONS_STORAGE_KEY, JSON.stringify(pdfExportSections));
+      } catch (err) {
+        console.error('Failed to save PDF sections config to localStorage:', err);
+      }
+    }
+  }, [pdfExportSections]);
 
   // Drag-and-drop state for PDF export sections reordering in #panel-pdf-export-settings
   const [draggedPdfSectionIndex, setDraggedPdfSectionIndex] = useState<number | null>(null);
   const [dragOverPdfSectionIndex, setDragOverPdfSectionIndex] = useState<number | null>(null);
+  const [draggedPdfSectionId, setDraggedPdfSectionId] = useState<string | null>(null);
+  const [dragOverPdfSectionId, setDragOverPdfSectionId] = useState<string | null>(null);
   const [collapsedPdfSections, setCollapsedPdfSections] = useState<Record<string, boolean>>({});
   const [hoveredPreviewSectionId, setHoveredPreviewSectionId] = useState<DiagnosticPdfSectionId | null>(null);
+  const [activeInfoTooltipSectionId, setActiveInfoTooltipSectionId] = useState<string | null>(null);
   const [previewRefreshTimestamps, setPreviewRefreshTimestamps] = useState<Record<string, number>>({});
     const [generatingSnapshotSectionId, setGeneratingSnapshotSectionId] = useState<DiagnosticPdfSectionId | null>(null);
   const [copiedPdfSettings, setCopiedPdfSettings] = useState(false);
   const [copiedNoteSectionId, setCopiedNoteSectionId] = useState<DiagnosticPdfSectionId | null>(null);
+  const [copiedSectionConfigId, setCopiedSectionConfigId] = useState<string | null>(null);
+  const [copyConfigToast, setCopyConfigToast] = useState<{
+    sectionId: string;
+    sectionTitle: string;
+    timestamp: number;
+  } | null>(null);
+  const copyConfigToastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [pdfSectionSearchQuery, setPdfSectionSearchQuery] = useState('');
+  const [globalCsvNamingPattern, setGlobalCsvNamingPattern] = useState('{section_name}_{timestamp}');
+  const [patternAppliedSuccess, setPatternAppliedSuccess] = useState(false);
   const [showPdfCardDescriptions, setShowPdfCardDescriptions] = useState(true);
   const [isDetailedPdfLayout, setIsDetailedPdfLayout] = useState(true);
   const [isGroupSectionsMode, setIsGroupSectionsMode] = useState(false);
   const [isGroupByTagActive, setIsGroupByTagActive] = useState(false);
+  const [pdfSectionSortMode, setPdfSectionSortMode] = useState<'default' | 'title' | 'tag'>('default');
+  const [resetSectionGroupsSuccess, setResetSectionGroupsSuccess] = useState(false);
+  const [resetDividersSuccess, setResetDividersSuccess] = useState(false);
+  const [pdfDividerColorFilter, setPdfDividerColorFilter] = useState<string>('all');
+
+  const areAllSectionGroupsCollapsed = useMemo(() => {
+    const groups = pdfExportSections.sectionGroups && pdfExportSections.sectionGroups.length > 0
+      ? pdfExportSections.sectionGroups
+      : DEFAULT_PDF_SECTION_GROUPS;
+    return groups.length > 0 && groups.every((g) => g.isCollapsed);
+  }, [pdfExportSections.sectionGroups]);
+
+  const handleToggleAllSectionGroups = () => {
+    setPdfExportSections((prev) => {
+      const groups = prev.sectionGroups && prev.sectionGroups.length > 0
+        ? prev.sectionGroups
+        : DEFAULT_PDF_SECTION_GROUPS.map((g) => ({ ...g }));
+
+      const allCurrentlyCollapsed = groups.every((g) => g.isCollapsed);
+      const nextCollapsedState = !allCurrentlyCollapsed;
+
+      return {
+        ...prev,
+        sectionGroups: groups.map((g) => ({
+          ...g,
+          isCollapsed: nextCollapsedState
+        }))
+      };
+    });
+    setIsGroupSectionsMode(true);
+  };
+
+  const handleExpandAllSectionGroups = () => {
+    setPdfExportSections((prev) => {
+      const groups = prev.sectionGroups && prev.sectionGroups.length > 0
+        ? prev.sectionGroups
+        : DEFAULT_PDF_SECTION_GROUPS.map((g) => ({ ...g }));
+      return {
+        ...prev,
+        sectionGroups: groups.map((g) => ({ ...g, isCollapsed: false }))
+      };
+    });
+    setIsGroupSectionsMode(true);
+  };
+
+  const handleCollapseAllSectionGroups = () => {
+    setPdfExportSections((prev) => {
+      const groups = prev.sectionGroups && prev.sectionGroups.length > 0
+        ? prev.sectionGroups
+        : DEFAULT_PDF_SECTION_GROUPS.map((g) => ({ ...g }));
+      return {
+        ...prev,
+        sectionGroups: groups.map((g) => ({ ...g, isCollapsed: true }))
+      };
+    });
+    setIsGroupSectionsMode(true);
+  };
   const [selectedSectionsForGroup, setSelectedSectionsForGroup] = useState<DiagnosticPdfSectionId[]>([]);
   const [newGroupTitleInput, setNewGroupTitleInput] = useState('');
   const noteChangeTimeoutsRef = useRef<Record<string, NodeJS.Timeout>>({});
 
+  const getSectionMetricsExplanation = (
+    baseId: DiagnosticPdfSectionId,
+    displayTitle: string,
+    recordsCount: number,
+    violationsCount: number,
+    isIncluded: boolean,
+    paddingValue: number,
+    isBreakBefore: boolean
+  ) => {
+    if (baseId === 'sparklines') {
+      const pts = Math.max(12, Math.round(recordsCount * 1.5));
+      return {
+        category: 'Visual Latency & Write Frequency',
+        summary: 'Dual-panel 50Hz timeseries tracking latency response and write mutation velocity against SLA thresholds.',
+        metrics: [
+          { label: '50Hz Latency Samples', value: `~${pts} telemetry data points tracking min, mean, and peak execution times` },
+          { label: 'SLA Boundary Violations', value: `${violationsCount} detected threshold excursions (Warning: >80ms, Critical: >120ms)` },
+          { label: 'Write Mutation Frequency', value: 'Rolling transactions/second frequency mapped against mutex contention' },
+          { label: 'Document Layout', value: `Page break ${isBreakBefore ? 'Enabled' : 'Disabled'}, ${paddingValue}mm bottom padding, status: ${isIncluded ? 'Included' : 'Excluded'}` }
+        ],
+        textSummary: `Trend Sparklines metrics: ~${pts} latency telemetry sample points, ${violationsCount} SLA violations, write mutation velocity vs SLA limits (${isIncluded ? 'Included' : 'Excluded'}).`
+      };
+    } else if (baseId === 'mutationHistory') {
+      return {
+        category: 'Chronological Audit Chain',
+        summary: 'Tabular audit log of database write clusters, lock acquisition times, and chronological root-cause sequence of events.',
+        metrics: [
+          { label: 'Database Mutation Rows', value: `${recordsCount} database transaction records currently queried & mapped` },
+          { label: 'Lock Holding Duration', value: 'Transaction mutex acquisition latency & lock holding times (microseconds)' },
+          { label: 'Causal Sequence of Events', value: 'Precursor operations, transaction commits, and rollback incidents' },
+          { label: 'Metadata & Provenance', value: 'Lock mode (Shared/Exclusive), client thread origin, RFC 3339 timestamps' }
+        ],
+        textSummary: `Detailed Mutation History metrics: ${recordsCount} transaction mutation records, mutex lock holding durations, and root-cause events (${isIncluded ? 'Included' : 'Excluded'}).`
+      };
+    } else if (baseId === 'recommendations') {
+      const findings = Math.min(10, Math.max(3, Math.round(recordsCount / 4)));
+      return {
+        category: 'Engineering Remediation',
+        summary: 'Automated heuristic directives generated by diagnostic analyzer rules to resolve lock contention hotspots and database latency bottlenecks.',
+        metrics: [
+          { label: 'Prioritized Remediation Actions', value: `${findings} prioritized tactical directives (micro-batching, index optimization, connection pooling)` },
+          { label: 'Index & Scan Efficiency', value: 'Sequential table scan vs index seek frequency ratio evaluation' },
+          { label: 'Lock Contention Mitigation', value: 'Transaction isolation level tuning & deadlock prevention advisories' },
+          { label: 'Impact & Severity Tiers', value: 'Categorized into High, Medium, and Low severity engineering action items' }
+        ],
+        textSummary: `Strategic Recommendations metrics: ${findings} prioritized engineering remediation items, index scan efficiency, and lock contention mitigation (${isIncluded ? 'Included' : 'Excluded'}).`
+      };
+    } else {
+      const callouts = Math.max(1, Math.round(recordsCount / 8));
+      return {
+        category: 'Executive Narrative',
+        summary: 'High-level management briefing that translates low-level table mutex locks into clear business risk and performance impact narratives.',
+        metrics: [
+          { label: 'Strategic Callouts', value: `${callouts} core non-technical summary findings explaining system degradation causality` },
+          { label: 'SLA Adherence Ratio', value: `${violationsCount === 0 ? '100% (Nominal)' : `${Math.max(70, 100 - violationsCount * 3)}% (Degraded)`} compliance during observation period` },
+          { label: 'Downtime Risk Level', value: `${violationsCount > 5 ? 'Elevated' : violationsCount > 0 ? 'Moderate' : 'Low'} operational risk assessment` },
+          { label: 'Remediation Roadmap', value: 'Executive summary sign-off roadmap for engineering leadership and stakeholders' }
+        ],
+        textSummary: `Executive Narrative metrics: ${callouts} non-technical causality takeaways, SLA compliance score, and operational risk assessment (${isIncluded ? 'Included' : 'Excluded'}).`
+      };
+    }
+  };
+
   const currentSectionOrder = useMemo(() => {
     const list = pdfExportSections.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
-    const cleanList: DiagnosticPdfSectionId[] = [];
+    const cleanList: string[] = [];
     list.forEach((id) => {
-      if (DEFAULT_PDF_SECTION_ORDER.includes(id) && !cleanList.includes(id)) {
+      const baseId = id.includes('_dup_') ? id.split('_dup_')[0] : id;
+      if (PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId] && !cleanList.includes(id)) {
         cleanList.push(id);
       }
     });
@@ -1162,10 +1444,29 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
 
   const filteredSectionOrder = useMemo(() => {
     let list = currentSectionOrder;
+    if (pdfSectionSortMode === 'title') {
+      list = [...list].sort((a, b) => {
+        const baseA = a.includes('_dup_') ? a.split('_dup_')[0] : a;
+        const baseB = b.includes('_dup_') ? b.split('_dup_')[0] : b;
+        const titleA = PDF_SECTION_CONFIG_ITEMS[baseA as DiagnosticPdfSectionId]?.title || '';
+        const titleB = PDF_SECTION_CONFIG_ITEMS[baseB as DiagnosticPdfSectionId]?.title || '';
+        return titleA.localeCompare(titleB);
+      });
+    } else if (pdfSectionSortMode === 'tag') {
+      list = [...list].sort((a, b) => {
+        const baseA = a.includes('_dup_') ? a.split('_dup_')[0] : a;
+        const baseB = b.includes('_dup_') ? b.split('_dup_')[0] : b;
+        const tagA = PDF_SECTION_CONFIG_ITEMS[baseA as DiagnosticPdfSectionId]?.tag || '';
+        const tagB = PDF_SECTION_CONFIG_ITEMS[baseB as DiagnosticPdfSectionId]?.tag || '';
+        return tagA.localeCompare(tagB);
+      });
+    }
+
     if (pdfSectionSearchQuery.trim()) {
       const q = pdfSectionSearchQuery.toLowerCase();
       list = list.filter((id) => {
-        const item = PDF_SECTION_CONFIG_ITEMS[id];
+        const baseId = id.includes('_dup_') ? id.split('_dup_')[0] : id;
+        const item = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId];
         if (!item) return false;
         return (
           item.title.toLowerCase().includes(q) ||
@@ -1175,15 +1476,45 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         );
       });
     }
+
+    if (pdfDividerColorFilter && pdfDividerColorFilter !== 'all') {
+      const targetColor = pdfDividerColorFilter.toLowerCase();
+      list = list.filter((id) => {
+        const baseId = id.includes('_dup_') ? id.split('_dup_')[0] : id;
+        const item = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId];
+        if (!item) return false;
+        const color = ((pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1').toLowerCase();
+        return color === targetColor;
+      });
+    }
+
     if (isGroupByTagActive) {
       list = [...list].sort((a, b) => {
-        const tagA = PDF_SECTION_CONFIG_ITEMS[a]?.tag || 'Other';
-        const tagB = PDF_SECTION_CONFIG_ITEMS[b]?.tag || 'Other';
+        const baseA = a.includes('_dup_') ? a.split('_dup_')[0] : a;
+        const baseB = b.includes('_dup_') ? b.split('_dup_')[0] : b;
+        const tagA = PDF_SECTION_CONFIG_ITEMS[baseA as DiagnosticPdfSectionId]?.tag || 'Other';
+        const tagB = PDF_SECTION_CONFIG_ITEMS[baseB as DiagnosticPdfSectionId]?.tag || 'Other';
         return tagA.localeCompare(tagB);
       });
     }
     return list;
-  }, [currentSectionOrder, pdfSectionSearchQuery, isGroupByTagActive]);
+  }, [currentSectionOrder, pdfSectionSearchQuery, isGroupByTagActive, pdfSectionSortMode, pdfDividerColorFilter, pdfExportSections]);
+
+  const dividerColorCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    DIVIDER_COLOR_OPTIONS.forEach((c) => {
+      counts[c.value.toLowerCase()] = 0;
+    });
+
+    currentSectionOrder.forEach((id) => {
+      const baseId = id.includes('_dup_') ? id.split('_dup_')[0] : id;
+      const item = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId];
+      if (!item) return;
+      const color = ((pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1').toLowerCase();
+      counts[color] = (counts[color] || 0) + 1;
+    });
+    return counts;
+  }, [currentSectionOrder, pdfExportSections]);
 
   const [copiedAllNotes, setCopiedAllNotes] = useState(false);
 
@@ -1243,6 +1574,14 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     pdfExportSections.breakBeforeMutationHistory,
     pdfExportSections.breakBeforeRecommendations,
     pdfExportSections.breakBeforeExecutiveSummary,
+    pdfExportSections.showDividerSparklines,
+    pdfExportSections.showDividerMutationHistory,
+    pdfExportSections.showDividerRecommendations,
+    pdfExportSections.showDividerExecutiveSummary,
+    pdfExportSections.dividerStyleSparklines,
+    pdfExportSections.dividerStyleMutationHistory,
+    pdfExportSections.dividerStyleRecommendations,
+    pdfExportSections.dividerStyleExecutiveSummary,
     pdfExportSections.sparklinesNote,
     pdfExportSections.mutationHistoryNote,
     pdfExportSections.recommendationsNote,
@@ -1258,6 +1597,22 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     return current.some((val, idx) => val !== DEFAULT_PDF_SECTION_ORDER[idx]);
   }, [pdfExportSections.sectionOrder]);
 
+  const handleMovePdfSectionBySectionId = (sectionId: string, direction: 'up' | 'down') => {
+    setPdfExportSections((prev) => {
+      const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)];
+      const fromIndex = order.indexOf(sectionId);
+      if (fromIndex === -1) return prev;
+      const toIndex = direction === 'up' ? fromIndex - 1 : fromIndex + 1;
+      if (toIndex < 0 || toIndex >= order.length) return prev;
+      const [movedItem] = order.splice(fromIndex, 1);
+      order.splice(toIndex, 0, movedItem);
+      return {
+        ...prev,
+        sectionOrder: order
+      };
+    });
+  };
+
   const handleMovePdfSection = (fromIndex: number, toIndex: number) => {
     setPdfExportSections((prev) => {
       const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)];
@@ -1266,6 +1621,30 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       }
       const [movedItem] = order.splice(fromIndex, 1);
       order.splice(toIndex, 0, movedItem);
+      return {
+        ...prev,
+        sectionOrder: order
+      };
+    });
+  };
+
+  const handleDuplicatePdfSection = (baseId: string) => {
+    const item = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId];
+    if (!item) return;
+    const newId = `${baseId}_dup_${Math.random().toString(36).substring(2, 7)}`;
+    setPdfExportSections((prev) => {
+      const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)];
+      order.push(newId as any);
+      return {
+        ...prev,
+        sectionOrder: order
+      };
+    });
+  };
+
+  const handleRemovePdfSection = (sectionId: string) => {
+    setPdfExportSections((prev) => {
+      const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)].filter((id) => id !== sectionId);
       return {
         ...prev,
         sectionOrder: order
@@ -1388,6 +1767,18 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
       paddingMutationHistory: 10,
       paddingRecommendations: 10,
       paddingExecutiveSummary: 10,
+      sparklinesDelimiter: ',',
+      mutationHistoryDelimiter: ',',
+      recommendationsDelimiter: ',',
+      executiveSummaryDelimiter: ',',
+      sparklinesFilenamePrefix: '',
+      mutationHistoryFilenamePrefix: '',
+      recommendationsFilenamePrefix: '',
+      executiveSummaryFilenamePrefix: '',
+      showDividerSparklines: true,
+      showDividerMutationHistory: true,
+      showDividerRecommendations: true,
+      showDividerExecutiveSummary: true,
       sectionOrder: [...DEFAULT_PDF_SECTION_ORDER]
     });
   };
@@ -1401,6 +1792,85 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         el.classList.remove('ring-2', 'ring-amber-400', 'bg-amber-950/50');
       }, 2000);
     }
+  };
+
+  const handleResetSectionGroups = () => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      sectionGroups: DEFAULT_PDF_SECTION_GROUPS.map((g) => ({ ...g, isCollapsed: false })),
+      groupByTag: false,
+      sectionOrder: [...DEFAULT_PDF_SECTION_ORDER]
+    }));
+    setIsGroupByTagActive(false);
+    setPdfSectionSortMode('default');
+    setIsGroupSectionsMode(false);
+    setSelectedSectionsForGroup([]);
+    setNewGroupTitleInput('');
+    setResetSectionGroupsSuccess(true);
+    setTimeout(() => {
+      setResetSectionGroupsSuccess(false);
+    }, 2000);
+  };
+
+  const handleResetAllDividers = () => {
+    setPdfExportSections((prev) => {
+      const next = { ...prev };
+      // Globally reset Show Dividers status for all sections back to system default (true)
+      next.showDividerSparklines = true;
+      next.showDividerMutationHistory = true;
+      next.showDividerRecommendations = true;
+      next.showDividerExecutiveSummary = true;
+
+      // Globally reset divider colors for all sections back to system default (Slate: #cbd5e1)
+      next.dividerColor = '#cbd5e1';
+      next.dividerColorSparklines = '#cbd5e1';
+      next.dividerColorMutationHistory = '#cbd5e1';
+      next.dividerColorRecommendations = '#cbd5e1';
+      next.dividerColorExecutiveSummary = '#cbd5e1';
+
+      // Globally reset divider line styles for all sections back to system default (Solid)
+      next.dividerStyle = 'solid';
+      next.dividerStyleSparklines = 'solid';
+      next.dividerStyleMutationHistory = 'solid';
+      next.dividerStyleRecommendations = 'solid';
+      next.dividerStyleExecutiveSummary = 'solid';
+
+      // Globally reset divider thickness for all sections back to system default (1.5px)
+      next.dividerThickness = 1.5;
+      next.dividerThicknessSparklines = 1.5;
+      next.dividerThicknessMutationHistory = 1.5;
+      next.dividerThicknessRecommendations = 1.5;
+      next.dividerThicknessExecutiveSummary = 1.5;
+
+      // Reset any duplicate or dynamically configured section keys
+      Object.keys(next).forEach((key) => {
+        if (key.startsWith('showDivider')) {
+          (next as any)[key] = true;
+        }
+        if (key.startsWith('dividerColor')) {
+          (next as any)[key] = '#cbd5e1';
+        }
+        if (key.startsWith('dividerStyle')) {
+          (next as any)[key] = 'solid';
+        }
+        if (key.startsWith('dividerThickness')) {
+          (next as any)[key] = 1.5;
+        }
+      });
+
+      return next;
+    });
+
+    // Refresh snapshots for all sections so changes immediately reflect in live previews
+    DEFAULT_PDF_SECTION_ORDER.forEach((id) => {
+      handleGenerateSnapshot(id);
+    });
+
+    setPdfDividerColorFilter('all');
+    setResetDividersSuccess(true);
+    setTimeout(() => {
+      setResetDividersSuccess(false);
+    }, 2000);
   };
 
   const handleAutoGroupCategories = () => {
@@ -1436,14 +1906,84 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     setIsGroupSectionsMode(true);
   };
 
+  const resolveNamingPattern = (pattern: string, sectionId: string, dateObj: Date = new Date()) => {
+    const sectionSlugs: Record<string, string> = {
+      sparklines: 'sparklines',
+      mutationHistory: 'mutation_history',
+      recommendations: 'recommendations',
+      executiveSummary: 'executive_summary'
+    };
+    const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+    const sectionSlug = sectionSlugs[baseId] || baseId.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const sectionTitle = (PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId]?.title || sectionId)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_');
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const yyyy = dateObj.getFullYear();
+    const mm = pad(dateObj.getMonth() + 1);
+    const dd = pad(dateObj.getDate());
+    const hh = pad(dateObj.getHours());
+    const min = pad(dateObj.getMinutes());
+    const ss = pad(dateObj.getSeconds());
+
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    const timeStr = `${yyyy}${mm}${dd}_${hh}${min}${ss}`;
+    const recordsCount = String(queryResult.records.length || 0);
+
+    const safePattern = (pattern || '{section_name}_{timestamp}').trim();
+    let resolved = safePattern
+      .replace(/{section_name}/gi, sectionSlug)
+      .replace(/{section_title}/gi, sectionTitle)
+      .replace(/{section_id}/gi, sectionId)
+      .replace(/{timestamp}/gi, timeStr)
+      .replace(/{date}/gi, dateStr)
+      .replace(/{records}/gi, recordsCount);
+
+    resolved = resolved.replace(/[\/\\:*?"<>|]/g, '_').trim();
+    return resolved || `${sectionSlug}_${timeStr}`;
+  };
+
+  const handleApplyNamingPatternToAllCards = () => {
+    const pattern = globalCsvNamingPattern.trim() || '{section_name}_{timestamp}';
+    const now = new Date();
+    setPdfExportSections((prev) => {
+      const next = { ...prev, globalCsvNamingPattern: pattern };
+      Object.values(PDF_SECTION_CONFIG_ITEMS).forEach((item) => {
+        const resolved = resolveNamingPattern(pattern, item.id, now);
+        next[item.filenamePrefixKey] = resolved;
+      });
+      return next;
+    });
+    setPatternAppliedSuccess(true);
+    setTimeout(() => setPatternAppliedSuccess(false), 2500);
+  };
+
+  const handleResetAllFilenamePrefixes = () => {
+    setPdfExportSections((prev) => {
+      const next = { ...prev };
+      Object.values(PDF_SECTION_CONFIG_ITEMS).forEach((item) => {
+        next[item.filenamePrefixKey] = '';
+      });
+      return next;
+    });
+  };
+
   const handleExportSectionData = (sectionId: DiagnosticPdfSectionId) => {
     const itemConfig = PDF_SECTION_CONFIG_ITEMS[sectionId];
     const prefixKey = itemConfig?.filenamePrefixKey;
     const customPrefix = prefixKey ? (pdfExportSections as any)[prefixKey] : '';
-    const cleanPrefix = (customPrefix || '').trim() || sectionId;
+    let cleanPrefix = '';
+    if (customPrefix && customPrefix.trim()) {
+      cleanPrefix = customPrefix.includes('{')
+        ? resolveNamingPattern(customPrefix, sectionId)
+        : customPrefix.trim();
+    } else {
+      cleanPrefix = resolveNamingPattern(globalCsvNamingPattern || '{section_name}_{timestamp}', sectionId);
+    }
     const delimiterKey = itemConfig?.delimiterKey;
     const rawDelimiter = delimiterKey ? (pdfExportSections as any)[delimiterKey] : ',';
-    const delimiter = rawDelimiter === '\\t' || rawDelimiter === 'tab' ? '\t' : rawDelimiter === ';' ? ';' : ',';
+    const delimiter = rawDelimiter === '\t' || rawDelimiter === '\\t' || rawDelimiter === 'tab' ? '\t' : rawDelimiter === ';' ? ';' : ',';
     let filename = `${cleanPrefix}${delimiter === '\t' ? '.tsv' : '.csv'}`;
 
     let rows: string[][] = [];
@@ -1484,6 +2024,213 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
     document.body.removeChild(link);
   };
 
+  const handleExportSectionStats = (sectionId: DiagnosticPdfSectionId) => {
+    const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+    const itemConfig = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId] || PDF_SECTION_CONFIG_ITEMS[sectionId as DiagnosticPdfSectionId];
+    if (!itemConfig) return;
+
+    const isIncluded = Boolean((pdfExportSections as any)[itemConfig.includeKey]);
+    const padding = Number((pdfExportSections as any)[itemConfig.paddingKey] ?? 10);
+    const note = String((pdfExportSections as any)[itemConfig.noteKey] || '');
+    const rawDelimiter = (pdfExportSections as any)[itemConfig.delimiterKey] || ',';
+    const delimiter = rawDelimiter === '\t' || rawDelimiter === '\\t' || rawDelimiter === 'tab' ? '\t' : rawDelimiter === ';' ? ';' : ',';
+    const delimiterName = delimiter === '\t' ? 'Tab' : delimiter === ';' ? 'Semicolon' : 'Comma';
+    const breakBefore = Boolean((pdfExportSections as any)[itemConfig.breakKey]);
+    const isDivider = (pdfExportSections as any)[itemConfig.showDividerKey] !== false;
+    const includeMetadata = Boolean((pdfExportSections as any)[itemConfig.metadataKey]);
+    const filenamePrefix = String((pdfExportSections as any)[itemConfig.filenamePrefixKey] || '');
+    const evaluatedPrefix = resolveNamingPattern(filenamePrefix || globalCsvNamingPattern, sectionId);
+
+    const statsPayload = {
+      sectionId,
+      baseId,
+      sectionTitle: itemConfig.title,
+      category: itemConfig.tag,
+      description: itemConfig.description,
+      isIncluded,
+      exportedAt: new Date().toISOString(),
+      configurationMetadata: {
+        padding: {
+          value: padding,
+          unit: 'px',
+          default: 10,
+          isCustomized: padding !== 10
+        },
+        note: {
+          content: note,
+          hasCustomNote: Boolean(note.trim()),
+          length: note.length
+        },
+        delimiters: {
+          selectedDelimiter: delimiter === '\t' ? '\\t' : delimiter,
+          delimiterName: delimiterName,
+          fileExtension: delimiter === '\t' ? '.tsv' : '.csv',
+          options: ['Comma (,)', 'Tab (\\t)', 'Semicolon (;)']
+        },
+        breakSettings: {
+          breakBefore: breakBefore,
+          isPageBreakEnabled: breakBefore,
+          behavior: breakBefore ? 'Force start on new PDF page' : 'Render continuously after previous section'
+        },
+        dividerSettings: {
+          showDivider: isDivider,
+          isDividerVisible: isDivider,
+          dividerColor: (pdfExportSections as any)[itemConfig.dividerColorKey] || '#cbd5e1',
+          dividerStyle: (pdfExportSections as any)[itemConfig.dividerStyleKey] || 'solid',
+          behavior: isDivider ? `Render visible ${(pdfExportSections as any)[itemConfig.dividerStyleKey] || 'solid'} separator line between sections` : 'No separator line'
+        },
+        additionalSettings: {
+          includeMetadataFooter: includeMetadata,
+          customFilenamePrefix: filenamePrefix || null,
+          evaluatedExportFilename: `${evaluatedPrefix}${delimiter === '\t' ? '.tsv' : '.csv'}`
+        }
+      },
+      summary: {
+        totalConfiguredFields: 5,
+        paddingPx: padding,
+        hasNote: Boolean(note.trim()),
+        delimiter: delimiterName,
+        pageBreak: breakBefore ? 'Enabled' : 'Disabled',
+        showDividers: isDivider ? 'Enabled' : 'Disabled'
+      }
+    };
+
+    const jsonString = JSON.stringify(statsPayload, null, 2);
+    const encodedUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(jsonString);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `${sectionId}_section_stats.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleCopySectionConfiguration = async (sectionId: string) => {
+    const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+    const itemConfig = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId] || PDF_SECTION_CONFIG_ITEMS[sectionId as DiagnosticPdfSectionId];
+    if (!itemConfig) return;
+
+    const isIncluded = Boolean((pdfExportSections as any)[itemConfig.includeKey]);
+    const padding = Number((pdfExportSections as any)[itemConfig.paddingKey] ?? 10);
+    const note = String((pdfExportSections as any)[itemConfig.noteKey] || '');
+    const rawDelimiter = (pdfExportSections as any)[itemConfig.delimiterKey] || ',';
+    const delimiter = rawDelimiter === '\t' || rawDelimiter === '\\t' || rawDelimiter === 'tab' ? '\t' : rawDelimiter === ';' ? ';' : ',';
+    const delimiterLabel = delimiter === '\t' ? 'Tab' : delimiter === ';' ? 'Semicolon' : 'Comma';
+    const breakBefore = Boolean((pdfExportSections as any)[itemConfig.breakKey]);
+    const isDivider = (pdfExportSections as any)[itemConfig.showDividerKey] !== false;
+    const dividerColor = (pdfExportSections as any)[itemConfig.dividerColorKey] || '#cbd5e1';
+    const dividerStyle = (pdfExportSections as any)[itemConfig.dividerStyleKey] || 'solid';
+    const dividerThickness = Number((pdfExportSections as any)[itemConfig.dividerThicknessKey] ?? 1.5);
+    const includeMetadata = Boolean((pdfExportSections as any)[itemConfig.metadataKey]);
+    const filenamePrefix = String((pdfExportSections as any)[itemConfig.filenamePrefixKey] || '');
+
+    const configPayload = {
+      sectionId,
+      sectionTitle: itemConfig.title,
+      category: itemConfig.tag,
+      description: itemConfig.description,
+      isIncluded,
+      padding,
+      note,
+      delimiter: delimiter === '\t' ? '\\t' : delimiter,
+      metadata: includeMetadata,
+      dividers: isDivider,
+      dividerColor,
+      dividerStyle,
+      dividerThickness,
+      breakBefore,
+      filenamePrefix,
+      configuration: {
+        padding,
+        note,
+        delimiter: delimiter === '\t' ? '\\t' : delimiter,
+        metadata: includeMetadata,
+        dividers: isDivider,
+        dividerColor,
+        dividerStyle,
+        dividerThickness
+      },
+      exportedAt: new Date().toISOString()
+    };
+
+    const formattedJson = JSON.stringify(configPayload, null, 2);
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(formattedJson);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = formattedJson;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+      setCopiedSectionConfigId(sectionId);
+      setTimeout(() => {
+        setCopiedSectionConfigId(null);
+      }, 2000);
+
+      // Trigger toast notification at bottom of screen
+      if (copyConfigToastTimeoutRef.current) {
+        clearTimeout(copyConfigToastTimeoutRef.current);
+      }
+      setCopyConfigToast({
+        sectionId,
+        sectionTitle: itemConfig.title,
+        timestamp: Date.now()
+      });
+      copyConfigToastTimeoutRef.current = setTimeout(() => {
+        setCopyConfigToast(null);
+      }, 3000);
+    } catch (err) {
+      console.error('Failed to copy section configuration to clipboard:', err);
+    }
+  };
+
+  const handleDividerUpdate = (
+    fieldKey: 'show' | 'color' | 'style' | 'thickness',
+    val: any,
+    targetItem: { showDividerKey: string; dividerColorKey: string; dividerStyleKey: string; dividerThicknessKey: string; id: DiagnosticPdfSectionId }
+  ) => {
+    setPdfExportSections((prev) => {
+      const next = { ...prev };
+      if (isSyncDividersLocked) {
+        Object.values(PDF_SECTION_CONFIG_ITEMS).forEach((item) => {
+          if (fieldKey === 'show') {
+            (next as any)[item.showDividerKey] = val;
+          } else if (fieldKey === 'color') {
+            (next as any)[item.dividerColorKey] = val;
+          } else if (fieldKey === 'style') {
+            (next as any)[item.dividerStyleKey] = val;
+            (next as any)[item.showDividerKey] = true;
+          } else if (fieldKey === 'thickness') {
+            (next as any)[item.dividerThicknessKey] = val;
+          }
+        });
+      } else {
+        if (fieldKey === 'show') {
+          (next as any)[targetItem.showDividerKey] = val;
+        } else if (fieldKey === 'color') {
+          (next as any)[targetItem.dividerColorKey] = val;
+        } else if (fieldKey === 'style') {
+          (next as any)[targetItem.dividerStyleKey] = val;
+          (next as any)[targetItem.showDividerKey] = true;
+        } else if (fieldKey === 'thickness') {
+          (next as any)[targetItem.dividerThicknessKey] = val;
+        }
+      }
+      return next;
+    });
+    if (isSyncDividersLocked) {
+      DEFAULT_PDF_SECTION_ORDER.forEach((id) => handleGenerateSnapshot(id));
+    } else {
+      handleGenerateSnapshot(targetItem.id);
+    }
+  };
+
   const handleResetSinglePdfSection = (sectionId: DiagnosticPdfSectionId) => {
     setPdfExportSections((prev) => {
       const next = { ...prev };
@@ -1494,11 +2241,19 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         next.includeMetadataSparklines = true;
         next.sparklinesFilenamePrefix = '';
         next.sparklinesDelimiter = ',';
+        next.showDividerSparklines = true;
+        next.dividerColorSparklines = '#cbd5e1';
+        next.dividerStyleSparklines = 'solid';
+        next.dividerThicknessSparklines = 1.5;
       } else if (sectionId === 'mutationHistory') {
         next.mutationHistoryNote = '';
         next.paddingMutationHistory = 10;
         next.mutationHistoryFilenamePrefix = '';
         next.mutationHistoryDelimiter = ',';
+        next.showDividerMutationHistory = true;
+        next.dividerColorMutationHistory = '#cbd5e1';
+        next.dividerStyleMutationHistory = 'solid';
+        next.dividerThicknessMutationHistory = 1.5;
         next.breakBeforeMutationHistory = true;
         next.includeMetadataMutationHistory = true;
       } else if (sectionId === 'recommendations') {
@@ -1508,6 +2263,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         next.includeMetadataRecommendations = true;
         next.recommendationsFilenamePrefix = '';
         next.recommendationsDelimiter = ',';
+        next.showDividerRecommendations = true;
+        next.dividerColorRecommendations = '#cbd5e1';
+        next.dividerStyleRecommendations = 'solid';
+        next.dividerThicknessRecommendations = 1.5;
       } else if (sectionId === 'executiveSummary') {
         next.executiveSummaryNote = '';
         next.paddingExecutiveSummary = 10;
@@ -1515,53 +2274,110 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         next.includeMetadataExecutiveSummary = true;
         next.executiveSummaryFilenamePrefix = '';
         next.executiveSummaryDelimiter = ',';
+        next.showDividerExecutiveSummary = true;
+        next.dividerColorExecutiveSummary = '#cbd5e1';
+        next.dividerStyleExecutiveSummary = 'solid';
+        next.dividerThicknessExecutiveSummary = 1.5;
       }
       return next;
     });
   };
 
-  const handlePdfSectionDragStart = (e: React.DragEvent, index: number) => {
+  const handlePdfSectionDragStart = (e: React.DragEvent, index: number, sectionId?: string) => {
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', String(index));
+    if (sectionId) {
+      e.dataTransfer.setData('application/x-section-id', sectionId);
+      setDraggedPdfSectionId(sectionId);
+    }
     setDraggedPdfSectionIndex(index);
   };
 
-  const handlePdfSectionDragOver = (e: React.DragEvent, index: number) => {
+  const handlePdfSectionDragOver = (e: React.DragEvent, index: number, sectionId?: string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     if (dragOverPdfSectionIndex !== index) {
       setDragOverPdfSectionIndex(index);
     }
+    if (sectionId && dragOverPdfSectionId !== sectionId) {
+      setDragOverPdfSectionId(sectionId);
+    }
   };
 
-  const handlePdfSectionDragEnter = (e: React.DragEvent, index: number) => {
+  const handlePdfSectionDragEnter = (e: React.DragEvent, index: number, sectionId?: string) => {
     e.preventDefault();
     setDragOverPdfSectionIndex(index);
+    if (sectionId) {
+      setDragOverPdfSectionId(sectionId);
+    }
   };
 
-  const handlePdfSectionDragLeave = (e: React.DragEvent, index: number) => {
+  const handlePdfSectionDragLeave = (e: React.DragEvent, index: number, sectionId?: string) => {
     if (e.currentTarget.contains(e.relatedTarget as Node)) {
       return;
     }
     if (dragOverPdfSectionIndex === index) {
       setDragOverPdfSectionIndex(null);
     }
+    if (sectionId && dragOverPdfSectionId === sectionId) {
+      setDragOverPdfSectionId(null);
+    }
   };
 
-  const handlePdfSectionDrop = (e: React.DragEvent, targetIndex: number) => {
+  const handlePdfSectionDrop = (e: React.DragEvent, targetIndex: number, targetSectionId?: string) => {
     e.preventDefault();
-    const sourceRaw = e.dataTransfer.getData('text/plain');
-    const sourceIndex = draggedPdfSectionIndex !== null ? draggedPdfSectionIndex : parseInt(sourceRaw, 10);
-    if (!isNaN(sourceIndex) && sourceIndex !== targetIndex) {
-      handleMovePdfSection(sourceIndex, targetIndex);
+    const sourceSectionId = draggedPdfSectionId || e.dataTransfer.getData('application/x-section-id');
+    if (sourceSectionId && targetSectionId && sourceSectionId !== targetSectionId) {
+      setPdfExportSections((prev) => {
+        const order = [...(prev.sectionOrder || DEFAULT_PDF_SECTION_ORDER)];
+        const fromIdx = order.indexOf(sourceSectionId);
+        const toIdx = order.indexOf(targetSectionId);
+        if (fromIdx !== -1 && toIdx !== -1) {
+          const [movedItem] = order.splice(fromIdx, 1);
+          order.splice(toIdx, 0, movedItem);
+          return {
+            ...prev,
+            sectionOrder: order
+          };
+        }
+        return prev;
+      });
+    } else {
+      const sourceRaw = e.dataTransfer.getData('text/plain');
+      const sourceIndex = draggedPdfSectionIndex !== null ? draggedPdfSectionIndex : parseInt(sourceRaw, 10);
+      if (!isNaN(sourceIndex) && sourceIndex !== targetIndex) {
+        handleMovePdfSection(sourceIndex, targetIndex);
+      }
     }
     setDraggedPdfSectionIndex(null);
+    setDraggedPdfSectionId(null);
     setDragOverPdfSectionIndex(null);
+    setDragOverPdfSectionId(null);
   };
 
   const handlePdfSectionDragEnd = () => {
     setDraggedPdfSectionIndex(null);
+    setDraggedPdfSectionId(null);
     setDragOverPdfSectionIndex(null);
+    setDragOverPdfSectionId(null);
+  };
+
+  const [showBatchExportModal, setShowBatchExportModal] = useState(false);
+
+  const handleBatchExportAllSections = () => {
+    setShowBatchExportModal(true);
+  };
+
+  const confirmBatchExport = () => {
+    setShowBatchExportModal(false);
+    Object.values(PDF_SECTION_CONFIG_ITEMS).forEach((item, idx) => {
+      const isIncluded = Boolean((pdfExportSections as any)[item.includeKey]);
+      if (isIncluded) {
+        setTimeout(() => {
+          handleExportSectionData(item.id);
+        }, idx * 250);
+      }
+    });
   };
 
   // Saved custom PDF template in localStorage
@@ -1577,17 +2393,27 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   const handleSelectPdfTemplate = (templateId: string) => {
     if (templateId === 'saved-custom') {
       if (savedCustomPdfTemplate) {
-        setPdfExportSections({
+        setPdfExportSections((prev) => ({
+          ...prev,
           ...savedCustomPdfTemplate.sections,
-          sectionOrder: savedCustomPdfTemplate.sections.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
-        });
+          showDividerSparklines: savedCustomPdfTemplate.sections.showDividerSparklines ?? prev.showDividerSparklines ?? true,
+          showDividerMutationHistory: savedCustomPdfTemplate.sections.showDividerMutationHistory ?? prev.showDividerMutationHistory ?? true,
+          showDividerRecommendations: savedCustomPdfTemplate.sections.showDividerRecommendations ?? prev.showDividerRecommendations ?? true,
+          showDividerExecutiveSummary: savedCustomPdfTemplate.sections.showDividerExecutiveSummary ?? prev.showDividerExecutiveSummary ?? true,
+          sectionOrder: savedCustomPdfTemplate.sections.sectionOrder || prev.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
+        }));
       }
       return;
     }
     const found = PREDEFINED_PDF_TEMPLATES.find((t) => t.id === templateId);
     if (found) {
       setPdfExportSections((prev) => ({
+        ...prev,
         ...found.sections,
+        showDividerSparklines: found.sections.showDividerSparklines ?? prev.showDividerSparklines ?? true,
+        showDividerMutationHistory: found.sections.showDividerMutationHistory ?? prev.showDividerMutationHistory ?? true,
+        showDividerRecommendations: found.sections.showDividerRecommendations ?? prev.showDividerRecommendations ?? true,
+        showDividerExecutiveSummary: found.sections.showDividerExecutiveSummary ?? prev.showDividerExecutiveSummary ?? true,
         sectionOrder: found.sections.sectionOrder || prev.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
       }));
     }
@@ -1604,11 +2430,189 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
   // Handles loading user's custom saved template
   const handleLoadCustomTemplate = () => {
     if (savedCustomPdfTemplate) {
-      setPdfExportSections({
+      setPdfExportSections((prev) => ({
+        ...prev,
         ...savedCustomPdfTemplate.sections,
-        sectionOrder: savedCustomPdfTemplate.sections.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
-      });
+        showDividerSparklines: savedCustomPdfTemplate.sections.showDividerSparklines ?? prev.showDividerSparklines ?? true,
+        showDividerMutationHistory: savedCustomPdfTemplate.sections.showDividerMutationHistory ?? prev.showDividerMutationHistory ?? true,
+        showDividerRecommendations: savedCustomPdfTemplate.sections.showDividerRecommendations ?? prev.showDividerRecommendations ?? true,
+        showDividerExecutiveSummary: savedCustomPdfTemplate.sections.showDividerExecutiveSummary ?? prev.showDividerExecutiveSummary ?? true,
+        sectionOrder: savedCustomPdfTemplate.sections.sectionOrder || prev.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
+      }));
     }
+  };
+
+  // Export Preset Manager State & Handlers for Multiple Named Snapshots with Category Folders
+  interface ExportPresetItem {
+    id: string;
+    name: string;
+    folder?: string;
+    createdAt: number;
+    sections: DiagnosticPdfSectionsConfig;
+  }
+  const EXPORT_PRESETS_LIST_STORAGE_KEY = 'diagnostic_export_presets_list_v1';
+
+  const [exportPresetsList, setExportPresetsList] = useState<ExportPresetItem[]>(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
+    try {
+      const raw = localStorage.getItem(EXPORT_PRESETS_LIST_STORAGE_KEY);
+      if (!raw) return [];
+      return JSON.parse(raw) as ExportPresetItem[];
+    } catch (err) {
+      console.error('Failed to load export presets list:', err);
+      return [];
+    }
+  });
+  const [newPresetNameInput, setNewPresetNameInput] = useState<string>('');
+  const [newPresetFolderInput, setNewPresetFolderInput] = useState<string>('General');
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [presetActionFeedback, setPresetActionFeedback] = useState<string | null>(null);
+  const [previewPresetItem, setPreviewPresetItem] = useState<ExportPresetItem | null>(null);
+  const [presetSearchQuery, setPresetSearchQuery] = useState<string>('');
+  const [presetTimeFilter, setPresetTimeFilter] = useState<'all' | '7days' | '30days'>('all');
+  const [isSyncDividersLocked, setIsSyncDividersLocked] = useState<boolean>(false);
+  const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([]);
+  const [presetSortMode, setPresetSortMode] = useState<'date' | 'name'>('date');
+
+  const filteredExportPresetsList = useMemo(() => {
+    let list = exportPresetsList;
+    if (presetTimeFilter === '7days') {
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      list = list.filter((p) => p.createdAt >= cutoff);
+    } else if (presetTimeFilter === '30days') {
+      const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      list = list.filter((p) => p.createdAt >= cutoff);
+    }
+
+    if (!presetSearchQuery.trim()) return list;
+    const q = presetSearchQuery.trim().toLowerCase();
+    return list.filter(
+      (p) => p.name.toLowerCase().includes(q) || (p.folder || 'General').toLowerCase().includes(q)
+    );
+  }, [exportPresetsList, presetSearchQuery, presetTimeFilter]);
+
+  const availableFolders = useMemo(() => {
+    const set = new Set<string>(['General', 'Audits', 'Executive', 'Production']);
+    exportPresetsList.forEach((p) => {
+      if (p.folder) set.add(p.folder);
+    });
+    return Array.from(set);
+  }, [exportPresetsList]);
+
+  const handleSaveNewExportPreset = () => {
+    const presetName = newPresetNameInput.trim() || `Export Preset #${exportPresetsList.length + 1}`;
+    const folderName = newPresetFolderInput.trim() || 'General';
+    const newPreset: ExportPresetItem = {
+      id: `preset_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      name: presetName,
+      folder: folderName,
+      createdAt: Date.now(),
+      sections: JSON.parse(JSON.stringify(pdfExportSections))
+    };
+    const updated = [newPreset, ...exportPresetsList];
+    setExportPresetsList(updated);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(EXPORT_PRESETS_LIST_STORAGE_KEY, JSON.stringify(updated));
+      } catch (err) {
+        console.error('Failed to save export presets list:', err);
+      }
+    }
+    setNewPresetNameInput('');
+    setPresetActionFeedback(`Saved preset "${presetName}" in folder "${folderName}"!`);
+    setTimeout(() => setPresetActionFeedback(null), 3000);
+  };
+
+  const handleLoadExportPreset = (preset: ExportPresetItem) => {
+    setPdfExportSections((prev) => ({
+      ...prev,
+      ...preset.sections,
+      showDividerSparklines: preset.sections.showDividerSparklines ?? prev.showDividerSparklines ?? true,
+      showDividerMutationHistory: preset.sections.showDividerMutationHistory ?? prev.showDividerMutationHistory ?? true,
+      showDividerRecommendations: preset.sections.showDividerRecommendations ?? prev.showDividerRecommendations ?? true,
+      showDividerExecutiveSummary: preset.sections.showDividerExecutiveSummary ?? prev.showDividerExecutiveSummary ?? true,
+      sectionOrder: preset.sections.sectionOrder || prev.sectionOrder || [...DEFAULT_PDF_SECTION_ORDER]
+    }));
+    setPresetActionFeedback(`Loaded preset "${preset.name}"!`);
+    setTimeout(() => setPresetActionFeedback(null), 3000);
+  };
+
+  const handleBatchDeletePresets = () => {
+    if (selectedPresetIds.length === 0) return;
+    const updated = exportPresetsList.filter((p) => !selectedPresetIds.includes(p.id));
+    setExportPresetsList(updated);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(EXPORT_PRESETS_LIST_STORAGE_KEY, JSON.stringify(updated));
+      } catch (err) {
+        console.error('Failed to update export presets list:', err);
+      }
+    }
+    setPresetActionFeedback(`Deleted ${selectedPresetIds.length} presets.`);
+    setSelectedPresetIds([]);
+    setTimeout(() => setPresetActionFeedback(null), 2500);
+  };
+
+  const handleBatchMovePresets = (targetFolder: string) => {
+    if (selectedPresetIds.length === 0 || !targetFolder) return;
+    const updated = exportPresetsList.map((p) => selectedPresetIds.includes(p.id) ? { ...p, folder: targetFolder } : p);
+    setExportPresetsList(updated);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(EXPORT_PRESETS_LIST_STORAGE_KEY, JSON.stringify(updated));
+      } catch (err) {
+        console.error('Failed to update preset folders:', err);
+      }
+    }
+    setPresetActionFeedback(`Moved ${selectedPresetIds.length} presets to "${targetFolder}".`);
+    setSelectedPresetIds([]);
+    setTimeout(() => setPresetActionFeedback(null), 2500);
+  };
+
+  const handleBatchExportPresets = () => {
+    if (selectedPresetIds.length === 0) return;
+    const itemsToExport = exportPresetsList.filter((p) => selectedPresetIds.includes(p.id));
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(itemsToExport, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `export_presets_batch_${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    setPresetActionFeedback(`Exported ${itemsToExport.length} presets.`);
+    setTimeout(() => setPresetActionFeedback(null), 2500);
+  };
+
+  const handleDeleteExportPreset = (presetId: string) => {
+    const updated = exportPresetsList.filter((p) => p.id !== presetId);
+    setExportPresetsList(updated);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(EXPORT_PRESETS_LIST_STORAGE_KEY, JSON.stringify(updated));
+      } catch (err) {
+        console.error('Failed to update export presets list:', err);
+      }
+    }
+    setPresetActionFeedback('Deleted preset.');
+    setTimeout(() => setPresetActionFeedback(null), 2500);
+  };
+
+  const handleMovePresetFolder = (presetId: string, targetFolder: any) => {
+    const updated = exportPresetsList.map((p) => p.id === presetId ? { ...p, folder: targetFolder || 'General' } : p);
+    setExportPresetsList(updated);
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        localStorage.setItem(EXPORT_PRESETS_LIST_STORAGE_KEY, JSON.stringify(updated));
+      } catch (err) {
+        console.error('Failed to update preset folder:', err);
+      }
+    }
+    setPresetActionFeedback('Moved preset to folder.');
+    setTimeout(() => setPresetActionFeedback(null), 2000);
+  };
+
+  const toggleFolderCollapse = (folderName: string) => {
+    setCollapsedFolders((prev) => ({ ...prev, [folderName]: !prev[folderName] }));
   };
 
   // Computes active template metadata for display (audience, description, name)
@@ -4337,6 +5341,121 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                       : `~${deferredWaitCountdown.remainingSeconds.toFixed(1)}s remaining`}
                                   </div>
                                 </div>
+
+                                {/* Export Preset Manager */}
+                                <div
+                                  id="export-preset-manager"
+                                  data-testid="export-preset-manager"
+                                  className="p-2.5 rounded bg-zinc-950/90 border border-amber-500/30 text-zinc-200 space-y-2 mt-2 shadow-inner"
+                                >
+                                  <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-2">
+                                    <div className="flex items-center gap-1.5 text-[10.5px] font-semibold text-amber-300 font-mono">
+                                      <Bookmark className="w-3.5 h-3.5 text-amber-400" />
+                                      <span>Export Preset Manager (Multiple Named Snapshots)</span>
+                                    </div>
+                                    {presetActionFeedback && (
+                                      <span className="text-[9.5px] text-emerald-300 font-mono animate-fadeIn flex items-center gap-1">
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                        <span>{presetActionFeedback}</span>
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <input
+                                      id="input-new-preset-name"
+                                      data-testid="input-new-preset-name"
+                                      type="text"
+                                      placeholder="Enter preset name (e.g. Q3 Audit Snapshot)..."
+                                      value={newPresetNameInput}
+                                      onChange={(e) => setNewPresetNameInput(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                          e.preventDefault();
+                                          handleSaveNewExportPreset();
+                                        }
+                                      }}
+                                      className="flex-1 min-w-[200px] bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-2 py-1 text-[10px] font-mono text-zinc-200 shadow-xs"
+                                      aria-label="New export preset name"
+                                    />
+                                    <button
+                                      id="btn-save-new-export-preset"
+                                      data-testid="btn-save-new-export-preset"
+                                      type="button"
+                                      onClick={handleSaveNewExportPreset}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-zinc-950 font-bold text-[10px] transition-colors cursor-pointer shadow-xs"
+                                      title="Save current export configuration as a new named preset snapshot"
+                                    >
+                                      <Save className="w-3 h-3" />
+                                      <span>Save New Preset</span>
+                                    </button>
+                                  </div>
+
+                                  {/* Saved Presets List */}
+                                  {exportPresetsList.length === 0 ? (
+                                    <div className="text-[9.5px] text-zinc-400 font-mono italic py-1 px-1">
+                                      No custom export presets saved yet. Type a name above and click "Save New Preset" to store multiple configuration snapshots beyond the default template!
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+                                      {exportPresetsList.map((preset) => (
+                                        <div
+                                          key={preset.id}
+                                          data-testid={`preset-item-${preset.id}`}
+                                          className="flex items-center justify-between p-1.5 rounded bg-zinc-900/90 border border-zinc-800 hover:border-zinc-700 text-[10px] gap-2 transition-colors"
+                                        >
+                                          <div className="flex items-center gap-2 overflow-hidden">
+                                                      <input
+                                                        id={`checkbox-preset-${preset.id}`}
+                                                        data-testid={`checkbox-preset-${preset.id}`}
+                                                        type="checkbox"
+                                                        checked={selectedPresetIds.includes(preset.id)}
+                                                        onChange={(e) => {
+                                                          e.stopPropagation();
+                                                          if (e.target.checked) {
+                                                            setSelectedPresetIds((prev) => [...prev, preset.id]);
+                                                          } else {
+                                                            setSelectedPresetIds((prev) => prev.filter((id) => id !== preset.id));
+                                                          }
+                                                        }}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="accent-amber-500 w-3 h-3 rounded cursor-pointer shrink-0"
+                                                        aria-label={`Select preset ${preset.name}`}
+                                                      />
+                                            <span className="font-semibold text-zinc-200 truncate font-mono">{preset.name}</span>
+                                            <span className="text-[8.5px] font-mono text-zinc-400 shrink-0">
+                                              ({new Date(preset.createdAt).toLocaleDateString()} {new Date(preset.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1 shrink-0">
+                                            <button
+                                              id={`btn-load-preset-${preset.id}`}
+                                              data-testid={`btn-load-preset-${preset.id}`}
+                                              type="button"
+                                              onClick={() => handleLoadExportPreset(preset)}
+                                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-blue-300 hover:text-blue-200 border border-zinc-700 text-[9px] font-mono font-medium transition-colors cursor-pointer"
+                                              title={`Load preset "${preset.name}" into current export settings`}
+                                            >
+                                              <FolderOpen className="w-2.5 h-2.5" />
+                                              <span>Load</span>
+                                            </button>
+                                            <button
+                                              id={`btn-delete-preset-${preset.id}`}
+                                              data-testid={`btn-delete-preset-${preset.id}`}
+                                              type="button"
+                                              onClick={() => handleDeleteExportPreset(preset.id)}
+                                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-rose-950/80 text-rose-400 hover:text-rose-300 border border-zinc-700 text-[9px] font-mono transition-colors cursor-pointer"
+                                              title={`Delete preset "${preset.name}"`}
+                                            >
+                                              <Trash2 className="w-2.5 h-2.5" />
+                                              <span>Delete</span>
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
 
                               {/* Dynamic Countdown Progress Bar */}
@@ -5309,313 +6428,1292 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     type="button"
                                     onClick={() => handleBulkTogglePdfSections(true)}
                                     className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
-                                    title="Enable all sections at once"
-                                  >
-                                    Enable All
-                                  </button>
-                                  <button
-                                    id="btn-bulk-disable-all"
-                                    data-testid="btn-bulk-disable-all"
-                                    type="button"
-                                    onClick={() => handleBulkTogglePdfSections(false)}
-                                    className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
-                                    title="Disable all sections at once"
-                                  >
-                                    Disable All
-                                  </button>
-                                   <button
-                                     id="btn-copy-all-notes"
-                                     data-testid="btn-copy-all-notes"
-                                     type="button"
-                                     onClick={handleCopyAllNotes}
-                                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
-                                     title="Aggregate and copy all custom notes from visible section cards as a formatted document outline to clipboard"
+                                     title="Enable all sections at once"
                                    >
-                                     {copiedAllNotes ? (
+                                     Enable All
+                                   </button>
+                                   <button
+                                     id="btn-bulk-disable-all"
+                                     data-testid="btn-bulk-disable-all"
+                                     type="button"
+                                     onClick={() => handleBulkTogglePdfSections(false)}
+                                     className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                     title="Disable all sections at once"
+                                   >
+                                     Disable All
+                                   </button>
+                                    <button
+                                      id="btn-copy-all-notes"
+                                      data-testid="btn-copy-all-notes"
+                                      type="button"
+                                      onClick={handleCopyAllNotes}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                      title="Aggregate and copy all custom notes from visible section cards as a formatted document outline to clipboard"
+                                    >
+                                      {copiedAllNotes ? (
+                                        <>
+                                          <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                          <span className="text-emerald-300 font-semibold">Notes Copied!</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy className="w-2.5 h-2.5 text-amber-400" />
+                                          <span>Copy All Notes</span>
+                                        </>
+                                      )}
+                                    </button>
+                                    <button
+                                      id="btn-batch-export-sections"
+                                      data-testid="btn-batch-export-sections"
+                                      type="button"
+                                      onClick={handleBatchExportAllSections}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-emerald-300 border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                      title="Export all enabled section data files as CSVs in a single batch using the configured naming pattern"
+                                    >
+                                      <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-400" />
+                                      <span>Batch Export CSVs</span>
+                                    </button>
+                                    <button
+                                      id="btn-toggle-page-numbers"
+                                      data-testid="btn-toggle-page-numbers"
+                                      type="button"
+                                      onClick={() => {
+                                        setPdfExportSections((prev) => ({
+                                          ...prev,
+                                          includePageNumbers: prev.includePageNumbers === false ? true : false
+                                        }));
+                                      }}
+                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9.5px] font-medium transition-colors cursor-pointer ${
+                                        pdfExportSections.includePageNumbers !== false
+                                          ? 'bg-amber-950/40 border-amber-500/60 text-amber-300 hover:bg-amber-900/50'
+                                          : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-700'
+                                      }`}
+                                      title="Toggle inclusion of page numbers ('Page X of Y') in the PDF document footer"
+                                    >
+                                      <FileText className="w-2.5 h-2.5 text-amber-400" />
+                                      <span>Page Numbers: {pdfExportSections.includePageNumbers !== false ? 'On' : 'Off'}</span>
+                                    </button>
+                                    <button
+                                      id="btn-reset-section-groups"
+                                      data-testid="btn-reset-section-groups"
+                                      type="button"
+                                      onClick={handleResetSectionGroups}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                      title="Revert all section grouping to default, removing any custom folders or categories"
+                                    >
+                                      {resetSectionGroupsSuccess ? (
+                                        <>
+                                          <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                          <span className="text-emerald-300 font-semibold">Groups Reset!</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <FolderX className="w-2.5 h-2.5 text-amber-400" />
+                                          <span>Reset Section Groups</span>
+                                        </>
+                                      )}
+                                    </button>
+                                    <button
+                                      id="btn-toggle-expand-collapse-groups"
+                                      data-testid="btn-toggle-expand-collapse-groups"
+                                      type="button"
+                                      onClick={handleToggleAllSectionGroups}
+                                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                      title={areAllSectionGroupsCollapsed ? "Expand all section group folders at once" : "Collapse all section group folders at once"}
+                                      aria-label={areAllSectionGroupsCollapsed ? "Expand All" : "Collapse All"}
+                                    >
+                                      {areAllSectionGroupsCollapsed ? (
+                                        <>
+                                          <FolderOpen className="w-2.5 h-2.5 text-amber-400" />
+                                          <span>Expand All</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Folder className="w-2.5 h-2.5 text-amber-400" />
+                                          <span>Collapse All</span>
+                                        </>
+                                      )}
+                                    </button>
+                                     <button
+                                       id="btn-reset-all-dividers"
+                                       data-testid="btn-reset-all-dividers"
+                                       type="button"
+                                       onClick={handleResetAllDividers}
+                                       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                       title="Globally reset 'Show Dividers' status and color for all sections back to the system default"
+                                       aria-label="Reset All Dividers"
+                                     >
+                                       {resetDividersSuccess ? (
+                                         <>
+                                           <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                           <span className="text-emerald-300 font-semibold">Dividers Reset!</span>
+                                         </>
+                                       ) : (
+                                         <>
+                                           <RotateCcw className="w-2.5 h-2.5 text-amber-400" />
+                                           <span>Reset All Dividers</span>
+                                         </>
+                                       )}
+                                     </button>
+                                     {/* Filter by Color Dropdown */}
+                                     <div
+                                       id="container-filter-by-divider-color"
+                                       data-testid="container-filter-by-divider-color"
+                                       className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-750 border border-zinc-700 text-[9.5px] transition-colors"
+                                     >
+                                       <Palette className="w-3 h-3 text-amber-400 shrink-0" />
+                                       <label
+                                         htmlFor="select-filter-by-divider-color"
+                                         className="text-zinc-300 font-medium whitespace-nowrap cursor-pointer select-none"
+                                       >
+                                         Filter by Color:
+                                       </label>
+                                       <select
+                                         id="select-filter-by-divider-color"
+                                         data-testid="select-filter-by-divider-color"
+                                         data-alt-id="select-filter-by-color"
+                                         aria-label="Filter section cards by divider color"
+                                         value={pdfDividerColorFilter}
+                                         onChange={(e) => setPdfDividerColorFilter(e.target.value)}
+                                         className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded px-1.5 py-0.5 text-[9px] font-mono text-zinc-100 cursor-pointer transition-colors"
+                                       >
+                                         <option value="all">All Colors ({currentSectionOrder.length})</option>
+                                         {DIVIDER_COLOR_OPTIONS.map((c) => (
+                                           <option key={c.value} value={c.value}>
+                                             {c.label} ({dividerColorCounts[c.value.toLowerCase()] || 0})
+                                           </option>
+                                         ))}
+                                       </select>
+                                       {pdfDividerColorFilter !== 'all' && (
+                                         <button
+                                           id="btn-clear-color-filter"
+                                           data-testid="btn-clear-color-filter"
+                                           type="button"
+                                           onClick={() => setPdfDividerColorFilter('all')}
+                                           className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-700 transition-colors cursor-pointer"
+                                           title="Clear color filter"
+                                           aria-label="Clear color filter"
+                                         >
+                                           <X className="w-2.5 h-2.5" />
+                                         </button>
+                                       )}
+                                     </div>
+                                 <span className="text-[9.5px] text-zinc-400 hidden sm:inline">
+                                   Configure stakeholder layouts and section visibility for generated PDF reports
+                                 </span>
+                               </div>
+                             </div>
+
+                             {/* Template Selector Dropdown & Stakeholder Configuration Controls */}
+                             <div
+                               id="panel-pdf-template-selector"
+                               data-testid="panel-pdf-template-selector"
+                               className="p-2 rounded bg-zinc-950/70 border border-zinc-800/90 flex flex-col gap-2"
+                             >
+                               <div className="flex items-center justify-between gap-2 flex-wrap">
+                                 <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+                                   <label
+                                     htmlFor="select-pdf-template"
+                                     className="flex items-center gap-1.5 text-[10.5px] font-semibold text-zinc-200 shrink-0"
+                                   >
+                                     <Bookmark className="w-3.5 h-3.5 text-amber-400" />
+                                     <span>Template Selector:</span>
+                                   </label>
+                                   <div className="relative flex-1">
+                                     <select
+                                       id="select-pdf-template"
+                                       data-testid="select-pdf-template"
+                                       aria-label="Template Selector"
+                                       value={currentMatchedTemplateId}
+                                       onChange={(e) => handleSelectPdfTemplate(e.target.value)}
+                                       className="w-full text-[11px] font-medium bg-zinc-900 border border-amber-500/50 hover:border-amber-400 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded px-2.5 py-1 text-zinc-100 cursor-pointer shadow-xs transition-colors"
+                                     >
+                                       <optgroup label="Predefined Stakeholder Templates">
+                                         {PREDEFINED_PDF_TEMPLATES.map((tmpl) => (
+                                           <option key={tmpl.id} value={tmpl.id}>
+                                             {tmpl.name} — {tmpl.audience}
+                                           </option>
+                                         ))}
+                                       </optgroup>
+                                       {savedCustomPdfTemplate && (
+                                         <optgroup label="Saved Presets">
+                                           <option value="saved-custom">
+                                             Saved Preset: {savedCustomPdfTemplate.name}
+                                           </option>
+                                         </optgroup>
+                                       )}
+                                       {currentMatchedTemplateId === 'custom' && (
+                                         <optgroup label="Current Configuration">
+                                           <option value="custom">Custom Configuration (Modified)</option>
+                                         </optgroup>
+                                       )}
+                                     </select>
+                                   </div>
+                                 </div>
+
+                                 {/* Save / Load Custom Template Action Buttons */}
+                                 <div className="flex items-center gap-1.5 shrink-0">
+                                   <button
+                                     id="btn-save-pdf-template"
+                                     data-testid="btn-save-pdf-template"
+                                     aria-label="Save Custom Template"
+                                     type="button"
+                                     onClick={handleSaveCurrentAsCustomTemplate}
+                                     className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 hover:border-amber-500/50 text-[10px] font-medium transition-colors cursor-pointer"
+                                     title="Save current sections and page break settings as your custom preset in browser storage"
+                                   >
+                                     {isCustomTemplateSavedFeedback ? (
                                        <>
                                          <Check className="w-2.5 h-2.5 text-emerald-400" />
-                                         <span className="text-emerald-300 font-semibold">Notes Copied!</span>
+                                         <span className="text-emerald-300 font-semibold">Preset Saved!</span>
                                        </>
                                      ) : (
                                        <>
-                                         <Copy className="w-2.5 h-2.5 text-amber-400" />
-                                         <span>Copy All Notes</span>
+                                         <Save className="w-2.5 h-2.5 text-amber-400" />
+                                         <span>Save Preset</span>
                                        </>
                                      )}
                                    </button>
-                                   <button
-                                     id="btn-toggle-page-numbers"
-                                     data-testid="btn-toggle-page-numbers"
-                                     type="button"
-                                     onClick={() => {
-                                       setPdfExportSections((prev) => ({
-                                         ...prev,
-                                         includePageNumbers: prev.includePageNumbers === false ? true : false
-                                       }));
-                                     }}
-                                     className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[9.5px] font-medium transition-colors cursor-pointer ${
-                                       pdfExportSections.includePageNumbers !== false
-                                         ? 'bg-amber-950/40 border-amber-500/60 text-amber-300 hover:bg-amber-900/50'
-                                         : 'bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-white hover:bg-zinc-700'
-                                     }`}
-                                     title="Toggle inclusion of page numbers ('Page X of Y') in the PDF document footer"
-                                   >
-                                     <FileText className="w-2.5 h-2.5 text-amber-400" />
-                                     <span>Page Numbers: {pdfExportSections.includePageNumbers !== false ? 'On' : 'Off'}</span>
-                                   </button>
-                                <span className="text-[9.5px] text-zinc-400 hidden sm:inline">
-                                  Configure stakeholder layouts and section visibility for generated PDF reports
-                                </span>
-                              </div>
-                            </div>
 
-                            {/* Template Selector Dropdown & Stakeholder Configuration Controls */}
-                            <div
-                              id="panel-pdf-template-selector"
-                              data-testid="panel-pdf-template-selector"
-                              className="p-2 rounded bg-zinc-950/70 border border-zinc-800/90 flex flex-col gap-2"
-                            >
-                              <div className="flex items-center justify-between gap-2 flex-wrap">
-                                <div className="flex items-center gap-2 flex-1 min-w-[240px]">
-                                  <label
-                                    htmlFor="select-pdf-template"
-                                    className="flex items-center gap-1.5 text-[10.5px] font-semibold text-zinc-200 shrink-0"
-                                  >
+                                   {savedCustomPdfTemplate && (
+                                     <button
+                                       id="btn-load-pdf-template"
+                                       data-testid="btn-load-pdf-template"
+                                       aria-label="Load Custom Template"
+                                       type="button"
+                                       onClick={handleLoadCustomTemplate}
+                                       className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer"
+                                       title="Load your saved custom section preset"
+                                     >
+                                       <FolderOpen className="w-2.5 h-2.5 text-blue-400" />
+                                       <span>Load Saved</span>
+                                     </button>
+                                   )}
+                                 </div>
+                               </div>
+
+                               {/* Stakeholder Audience & Template Context Banner */}
+                               <div className="flex items-start justify-between gap-2 px-2 py-1.5 rounded bg-zinc-900/90 border border-zinc-800/80 text-[10px]">
+                                 <div className="flex flex-col gap-0.5">
+                                   <div className="flex items-center gap-2 flex-wrap">
+                                     <span className="font-semibold text-zinc-200 flex items-center gap-1">
+                                       <span>{activeTemplateMeta.name}</span>
+                                     </span>
+                                     <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                       <Users className="w-2.5 h-2.5" />
+                                       <span>Audience: {activeTemplateMeta.audience}</span>
+                                     </span>
+                                     {currentMatchedTemplateId === 'custom' && (
+                                       <span className="text-[8.5px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                         Modified Settings
+                                       </span>
+                                     )}
+                                   </div>
+                                   <span className="text-[9.5px] text-zinc-400 leading-tight">
+                                     {activeTemplateMeta.description}
+                                   </span>
+                                 </div>
+                               </div>
+                             </div>
+
+                             {/* Section Sorting & Auto-Grouping Control Bar */}
+                             <div className="flex items-center justify-between text-[10px] px-2 py-1.5 rounded bg-zinc-950/70 border border-zinc-800/80 flex-wrap gap-2">
+                               <div className="flex items-center gap-2 flex-wrap">
+                                 <div className="flex items-center gap-1">
+                                   <label htmlFor="select-pdf-section-sort" className="font-semibold text-zinc-300 flex items-center gap-1">
+                                     <ArrowUpDown className="w-3.5 h-3.5 text-amber-400" />
+                                     <span>Sort Sections:</span>
+                                   </label>
+                                   <select
+                                     id="select-pdf-section-sort"
+                                     data-testid="select-pdf-section-sort"
+                                     aria-label="Sort Sections"
+                                     value={pdfSectionSortMode}
+                                     onChange={(e) => setPdfSectionSortMode(e.target.value as 'default' | 'title' | 'tag')}
+                                     className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/50 text-zinc-200 text-[10px] rounded px-2 py-0.5 focus:outline-none focus:border-amber-500 cursor-pointer"
+                                   >
+                                     <option value="default">In-Order (Default)</option>
+                                     <option value="title">Title (A-Z)</option>
+                                     <option value="tag">Tag / Category (A-Z)</option>
+                                   </select>
+                                 </div>
+                                 <label
+                                   htmlFor="toggle-auto-group-category"
+                                   className="flex items-center gap-1.5 cursor-pointer select-none px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 hover:border-zinc-700 transition-colors"
+                                   title="Automatically group and sort cards by data domain category in report output and preview"
+                                 >
+                                   <input
+                                     id="toggle-auto-group-category"
+                                     data-testid="toggle-auto-group-category"
+                                     type="checkbox"
+                                     checked={isGroupByTagActive}
+                                     onChange={(e) => setIsGroupByTagActive(e.target.checked)}
+                                     className="accent-amber-500 rounded cursor-pointer"
+                                   />
+                                   <span className="font-medium text-zinc-200">Auto-Group by Category</span>
+                                 </label>
+                                 <button
+                                   id="btn-reset-section-groups-bar"
+                                   data-testid="btn-reset-section-groups-bar"
+                                   type="button"
+                                   onClick={handleResetSectionGroups}
+                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-700 text-zinc-300 hover:text-amber-200 border border-zinc-800 hover:border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                   title="Revert all section grouping to default, removing any custom folders or categories"
+                                 >
+                                   <FolderX className="w-2.5 h-2.5 text-amber-400" />
+                                   <span>Reset Section Groups</span>
+                                 </button>
+                                 <div className="flex items-center gap-1 border-l border-zinc-800 pl-2">
+                                   <button
+                                     id="btn-expand-all-groups"
+                                     data-testid="btn-expand-all-groups"
+                                     type="button"
+                                     onClick={handleExpandAllSectionGroups}
+                                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-800 hover:border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                     title="Expand all section group folders"
+                                   >
+                                     <FolderOpen className="w-2.5 h-2.5 text-amber-400" />
+                                     <span>Expand All</span>
+                                   </button>
+                                   <button
+                                     id="btn-collapse-all-groups"
+                                     data-testid="btn-collapse-all-groups"
+                                     type="button"
+                                     onClick={handleCollapseAllSectionGroups}
+                                     className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-800 hover:border-zinc-700 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                     title="Collapse all section group folders"
+                                   >
+                                     <Folder className="w-2.5 h-2.5 text-amber-400" />
+                                     <span>Collapse All</span>
+                                   </button>
+                                 </div>
+                               </div>
+                             </div>
+
+                              {/* Export Preset Manager with Category Folders */}
+                              <div
+                                id="export-preset-manager"
+                                data-testid="export-preset-manager"
+                                className="p-2.5 rounded bg-zinc-950/90 border border-amber-500/30 text-zinc-200 space-y-2.5 shadow-inner"
+                              >
+                                <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-2">
+                                  <div className="flex items-center gap-1.5 text-[10.5px] font-semibold text-amber-300 font-mono">
                                     <Bookmark className="w-3.5 h-3.5 text-amber-400" />
-                                    <span>Template Selector:</span>
-                                  </label>
-                                  <div className="relative flex-1">
-                                    <select
-                                      id="select-pdf-template"
-                                      data-testid="select-pdf-template"
-                                      aria-label="Template Selector"
-                                      value={currentMatchedTemplateId}
-                                      onChange={(e) => handleSelectPdfTemplate(e.target.value)}
-                                      className="w-full text-[11px] font-medium bg-zinc-900 border border-amber-500/50 hover:border-amber-400 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 rounded px-2.5 py-1 text-zinc-100 cursor-pointer shadow-xs transition-colors"
-                                    >
-                                      <optgroup label="Predefined Stakeholder Templates">
-                                        {PREDEFINED_PDF_TEMPLATES.map((tmpl) => (
-                                          <option key={tmpl.id} value={tmpl.id}>
-                                            {tmpl.name} — {tmpl.audience}
-                                          </option>
-                                        ))}
-                                      </optgroup>
-                                      {savedCustomPdfTemplate && (
-                                        <optgroup label="Saved Presets">
-                                          <option value="saved-custom">
-                                            ★ {savedCustomPdfTemplate.name}
-                                          </option>
-                                        </optgroup>
-                                      )}
-                                      {currentMatchedTemplateId === 'custom' && (
-                                        <optgroup label="Current Configuration">
-                                          <option value="custom">Custom Configuration (Modified)</option>
-                                        </optgroup>
-                                      )}
-                                    </select>
+                                    <span>Export Preset Manager (Category Folders)</span>
                                   </div>
+                                  {presetActionFeedback && (
+                                    <span className="text-[9.5px] text-emerald-300 font-mono animate-fadeIn flex items-center gap-1">
+                                      <Check className="w-3 h-3 text-emerald-400" />
+                                      <span>{presetActionFeedback}</span>
+                                    </span>
+                                  )}
                                 </div>
 
-                                {/* Save / Load Custom Template Action Buttons */}
-                                <div className="flex items-center gap-1.5 shrink-0">
-                                  <button
-                                    id="btn-save-pdf-template"
-                                    data-testid="btn-save-pdf-template"
-                                    aria-label="Save Custom Template"
-                                    type="button"
-                                    onClick={handleSaveCurrentAsCustomTemplate}
-                                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-200 border border-zinc-700 hover:border-amber-500/50 text-[10px] font-medium transition-colors cursor-pointer"
-                                    title="Save current sections and page break settings as your custom preset in browser storage"
+                                {/* Save Preset Controls with Folder Selection */}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <input
+                                    id="input-new-preset-name"
+                                    data-testid="input-new-preset-name"
+                                    type="text"
+                                    placeholder="Preset Name (e.g. Q3 SLA Report)..."
+                                    value={newPresetNameInput}
+                                    onChange={(e) => setNewPresetNameInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleSaveNewExportPreset();
+                                      }
+                                    }}
+                                    className="flex-1 min-w-[160px] bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-2 py-1 text-[10px] font-mono text-zinc-200 shadow-xs"
+                                    aria-label="New export preset name"
+                                  />
+                                  <select
+                                    id="select-new-preset-folder"
+                                    data-testid="select-new-preset-folder"
+                                    value={newPresetFolderInput}
+                                    onChange={(e) => setNewPresetFolderInput(e.target.value)}
+                                    className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-2 py-1 text-[10px] font-mono text-amber-300 cursor-pointer shadow-xs"
+                                    title="Select category folder for new preset"
+                                    aria-label="Select category folder"
                                   >
-                                    {isCustomTemplateSavedFeedback ? (
-                                      <>
-                                        <Check className="w-2.5 h-2.5 text-emerald-400" />
-                                        <span className="text-emerald-300 font-semibold">Preset Saved!</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Save className="w-2.5 h-2.5 text-amber-400" />
-                                        <span>Save Preset</span>
-                                      </>
-                                    )}
+                                    {['General', 'Audits', 'Executive', 'Production'].map((f) => (
+                                      <option key={f} value={f}>📁 {f}</option>
+                                    ))}
+                                    {availableFolders.filter(f => !['General', 'Audits', 'Executive', 'Production'].includes(f)).map((f) => (
+                                      <option key={f} value={f}>📁 {f}</option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    id="btn-save-new-export-preset"
+                                    data-testid="btn-save-new-export-preset"
+                                    type="button"
+                                    onClick={handleSaveNewExportPreset}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-zinc-950 font-bold text-[10px] transition-colors cursor-pointer shadow-xs shrink-0"
+                                    title="Save current export configuration as a new named preset in the selected folder"
+                                  >
+                                    <Save className="w-3 h-3" />
+                                    <span>Save Preset</span>
                                   </button>
+                                </div>
 
-                                  {savedCustomPdfTemplate && (
+                                {/* Search Bar for Export Presets */}
+                                <div className="relative flex items-center">
+                                  <Search className="absolute left-2.5 w-3 h-3 text-zinc-400 pointer-events-none" />
+                                  <input
+                                    id="input-preset-search"
+                                    data-testid="input-preset-search"
+                                    type="text"
+                                    placeholder="Search presets by name or folder..."
+                                    value={presetSearchQuery}
+                                    onChange={(e) => setPresetSearchQuery(e.target.value)}
+                                    className="w-full bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded pl-7 pr-6 py-1 text-[10px] font-mono text-zinc-200 shadow-xs"
+                                    aria-label="Search saved export presets"
+                                  />
+                                  {presetSearchQuery && (
                                     <button
-                                      id="btn-load-pdf-template"
-                                      data-testid="btn-load-pdf-template"
-                                      aria-label="Load Custom Template"
                                       type="button"
-                                      onClick={handleLoadCustomTemplate}
-                                      className="inline-flex items-center gap-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[10px] font-medium transition-colors cursor-pointer"
-                                      title="Load your saved custom section preset"
+                                      onClick={() => setPresetSearchQuery('')}
+                                      className="absolute right-2 text-[9px] text-zinc-400 hover:text-zinc-200 cursor-pointer"
+                                      title="Clear search"
                                     >
-                                      <FolderOpen className="w-2.5 h-2.5 text-blue-400" />
-                                      <span>Load Saved</span>
+                                      ✕
                                     </button>
                                   )}
                                 </div>
+
+                                
+                                {/* Recent Usage Time Filter Buttons */}
+                                <div className="flex items-center gap-1.5 flex-wrap pt-0.5 mb-1.5">
+                                  <span className="text-[9px] text-zinc-400 font-mono">Usage Filter:</span>
+                                  {[
+                                    { id: 'all', label: 'All Time' },
+                                    { id: '7days', label: 'Last 7 Days' },
+                                    { id: '30days', label: 'Last 30 Days' },
+                                  ].map((tf) => {
+                                    const active = presetTimeFilter === tf.id;
+                                    return (
+                                      <button
+                                        key={tf.id}
+                                        id={`btn-preset-time-filter-${tf.id}`}
+                                        data-testid={`btn-preset-time-filter-${tf.id}`}
+                                        type="button"
+                                        onClick={() => setPresetTimeFilter(tf.id)}
+                                        className={`px-2 py-0.5 rounded text-[9px] font-mono transition-colors cursor-pointer border ${
+                                          active
+                                            ? 'bg-amber-500 text-zinc-950 font-bold border-amber-400'
+                                            : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-zinc-700'
+                                        }`}
+                                      >
+                                        {tf.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                {/* Preset Sort Controls */}
+                                <div className="flex items-center gap-1.5 flex-wrap pt-0.5 mb-2">
+                                  <span className="text-[9px] text-zinc-400 font-mono">Sort By:</span>
+                                  {[
+                                    { id: 'date', label: 'Newest First' },
+                                    { id: 'name', label: 'Name (A-Z)' },
+                                  ].map((sm) => {
+                                    const active = presetSortMode === sm.id;
+                                    return (
+                                      <button
+                                        key={sm.id}
+                                        id={`btn-preset-sort-${sm.id}`}
+                                        data-testid={`btn-preset-sort-${sm.id}`}
+                                        type="button"
+                                        onClick={() => setPresetSortMode(sm.id as any)}
+                                        className={`px-2 py-0.5 rounded text-[9px] font-mono transition-colors cursor-pointer border ${
+                                          active
+                                            ? 'bg-amber-500 text-zinc-950 font-bold border-amber-400'
+                                            : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border-zinc-700'
+                                        }`}
+                                      >
+                                        {sm.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+{/* Batch Action Toolbar */}
+                                 {exportPresetsList.length > 0 && (
+                                   <div className="flex items-center justify-between p-2 rounded bg-zinc-900 border border-amber-500/40 text-[9.5px] font-mono gap-2 flex-wrap mb-1.5">
+                                     <div className="flex items-center gap-2">
+                                       <input
+                                         id="checkbox-select-all-presets"
+                                         data-testid="checkbox-select-all-presets"
+                                         type="checkbox"
+                                         checked={selectedPresetIds.length > 0 && selectedPresetIds.length === filteredExportPresetsList.length}
+                                         onChange={(e) => {
+                                           if (e.target.checked) {
+                                             setSelectedPresetIds(filteredExportPresetsList.map((p) => p.id));
+                                           } else {
+                                             setSelectedPresetIds([]);
+                                           }
+                                         }}
+                                         className="accent-amber-500 w-3 h-3 rounded cursor-pointer"
+                                         aria-label="Select all filtered export presets"
+                                       />
+                                       <span className="text-amber-300 font-semibold">
+                                         {selectedPresetIds.length > 0 ? `${selectedPresetIds.length} selected` : 'Select All'}
+                                       </span>
+                                     </div>
+                                     {selectedPresetIds.length > 0 && (
+                                       <div className="flex items-center gap-1.5 flex-wrap">
+                                         <select
+                                           id="select-batch-folder"
+                                           data-testid="select-batch-folder"
+                                           onChange={(e) => {
+                                             const folder = e.target.value;
+                                             if (folder) handleBatchMovePresets(folder);
+                                             e.target.value = '';
+                                           }}
+                                           defaultValue=""
+                                           className="bg-zinc-950 border border-zinc-700 hover:border-amber-500/60 rounded px-1.5 py-0.5 text-[9px] font-mono text-zinc-200 cursor-pointer"
+                                           title="Batch move selected presets to another folder"
+                                         >
+                                           <option value="" disabled>Move to folder...</option>
+                                           {['General', 'Audits', 'Executive', 'Production'].map((f) => (
+                                             <option key={f} value={f}>{f}</option>
+                                           ))}
+                                           {availableFolders.filter(f => !['General', 'Audits', 'Executive', 'Production'].includes(f)).map((f) => (
+                                             <option key={f} value={f}>{f}</option>
+                                           ))}
+                                         </select>
+                                         <button
+                                           id="btn-batch-export-presets"
+                                           data-testid="btn-batch-export-presets"
+                                           type="button"
+                                           onClick={handleBatchExportPresets}
+                                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-blue-300 hover:text-blue-200 border border-zinc-700 text-[9px] font-mono font-medium transition-colors cursor-pointer"
+                                           title="Bulk export selected presets as JSON file"
+                                         >
+                                           <FolderOpen className="w-2.5 h-2.5" />
+                                           <span>Export Selected</span>
+                                         </button>
+                                         <button
+                                           id="btn-batch-delete-presets"
+                                           data-testid="btn-batch-delete-presets"
+                                           type="button"
+                                           onClick={handleBatchDeletePresets}
+                                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-950/80 hover:bg-rose-900 text-rose-300 hover:text-rose-200 border border-rose-800 text-[9px] font-mono font-medium transition-colors cursor-pointer"
+                                           title="Batch delete selected presets"
+                                         >
+                                           <Trash2 className="w-2.5 h-2.5" />
+                                           <span>Delete Selected</span>
+                                         </button>
+                                       </div>
+                                     )}
+                                   </div>
+                                 )}
+
+                                 {/* Saved Presets Grouped by Category Folder */}
+                                {exportPresetsList.length === 0 ? (
+                                  <div className="text-[9.5px] text-zinc-400 font-mono italic py-1 px-1">
+                                    No custom export presets saved yet. Create named configuration snapshots and organize them into category folders!
+                                  </div>
+                                ) : filteredExportPresetsList.length === 0 ? (
+                                   <div className="text-[9.5px] text-zinc-400 font-mono italic py-1 px-1">
+                                     No custom export presets saved yet. Create named configuration snapshots and organize them into category folders!
+                                   </div>
+                                 ) : filteredExportPresetsList.length === 0 ? (
+                                   <div className="text-[9.5px] text-zinc-400 font-mono py-2 px-1 text-center space-y-1.5">
+                                     <div>No export presets found matching "<span className="text-amber-300 font-semibold">{presetSearchQuery}</span>".</div>
+                                     <button
+                                       type="button"
+                                       onClick={() => setPresetSearchQuery('')}
+                                       className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 text-[9px] font-mono cursor-pointer"
+                                     >
+                                       Clear Search Filter
+                                     </button>
+                                   </div>
+                                 ) : (
+                                   <motion.div
+                                     key={`${presetSearchQuery}-${presetTimeFilter}-${presetSortMode}-${exportPresetsList.length}`}
+                                     initial={{ opacity: 0, y: 6 }}
+                                     animate={{ opacity: 1, y: 0 }}
+                                     transition={{ duration: 0.25, ease: 'easeOut' }}
+                                     className="space-y-2 max-h-52 overflow-y-auto pr-1"
+                                   >
+                                     {Array.from(new Set(filteredExportPresetsList.map((p) => p.folder || 'General'))).map((folderName: string) => {
+                                       const folderPresets = filteredExportPresetsList
+                                          .filter((p) => (p.folder || 'General') === folderName)
+                                          .sort((a, b) => {
+                                            if (presetSortMode === 'name') {
+                                              return a.name.localeCompare(b.name);
+                                            } else {
+                                              return b.createdAt - a.createdAt;
+                                            }
+                                          });
+                                       const isCollapsed = Boolean(collapsedFolders[folderName]);
+
+                                       return (
+                                         <motion.div
+                                           key={folderName}
+                                           initial={{ opacity: 0, scale: 0.99 }}
+                                           animate={{ opacity: 1, scale: 1 }}
+                                           transition={{ duration: 0.2 }}
+                                           className="rounded bg-zinc-900/60 border border-zinc-800/80 overflow-hidden"
+                                         >
+                                           {/* Folder Header */}
+                                           <div
+                                             onClick={() => toggleFolderCollapse(folderName)}
+                                             className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900/90 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/70 select-none transition-colors"
+                                             title={`Click to ${isCollapsed ? 'expand' : 'collapse'} folder "${folderName}"`}
+                                           >
+                                             <div className="flex items-center gap-1.5 text-[10px] font-mono font-semibold text-amber-200">
+                                               <Folder className="w-3.5 h-3.5 text-amber-400" />
+                                               <span>{folderName}</span>
+                                               <span className="text-[8.5px] px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
+                                                 {folderPresets.length} {folderPresets.length === 1 ? 'preset' : 'presets'}
+                                               </span>
+                                             </div>
+                                             <div className="text-zinc-400 text-[10px]">
+                                               {isCollapsed ? '▼' : '▲'}
+                                             </div>
+                                           </div>
+
+                                           {/* Folder Content List */}
+                                           {!isCollapsed && (
+                                             <div className="p-1.5 space-y-1">
+                                               {folderPresets.map((preset) => (
+                                                 <div
+                                                   key={preset.id}
+                                                   data-testid={`preset-item-${preset.id}`}
+                                                   className="flex items-center justify-between p-1.5 rounded bg-zinc-950/80 border border-zinc-800/80 hover:border-zinc-700 text-[10px] gap-2 transition-colors"
+                                                 >
+                                                   <div className="flex items-center gap-2 overflow-hidden">
+                                                     <span className="font-semibold text-zinc-200 truncate font-mono">{preset.name}</span>
+                                                     <span className="text-[8px] font-mono text-zinc-400 shrink-0">
+                                                       {new Date(preset.createdAt).toLocaleDateString()} {new Date(preset.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                     </span>
+                                                   </div>
+                                                   <div className="flex items-center gap-1.5 shrink-0">
+                                                     {/* Move folder selector dropdown */}
+                                                     <select
+                                                       value={preset.folder || 'General'}
+                                                       onChange={(e) => handleMovePresetFolder(preset.id, e.target.value)}
+                                                       className="bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 text-[8.5px] font-mono text-zinc-300 cursor-pointer"
+                                                       title="Move preset to another folder"
+                                                       aria-label="Move preset to another folder"
+                                                       onClick={(e) => e.stopPropagation()}
+                                                     >
+                                                       {['General', 'Audits', 'Executive', 'Production'].map((f) => (
+                                                         <option key={f} value={f}>{f}</option>
+                                                       ))}
+                                                       {availableFolders.filter(f => !['General', 'Audits', 'Executive', 'Production'].includes(f)).map((f) => (
+                                                         <option key={f} value={f}>{f}</option>
+                                                       ))}
+                                                     </select>
+                                                     <button
+                                                       id={`btn-preview-preset-${preset.id}`}
+                                                       data-testid={`btn-preview-preset-${preset.id}`}
+                                                       type="button"
+                                                       onClick={() => setPreviewPresetItem(preset)}
+                                                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-zinc-700 text-[9px] font-mono font-medium transition-colors cursor-pointer"
+                                                       title={`Preview settings of preset "${preset.name}"`}
+                                                     >
+                                                       <Eye className="w-2.5 h-2.5" />
+                                                       <span>Preview</span>
+                                                     </button>
+                                                     <button
+                                                       id={`btn-load-preset-${preset.id}`}
+                                                       data-testid={`btn-load-preset-${preset.id}`}
+                                                       type="button"
+                                                       onClick={() => handleLoadExportPreset(preset)}
+                                                       className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-zinc-950 text-[9px] font-mono font-bold transition-colors cursor-pointer"
+                                                       title={`Load export configuration preset "${preset.name}" into current export settings`}
+                                                     >
+                                                       <Check className="w-2.5 h-2.5" />
+                                                       <span>Load</span>
+                                                     </button>
+                                                     <button
+                                                       id={`btn-delete-preset-${preset.id}`}
+                                                       data-testid={`btn-delete-preset-${preset.id}`}
+                                                       type="button"
+                                                       onClick={() => handleDeleteExportPreset(preset.id)}
+                                                       className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-rose-950/80 text-rose-400 hover:text-rose-300 border border-zinc-700 text-[9px] font-mono transition-colors cursor-pointer"
+                                                       title={`Delete preset "${preset.name}"`}
+                                                     >
+                                                       <Trash2 className="w-2.5 h-2.5" />
+                                                       <span>Delete</span>
+                                                     </button>
+                                                   </div>
+                                                 </div>
+                                               ))}
+                                             </div>
+                                           )}
+                                         </motion.div>
+                                       );
+                                     })}
+                                   </motion.div>
+                                 )}
+                              {/* Highlighted Preset Configuration Preview Box */}
+                              {previewPresetItem && (
+                                <div
+                                  id="preset-preview-box"
+                                  data-testid="preset-preview-box"
+                                  className="p-3 rounded bg-amber-950/30 border border-amber-500/60 space-y-3 animate-fadeIn text-[10px] font-mono mt-2 shadow-md"
+                                >
+                                  {/* Visual Mini-Rendered Card Preview Panel */}
+                                  <div className="p-3 rounded bg-zinc-950 border border-amber-500/30 space-y-2">
+                                    <div className="text-amber-400 font-bold text-[10px] flex items-center gap-1.5">
+                                      <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                      <span>Visual Report Card Preview (Mini-Rendered Snapshot)</span>
+                                    </div>
+                                    <div className="p-3 rounded bg-zinc-900 border border-zinc-700/80 space-y-2.5 shadow-inner">
+                                      {/* Mock Section 1: Sparklines */}
+                                      <div style={{ paddingTop: `${previewPresetItem.sections.paddingSparklines ?? 10}px`, paddingBottom: `${previewPresetItem.sections.paddingSparklines ?? 10}px` }} className="transition-all">
+                                        <div className="flex items-center justify-between text-[9px] font-semibold text-zinc-200">
+                                          <span>📊 Sparklines & Performance Trend</span>
+                                          <span className="text-[8px] text-amber-300/80 font-mono">Padding: {previewPresetItem.sections.paddingSparklines ?? 10}px</span>
+                                        </div>
+                                        <div className="h-4 bg-zinc-800/80 rounded mt-1 opacity-70 flex items-center px-2 text-[8px] text-zinc-400 font-mono">Trend chart preview placeholder</div>
+                                      </div>
+
+                                      {/* Mock Divider 1 */}
+                                      <div
+                                        style={{
+                                          borderTopWidth: `${previewPresetItem.sections.dividerThickness ?? 1.5}px`,
+                                          borderTopStyle: (previewPresetItem.sections.dividerStyle as any) || 'solid',
+                                          borderTopColor: previewPresetItem.sections.dividerColor || '#cbd5e1'
+                                        }}
+                                      />
+
+                                      {/* Mock Section 2: Mutation History */}
+                                      <div style={{ paddingTop: `${previewPresetItem.sections.paddingMutationHistory ?? 10}px`, paddingBottom: `${previewPresetItem.sections.paddingMutationHistory ?? 10}px` }} className="transition-all">
+                                        <div className="flex items-center justify-between text-[9px] font-semibold text-zinc-200">
+                                          <span>🔄 State Mutation Audit Log</span>
+                                          <span className="text-[8px] text-amber-300/80 font-mono">Padding: {previewPresetItem.sections.paddingMutationHistory ?? 10}px</span>
+                                        </div>
+                                        <div className="h-4 bg-zinc-800/80 rounded mt-1 opacity-70 flex items-center px-2 text-[8px] text-zinc-400 font-mono">Audit table preview placeholder</div>
+                                      </div>
+
+                                      {/* Mock Divider 2 */}
+                                      <div
+                                        style={{
+                                          borderTopWidth: `${previewPresetItem.sections.dividerThickness ?? 1.5}px`,
+                                          borderTopStyle: (previewPresetItem.sections.dividerStyle as any) || 'solid',
+                                          borderTopColor: previewPresetItem.sections.dividerColor || '#cbd5e1'
+                                        }}
+                                      />
+
+                                      {/* Mock Section 3: Recommendations */}
+                                      <div style={{ paddingTop: `${previewPresetItem.sections.paddingRecommendations ?? 10}px`, paddingBottom: `${previewPresetItem.sections.paddingRecommendations ?? 10}px` }} className="transition-all">
+                                        <div className="flex items-center justify-between text-[9px] font-semibold text-zinc-200">
+                                          <span>💡 AI Optimization Recommendations</span>
+                                          <span className="text-[8px] text-amber-300/80 font-mono">Padding: {previewPresetItem.sections.paddingRecommendations ?? 10}px</span>
+                                        </div>
+                                        <div className="h-4 bg-zinc-800/80 rounded mt-1 opacity-70 flex items-center px-2 text-[8px] text-zinc-400 font-mono">Recommendations list preview placeholder</div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center justify-between text-[8.5px] text-zinc-400 px-1 pt-0.5">
+                                      <span>Style: <strong className="text-amber-300 uppercase">{previewPresetItem.sections.dividerStyle || 'solid'}</strong></span>
+                                      <span>Thickness: <strong className="text-amber-300">{previewPresetItem.sections.dividerThickness ?? 1.5}px</strong></span>
+                                      <span className="flex items-center gap-1">Color: <span className="w-2.5 h-2.5 rounded inline-block border border-zinc-600" style={{ backgroundColor: previewPresetItem.sections.dividerColor || '#cbd5e1' }} /> <strong className="text-amber-300">{previewPresetItem.sections.dividerColor || '#cbd5e1'}</strong></span>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between border-b border-amber-500/30 pb-1">
+                                    <div className="flex items-center gap-1.5 text-amber-300 font-bold">
+                                      <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                      <span>Preset Preview: {previewPresetItem.name}</span>
+                                      <span className="text-[8.5px] px-1.5 py-0.2 rounded bg-amber-900/50 text-amber-200 border border-amber-500/40">
+                                        Folder: {previewPresetItem.folder || 'General'}
+                                      </span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => setPreviewPresetItem(null)}
+                                      className="text-amber-400 hover:text-amber-200 text-[10px] cursor-pointer"
+                                      title="Close preview"
+                                    >
+                                      ✕ Close
+                                    </button>
+                                  </div>
+
+                                  {/* Highlights: Padding, Style, Color */}
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-zinc-300">
+                                    <div className="p-2 rounded bg-zinc-900/90 border border-zinc-800 space-y-1">
+                                      <div className="text-amber-400 font-semibold text-[9.5px]">🎨 Divider Configuration</div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Style:</span>
+                                        <span className="font-mono text-zinc-200 uppercase">{previewPresetItem.sections.dividerStyle || 'solid'}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Thickness:</span>
+                                        <span className="font-mono text-zinc-200">{previewPresetItem.sections.dividerThickness ?? 1.5}px</span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Color:</span>
+                                        <div className="flex items-center gap-1">
+                                          <span
+                                            className="w-3 h-3 rounded border border-zinc-600 inline-block"
+                                            style={{ backgroundColor: previewPresetItem.sections.dividerColor || '#cbd5e1' }}
+                                          />
+                                          <span className="font-mono text-zinc-200">{previewPresetItem.sections.dividerColor || '#cbd5e1'}</span>
+                                        </div>
+                                      </div>
+                                      {/* Live Divider Preview Line */}
+                                      <div className="pt-1">
+                                        <div className="text-[8px] text-zinc-500 mb-0.5">Live Divider Render:</div>
+                                        <div
+                                          className="w-full"
+                                          style={{
+                                            borderTopWidth: `${previewPresetItem.sections.dividerThickness ?? 1.5}px`,
+                                            borderTopStyle: (previewPresetItem.sections.dividerStyle as any) || 'solid',
+                                            borderTopColor: previewPresetItem.sections.dividerColor || '#cbd5e1'
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="p-2 rounded bg-zinc-900/90 border border-zinc-800 space-y-1">
+                                      <div className="text-amber-400 font-semibold text-[9.5px]">📐 Section Padding Settings</div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Sparklines Padding:</span>
+                                        <span className="font-mono text-zinc-200">{previewPresetItem.sections.paddingSparklines ?? 10}px</span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Mutation History Padding:</span>
+                                        <span className="font-mono text-zinc-200">{previewPresetItem.sections.paddingMutationHistory ?? 10}px</span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Recommendations Padding:</span>
+                                        <span className="font-mono text-zinc-200">{previewPresetItem.sections.paddingRecommendations ?? 10}px</span>
+                                      </div>
+                                      <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-zinc-400">Executive Summary Padding:</span>
+                                        <span className="font-mono text-zinc-200">{previewPresetItem.sections.paddingExecutiveSummary ?? 10}px</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-end gap-2 pt-1">
+                                    <button
+                                      id="btn-load-previewed-preset"
+                                      data-testid="btn-load-previewed-preset"
+                                      type="button"
+                                      onClick={() => {
+                                        handleLoadExportPreset(previewPresetItem);
+                                        setPreviewPresetItem(null);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-zinc-950 font-bold text-[10px] transition-colors cursor-pointer"
+                                    >
+                                      <FolderOpen className="w-3 h-3" />
+                                      <span>Load This Preset Now</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
                               </div>
 
-                              {/* Stakeholder Audience & Template Context Banner */}
-                              <div className="flex items-start justify-between gap-2 px-2 py-1.5 rounded bg-zinc-900/90 border border-zinc-800/80 text-[10px]">
-                                <div className="flex flex-col gap-0.5">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="font-semibold text-zinc-200 flex items-center gap-1">
-                                      <span>{activeTemplateMeta.name}</span>
+                              {/* Global CSV Default Naming Pattern Setting */}
+                              <div
+                                id="container-pdf-global-naming-pattern"
+                                data-testid="container-pdf-global-naming-pattern"
+                                className="p-2.5 rounded-lg bg-zinc-950/80 border border-zinc-800/90 flex flex-col gap-2 shadow-xs transition-colors focus-within:border-amber-500/50"
+                              >
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <div className="flex items-center gap-1.5 text-zinc-200 text-[10.5px] font-semibold">
+                                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                    <span>Global CSV Filename Naming Pattern:</span>
+                                    <span className="text-[9.5px] font-normal text-zinc-400 hidden sm:inline">
+                                      Define standard filename pattern (e.g., {'{section_name}_{timestamp}'}) for all exported section CSVs
                                     </span>
-                                    <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                                      <Users className="w-2.5 h-2.5" />
-                                      <span>Audience: {activeTemplateMeta.audience}</span>
-                                    </span>
-                                    {currentMatchedTemplateId === 'custom' && (
-                                      <span className="text-[8.5px] font-mono px-1 py-0.2 rounded bg-zinc-800 text-zinc-400 border border-zinc-700">
-                                        Modified Settings
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {patternAppliedSuccess && (
+                                      <span
+                                        id="badge-naming-pattern-applied-success"
+                                        data-testid="badge-naming-pattern-applied-success"
+                                        className="text-[9px] font-mono px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/50 flex items-center gap-1 font-semibold animate-fadeIn"
+                                      >
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                        <span>Applied to all cards!</span>
                                       </span>
                                     )}
+                                    <button
+                                      id="btn-apply-naming-pattern-all-cards"
+                                      data-testid="btn-apply-naming-pattern-all-cards"
+                                      type="button"
+                                      onClick={handleApplyNamingPatternToAllCards}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-zinc-950 font-semibold text-[10px] transition-colors cursor-pointer shadow-xs"
+                                      title="Apply this global naming pattern to all existing section cards in one click"
+                                    >
+                                      <Sparkles className="w-3 h-3" />
+                                      <span>Apply Pattern to All Existing Cards</span>
+                                    </button>
+                                    <button
+                                      id="btn-reset-naming-pattern-all-cards"
+                                      data-testid="btn-reset-naming-pattern-all-cards"
+                                      type="button"
+                                      onClick={handleResetAllFilenamePrefixes}
+                                      className="px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 text-[10px] font-medium transition-colors cursor-pointer"
+                                      title="Clear custom prefixes from all cards to use dynamic global pattern"
+                                    >
+                                      Reset Card Prefixes
+                                    </button>
                                   </div>
-                                  <span className="text-[9.5px] text-zinc-400 leading-tight">
-                                    {activeTemplateMeta.description}
-                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                                  <div className="relative flex-1 min-w-[220px]">
+                                    <input
+                                      id="input-global-csv-naming-pattern"
+                                      data-testid="input-global-csv-naming-pattern"
+                                      type="text"
+                                      aria-label="Global CSV Filename Naming Pattern"
+                                      value={globalCsvNamingPattern}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setGlobalCsvNamingPattern(val);
+                                        setPdfExportSections((prev) => ({
+                                          ...prev,
+                                          globalCsvNamingPattern: val
+                                        }));
+                                      }}
+                                      placeholder="{section_name}_{timestamp}"
+                                      className="w-full px-2.5 py-1.5 rounded-md bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 text-zinc-100 font-mono text-[10.5px] shadow-xs"
+                                    />
+                                  </div>
+
+                                  <div className="flex items-center gap-1.5 text-[9.5px] font-mono text-zinc-400 shrink-0">
+                                    <span className="text-zinc-500">Live Preview:</span>
+                                    <span
+                                      id="preview-global-csv-naming-pattern"
+                                      data-testid="preview-global-csv-naming-pattern"
+                                      className="px-2 py-0.5 rounded bg-zinc-900 text-amber-300 border border-zinc-800 font-semibold"
+                                      title="Live evaluated preview for Trend Sparklines CSV"
+                                    >
+                                      {resolveNamingPattern(globalCsvNamingPattern, 'sparklines')}.csv
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 text-[9.5px] text-zinc-400 flex-wrap">
+                                  <span className="text-zinc-500 font-mono text-[9px]">Pattern variables:</span>
+                                  {[
+                                    { var: '{section_name}', desc: 'Section slug (sparklines, mutation_history, etc.)' },
+                                    { var: '{timestamp}', desc: 'Timestamp (YYYYMMDD_HHMMSS)' },
+                                    { var: '{date}', desc: 'Calendar date (YYYY-MM-DD)' },
+                                    { var: '{records}', desc: 'Telemetry record count' }
+                                  ].map((v) => (
+                                    <button
+                                      key={v.var}
+                                      type="button"
+                                      onClick={() => {
+                                        if (!globalCsvNamingPattern.includes(v.var)) {
+                                          setGlobalCsvNamingPattern((prev) => prev ? `${prev}_${v.var}` : v.var);
+                                        }
+                                      }}
+                                      className="font-mono text-zinc-300 hover:text-amber-300 text-[9px] bg-zinc-900 hover:bg-zinc-800 px-1.5 py-0.2 rounded border border-zinc-800 transition-colors cursor-pointer"
+                                      title={v.desc}
+                                    >
+                                      {v.var}
+                                    </button>
+                                  ))}
+
+                                  <span className="text-zinc-500 font-mono text-[9px] ml-2">Presets:</span>
+                                  {[
+                                    '{section_name}_{timestamp}',
+                                    '{section_name}_{date}',
+                                    '{section_name}_{records}rows',
+                                    'export_{section_name}_{timestamp}'
+                                  ].map((preset) => (
+                                    <button
+                                      key={preset}
+                                      type="button"
+                                      onClick={() => {
+                                        setGlobalCsvNamingPattern(preset);
+                                        setPdfExportSections((prev) => ({
+                                          ...prev,
+                                          globalCsvNamingPattern: preset
+                                        }));
+                                      }}
+                                      className={`px-1.5 py-0.2 rounded font-mono text-[9px] cursor-pointer transition-colors border ${
+                                        globalCsvNamingPattern === preset
+                                          ? 'bg-amber-500/25 border-amber-500/60 text-amber-200 font-semibold'
+                                          : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                                      }`}
+                                    >
+                                      {preset}
+                                    </button>
+                                  ))}
                                 </div>
                               </div>
-                            </div>
 
-                            {/* Section Search Filter Input */}
-                            <div className="relative flex items-center">
-                              <Search className="absolute left-2.5 w-3.5 h-3.5 text-zinc-400 pointer-events-none" />
-                              <input
-                                id="input-pdf-section-search"
-                                data-testid="input-pdf-section-search"
-                                type="text"
-                                placeholder="Filter PDF section cards by title, badge, or description..."
-                                value={pdfSectionSearchQuery}
-                                onChange={(e) => setPdfSectionSearchQuery(e.target.value)}
-                                className="w-full pl-8 pr-7 py-1.5 rounded bg-zinc-950/80 border border-zinc-800 text-zinc-200 placeholder:text-zinc-500 text-[10.5px] focus:outline-none focus:border-amber-500/80 transition-colors shadow-xs"
-                              />
-                              {pdfSectionSearchQuery && (
-                                <button
-                                  type="button"
-                                  onClick={() => setPdfSectionSearchQuery('')}
-                                  className="absolute right-2 p-0.5 rounded text-zinc-400 hover:text-white transition-colors cursor-pointer"
-                                  title="Clear search filter"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              )}
-                            </div>
-
-                            {/* Section Reordering Control Banner */}
-                            <div className="flex items-center justify-between text-[10px] px-2 py-1.5 rounded bg-zinc-950/70 border border-zinc-800/80 flex-wrap gap-2">
-                              <div className="flex items-center gap-1.5 text-zinc-300">
-                                <ArrowUpDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                <span className="font-semibold text-zinc-200">Drag-and-Drop Section Layout:</span>
-                                <span className="text-zinc-400 text-[9.5px]">
-                                  Drag cards or use arrows to visually customize report section order
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {isOrderCustomized && (
-                                  <span
-                                    id="badge-pdf-custom-order"
-                                    data-testid="badge-pdf-custom-order"
-                                    className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold"
-                                  >
-                                    Custom Order Active
-                                  </span>
-                                )}
-                                <button
-                                  id="btn-copy-pdf-settings"
-                                   data-testid="btn-copy-pdf-settings"
-                                   type="button"
-                                   onClick={handleCopyPdfSettings}
-                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[9.5px] font-medium transition-colors cursor-pointer mr-1"
-                                   title="Copy current PDF export configuration JSON to clipboard"
+                             {/* Section Configuration Quick Search Area */}
+                             <div
+                               id="container-pdf-section-quick-search"
+                               data-testid="container-pdf-section-quick-search"
+                               className="p-2.5 rounded-lg bg-zinc-950/80 border border-zinc-800/90 flex flex-col gap-2 shadow-xs transition-colors focus-within:border-amber-500/50"
+                             >
+                               <div className="flex items-center justify-between gap-2 flex-wrap">
+                                 <label
+                                   htmlFor="input-pdf-section-quick-search"
+                                   className="flex items-center gap-1.5 text-[10.5px] font-semibold text-zinc-200 cursor-pointer select-none"
                                  >
-                                   {copiedPdfSettings ? (
+                                   <Search className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                   <span>Quick Search:</span>
+                                   <span className="text-[9.5px] font-normal text-zinc-400 hidden sm:inline">
+                                     Filter section cards instantly by keyword while dragging &amp; reordering
+                                   </span>
+                                 </label>
+
+                                 <div className="flex items-center gap-1.5">
+                                   {pdfSectionSearchQuery.trim() ? (
+                                     <span
+                                       id="badge-quick-search-results-count"
+                                       data-testid="badge-quick-search-results-count"
+                                       className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1"
+                                     >
+                                       <span>{filteredSectionOrder.length} of {currentSectionOrder.length} sections matched</span>
+                                     </span>
+                                   ) : (
+                                     <span className="text-[9px] font-mono text-zinc-500">
+                                       {currentSectionOrder.length} sections available
+                                     </span>
+                                   )}
+                                 </div>
+                               </div>
+
+                               <div className="relative flex items-center">
+                                 <Search className="absolute left-2.5 w-3.5 h-3.5 text-zinc-400 pointer-events-none" />
+                                 <input
+                                   id="input-pdf-section-quick-search"
+                                   data-testid="input-pdf-section-quick-search"
+                                   data-alt-id="input-pdf-section-search"
+                                   aria-label="Quick Search section cards"
+                                   type="text"
+                                   placeholder="Quick Search sections by title, tag, or metric (e.g., Sparklines, Latency, Audit, Summary)..."
+                                   value={pdfSectionSearchQuery}
+                                   onChange={(e) => setPdfSectionSearchQuery(e.target.value)}
+                                   className="w-full pl-8 pr-8 py-1.5 rounded bg-zinc-900 border border-zinc-700/80 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-500/40 text-zinc-100 placeholder:text-zinc-500 text-[10.5px] transition-colors shadow-xs"
+                                 />
+                                 {pdfSectionSearchQuery && (
+                                   <button
+                                     id="btn-clear-pdf-section-quick-search"
+                                     data-testid="btn-clear-pdf-section-quick-search"
+                                     type="button"
+                                     onClick={() => setPdfSectionSearchQuery('')}
+                                     className="absolute right-2 p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
+                                     title="Clear Quick Search filter"
+                                     aria-label="Clear Quick Search"
+                                   >
+                                     <X className="w-3 h-3" />
+                                   </button>
+                                 )}
+                               </div>
+
+                               {/* Quick Keyword Filter Chips */}
+                               <div className="flex items-center gap-1.5 text-[9.5px] text-zinc-400 flex-wrap">
+                                 <span className="text-zinc-500 font-mono text-[9px]">Suggested filters:</span>
+                                 {[
+                                   { label: 'Sparklines', query: 'Sparklines' },
+                                   { label: 'Mutation', query: 'Mutation' },
+                                   { label: 'Recommendations', query: 'Recommendations' },
+                                   { label: 'Executive', query: 'Executive' },
+                                   { label: 'Metrics', query: 'Metrics' },
+                                   { label: 'Logs', query: 'Logs' }
+                                 ].map((chip) => {
+                                   const isActive = pdfSectionSearchQuery.toLowerCase() === chip.query.toLowerCase();
+                                   return (
+                                     <button
+                                       key={chip.label}
+                                       type="button"
+                                       onClick={() => {
+                                         setPdfSectionSearchQuery(isActive ? '' : chip.query);
+                                       }}
+                                       className={`px-1.5 py-0.2 rounded text-[9px] font-medium transition-colors cursor-pointer border ${
+                                         isActive
+                                           ? 'bg-amber-500/25 border-amber-500/60 text-amber-200 font-semibold'
+                                           : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                                       }`}
+                                     >
+                                       {chip.label}
+                                     </button>
+                                   );
+                                 })}
+                                 {pdfSectionSearchQuery && (
+                                   <button
+                                     type="button"
+                                     onClick={() => setPdfSectionSearchQuery('')}
+                                     className="ml-auto text-amber-400 hover:text-amber-300 underline text-[9px] cursor-pointer"
+                                   >
+                                     Reset Filter
+                                   </button>
+                                 )}
+                               </div>
+                             </div>
+
+                             {/* Section Reordering Control Banner */}
+                             <div className="flex items-center justify-between text-[10px] px-2 py-1.5 rounded bg-zinc-950/70 border border-zinc-800/80 flex-wrap gap-2">
+                               <div className="flex items-center gap-1.5 text-zinc-300">
+                                 <ArrowUpDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                 <span className="font-semibold text-zinc-200">Drag-and-Drop Section Layout:</span>
+                                 <span className="text-zinc-400 text-[9.5px]">
+                                   Drag cards or use arrows to visually customize report section order
+                                 </span>
+                               </div>
+                               <div className="flex items-center gap-2">
+                                 {isOrderCustomized && (
+                                   <span
+                                     id="badge-pdf-custom-order"
+                                     data-testid="badge-pdf-custom-order"
+                                     className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold"
+                                   >
+                                     Custom Order Active
+                                   </span>
+                                 )}
+                                 <button
+                                   id="btn-copy-pdf-settings"
+                                    data-testid="btn-copy-pdf-settings"
+                                    type="button"
+                                    onClick={handleCopyPdfSettings}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[9.5px] font-medium transition-colors cursor-pointer mr-1"
+                                    title="Copy current PDF export configuration JSON to clipboard"
+                                  >
+                                    {copiedPdfSettings ? (
+                                      <>
+                                        <ClipboardCheck className="w-2.5 h-2.5 text-emerald-400" />
+                                        <span className="text-emerald-300 font-semibold">Copied JSON!</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Copy className="w-2.5 h-2.5 text-amber-400" />
+                                        <span>Copy Settings</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    id="btn-reset-all-pdf-layouts"
+                                    data-testid="btn-reset-all-pdf-layouts"
+                                    type="button"
+                                    onClick={handleResetAllPdfLayouts}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-600/20 hover:bg-amber-600/30 active:bg-amber-600/40 text-amber-300 hover:text-amber-200 border border-amber-500/40 text-[9.5px] font-semibold transition-colors cursor-pointer mr-1"
+                                    title="Reset section order, inclusion toggles, and page breaks for all cards simultaneously"
+                                  >
+                                    <RefreshCw className="w-2.5 h-2.5" />
+                                    <span>Reset All Layouts</span>
+                                  </button>
+                                  <button
+                                    id="btn-reset-pdf-section-order"
+                                   data-testid="btn-reset-pdf-section-order"
+                                   type="button"
+                                   onClick={handleResetPdfSectionOrder}
+                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[9.5px] font-medium transition-colors cursor-pointer"
+                                   title="Reset sections to default sequential order"
+                                 >
+                                   <RotateCcw className="w-2.5 h-2.5 text-amber-400" />
+                                   <span>Reset Order</span>
+                                 </button>
+                               </div>
+                             </div>
+
+                             {/* Drag-and-drop Reorderable Section Cards */}
+                             <div
+                               id="container-pdf-export-sections"
+                               data-testid="container-pdf-export-sections"
+                               className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5"
+                             >
+                               {draggedPdfSectionIndex !== null && (
+                                 <div
+                                   id="banner-pdf-dragging-active"
+                                   data-testid="banner-pdf-dragging-active"
+                                   className="col-span-full px-2.5 py-1.5 rounded-lg bg-amber-500/15 border border-dashed border-amber-500/60 text-amber-300 text-[10px] font-medium flex items-center justify-between animate-pulse flex-wrap gap-1 shadow-xs"
+                                 >
+                                   <div className="flex items-center gap-1.5">
+                                     <span>📍 Dragging section {draggedPdfSectionId ? `"${PDF_SECTION_CONFIG_ITEMS[draggedPdfSectionId.includes('_dup_') ? (draggedPdfSectionId.split('_dup_')[0] as DiagnosticPdfSectionId) : (draggedPdfSectionId as DiagnosticPdfSectionId)]?.title || draggedPdfSectionId}"` : ''}</span>
+                                     <span className="text-zinc-400 font-normal">• Drop over any visible section card to reorder position</span>
+                                   </div>
+                                   {pdfSectionSearchQuery.trim() ? (
+                                     <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-200 border border-amber-500/40">
+                                       Quick Search Active: &quot;{pdfSectionSearchQuery}&quot; ({filteredSectionOrder.length} visible)
+                                     </span>
+                                   ) : (
+                                     <span className="font-mono text-[9px]">Source Position: #{draggedPdfSectionIndex + 1}</span>
+                                   )}
+                                 </div>
+                               )}
+                               {filteredSectionOrder.length === 0 ? (
+                                 <div
+                                   id="empty-pdf-section-quick-search-results"
+                                   data-testid="empty-pdf-section-quick-search-results"
+                                   className="col-span-full py-6 text-center bg-zinc-950/60 rounded border border-zinc-800 text-zinc-400 text-[11px] flex flex-col items-center justify-center gap-1.5 shadow-xs"
+                                 >
+                                   {pdfDividerColorFilter !== 'all' ? (
                                      <>
-                                       <ClipboardCheck className="w-2.5 h-2.5 text-emerald-400" />
-                                       <span className="text-emerald-300 font-semibold">Copied JSON!</span>
+                                       <Palette className="w-5 h-5 text-amber-400/80 mb-0.5" />
+                                       <span>
+                                         No matching section cards with divider color &ldquo;
+                                         <span className="text-amber-300 font-semibold">
+                                           {DIVIDER_COLOR_OPTIONS.find((c) => c.value.toLowerCase() === pdfDividerColorFilter.toLowerCase())?.label || pdfDividerColorFilter}
+                                         </span>
+                                         &rdquo;
+                                       </span>
+                                       <span className="text-[10px] text-zinc-500">
+                                         Try selecting &ldquo;All Colors&rdquo; or change divider colors using the selector on individual cards
+                                       </span>
+                                       <button
+                                         id="btn-clear-empty-color-filter"
+                                         data-testid="btn-clear-empty-color-filter"
+                                         type="button"
+                                         onClick={() => {
+                                           setPdfDividerColorFilter('all');
+                                           setPdfSectionSearchQuery('');
+                                         }}
+                                         className="mt-1 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-zinc-700 text-[10px] font-medium cursor-pointer transition-colors"
+                                       >
+                                         Show All Section Cards
+                                       </button>
                                      </>
                                    ) : (
                                      <>
-                                       <Copy className="w-2.5 h-2.5 text-amber-400" />
-                                       <span>Copy Settings</span>
+                                       <Search className="w-5 h-5 text-zinc-600 mb-0.5" />
+                                       <span>No matching PDF section cards found for &ldquo;<span className="text-amber-300 font-semibold">{pdfSectionSearchQuery}</span>&rdquo;</span>
+                                       <span className="text-[10px] text-zinc-500">Try searching for keywords like &ldquo;Sparklines&rdquo;, &ldquo;History&rdquo;, &ldquo;Metrics&rdquo;, or &ldquo;Audit&rdquo;</span>
+                                       <button
+                                         id="btn-clear-empty-quick-search"
+                                         data-testid="btn-clear-empty-quick-search"
+                                         type="button"
+                                         onClick={() => setPdfSectionSearchQuery('')}
+                                         className="mt-1 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-amber-300 hover:text-amber-200 border border-zinc-700 text-[10px] font-medium cursor-pointer transition-colors"
+                                       >
+                                         Clear Quick Search filter
+                                       </button>
                                      </>
                                    )}
-                                 </button>
-                                 <button
-                                   id="btn-reset-all-pdf-layouts"
-                                   data-testid="btn-reset-all-pdf-layouts"
-                                   type="button"
-                                   onClick={handleResetAllPdfLayouts}
-                                   className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-600/20 hover:bg-amber-600/30 active:bg-amber-600/40 text-amber-300 hover:text-amber-200 border border-amber-500/40 text-[9.5px] font-semibold transition-colors cursor-pointer mr-1"
-                                   title="Reset section order, inclusion toggles, and page breaks for all cards simultaneously"
-                                 >
-                                   <RefreshCw className="w-2.5 h-2.5" />
-                                   <span>Reset All Layouts</span>
-                                 </button>
-                                 <button
-                                   id="btn-reset-pdf-section-order"
-                                  data-testid="btn-reset-pdf-section-order"
-                                  type="button"
-                                  onClick={handleResetPdfSectionOrder}
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-white border border-zinc-700 hover:border-zinc-600 text-[9.5px] font-medium transition-colors cursor-pointer"
-                                  title="Reset sections to default sequential order"
-                                >
-                                  <RotateCcw className="w-2.5 h-2.5 text-amber-400" />
-                                  <span>Reset Order</span>
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Drag-and-drop Reorderable Section Cards */}
-                            <div
-                              id="container-pdf-export-sections"
-                              data-testid="container-pdf-export-sections"
-                              className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5"
-                            >
-                              {draggedPdfSectionIndex !== null && (
-                                <div className="col-span-full px-2.5 py-1 rounded bg-amber-500/15 border border-dashed border-amber-500/50 text-amber-300 text-[10px] font-medium flex items-center justify-between animate-pulse">
-                                  <span>📍 Dragging section. Drop over any card to reorder position.</span>
-                                  <span className="font-mono text-[9px]">Source Index: #{draggedPdfSectionIndex + 1}</span>
-                                </div>
-                              )}
-                              {filteredSectionOrder.length === 0 ? (
-                                <div className="col-span-full py-6 text-center bg-zinc-950/60 rounded border border-zinc-800 text-zinc-400 text-[11px] flex flex-col items-center justify-center gap-1">
-                                  <span>No matching PDF section cards found for &ldquo;{pdfSectionSearchQuery}&rdquo;</span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setPdfSectionSearchQuery('')}
-                                    className="text-amber-400 hover:text-amber-300 underline text-[10px] cursor-pointer mt-0.5"
-                                  >
-                                    Clear search filter
-                                  </button>
-                                </div>
-                              ) : (
-                                filteredSectionOrder.map((sectionId, index) => {
-                                  const item = PDF_SECTION_CONFIG_ITEMS[sectionId];
+                                 </div>
+                               ) : (
+                                 (() => {
+                                   const renderCard = (sectionId: string, index: number) => {
+                                  const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+                                  const item = PDF_SECTION_CONFIG_ITEMS[baseId as DiagnosticPdfSectionId];
                                   if (!item) return null;
+                                  const isDuplicate = sectionId.includes('_dup_');
+                                  const displayTitle = isDuplicate ? `${item.title} (Copy)` : item.title;
                                   const isIncluded = Boolean(pdfExportSections[item.includeKey]);
                                   const isBreak = Boolean(pdfExportSections[item.breakKey]);
+                                  const isDivider = (pdfExportSections as any)[item.showDividerKey] !== false;
                                   const isDragging = draggedPdfSectionIndex === index;
                                   const isDragOver = dragOverPdfSectionIndex === index;
 
                                   return (
                                     <div
-                                      key={item.id}
-                                      id={`card-pdf-section-${item.id}`}
-                                      data-testid={`card-pdf-section-${item.id}`}
-                                      data-section-id={item.id}
+                                      key={sectionId}
+                                      id={`card-pdf-section-${sectionId}`}
+                                      data-testid={`card-pdf-section-${sectionId}`}
+                                      data-section-id={sectionId}
                                       data-order-index={index}
                                       draggable={true}
-                                      onDragStart={(e) => handlePdfSectionDragStart(e, index)}
-                                      onDragOver={(e) => handlePdfSectionDragOver(e, index)}
-                                      onDragEnter={(e) => handlePdfSectionDragEnter(e, index)}
-                                      onDragLeave={(e) => handlePdfSectionDragLeave(e, index)}
-                                      onDrop={(e) => handlePdfSectionDrop(e, index)}
+                                      onDragStart={(e) => handlePdfSectionDragStart(e, index, sectionId)}
+                                      onDragOver={(e) => handlePdfSectionDragOver(e, index, sectionId)}
+                                      onDragEnter={(e) => handlePdfSectionDragEnter(e, index, sectionId)}
+                                      onDragLeave={(e) => handlePdfSectionDragLeave(e, index, sectionId)}
+                                      onDrop={(e) => handlePdfSectionDrop(e, index, sectionId)}
                                       onDragEnd={handlePdfSectionDragEnd}
-                                      className={`relative group flex flex-col justify-between p-2 pl-3.5 rounded overflow-hidden transition-all select-none ${
+                                      className={`relative group flex flex-col justify-between p-2 pl-10 rounded overflow-hidden transition-all select-none ${
                                         isDragging
                                           ? 'opacity-30 border-2 border-dashed border-amber-500 bg-amber-950/25 scale-[0.98]'
                                           : isDragOver
@@ -5627,6 +7725,28 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                     >
                                       {/* Left Edge Categorical Indicator Bar */}
                                       <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${item.barColor} opacity-90`} />
+
+                                      {/* Left Edge Explicit Drag Handle Visual Indicator */}
+                                      <div
+                                        id={`drag-handle-${sectionId}`}
+                                        data-testid={`drag-handle-${item.id}`}
+                                        data-testid-section={`drag-handle-${sectionId}`}
+                                        data-drag-handle="true"
+                                        draggable={true}
+                                        onDragStart={(e) => handlePdfSectionDragStart(e, index, sectionId)}
+                                        className="absolute left-1.5 top-0 bottom-0 w-7 flex flex-col items-center justify-center gap-1 cursor-grab active:cursor-grabbing text-zinc-400 hover:text-amber-400 group-hover:text-zinc-300 hover:bg-amber-500/15 active:bg-amber-500/25 border-r border-zinc-800/80 group-hover:border-zinc-700/80 bg-zinc-950/60 transition-all z-10 select-none shadow-inner"
+                                        title={`Drag Handle: Click and drag to reorder ${displayTitle}`}
+                                        aria-label={`Drag Handle: Click and drag to reorder ${displayTitle}`}
+                                      >
+                                        <GripVertical className="w-4 h-4 shrink-0 transition-transform group-hover:scale-110 text-zinc-400 group-hover:text-amber-400" />
+                                        <span
+                                          data-testid={`drag-handle-text-${item.id}`}
+                                          className="text-[7px] font-mono font-bold tracking-tighter text-zinc-400 group-hover:text-amber-300 uppercase leading-none select-none"
+                                        >
+                                          DRAG
+                                        </span>
+                                        <span className="sr-only">Drag Handle: Click and drag to reorder ${displayTitle}</span>
+                                      </div>
 
                                       {/* Hover-activated Pro-Tip Tooltip Banner */}
                                       <div className="absolute inset-x-2 bottom-2 z-30 p-2 rounded bg-zinc-900/95 border border-amber-500/50 shadow-2xl text-[10px] text-zinc-200 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-start gap-1.5 backdrop-blur-sm">
@@ -5646,7 +7766,7 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-zinc-800/70 text-[9.5px]">
                                           <div className="flex items-center gap-1.5">
                                             <div
-                                              data-testid={`drag-handle-${item.id}`}
+                                              data-testid={`drag-handle-header-${item.id}`}
                                               className="cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-zinc-500 hover:text-amber-400 transition-colors flex items-center shrink-0"
                                               title="Click & drag to reorder this section in the generated PDF report"
                                               aria-label={`Drag handle to reorder ${item.title}`}
@@ -5660,6 +7780,163 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                             >
                                               Position #{index + 1}
                                             </span>
+
+                                            {/* Show Dividers Toggle in Card Header */}
+                                            {(() => {
+                                              const toggleInputId = isDuplicate ? `${item.inputDividerToggleId}-${sectionId}` : item.inputDividerToggleId;
+                                              return (
+                                                <label
+                                                  htmlFor={toggleInputId}
+                                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8.5px] font-medium transition-colors cursor-pointer select-none ml-1 ${
+                                                    isDivider
+                                                      ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
+                                                      : 'bg-zinc-800/80 border-zinc-700/70 text-zinc-400 hover:text-zinc-200'
+                                                  } ${!isIncluded ? 'opacity-40 pointer-events-none' : ''}`}
+                                                  title={`Controls whether a visible separator line is rendered between sections in the final PDF document after ${displayTitle}`}
+                                                  onClick={(e) => e.stopPropagation()}
+                                                >
+                                                  <input
+                                                    id={toggleInputId}
+                                                    data-testid={toggleInputId}
+                                                    type="checkbox"
+                                                    checked={isDivider}
+                                                    disabled={!isIncluded}
+                                                    aria-label={`Toggle horizontal separator line after ${displayTitle}`}
+                                                    onChange={(e) => {
+                                                      const val = e.target.checked;
+                                                      setPdfExportSections((prev) => ({ ...prev, [item.showDividerKey]: val }));
+                                                      handleGenerateSnapshot(item.id);
+                                                    }}
+                                                    className="accent-amber-500 w-2.5 h-2.5 rounded cursor-pointer"
+                                                  />
+                                                  <SeparatorHorizontal className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                                  <span>Show Dividers</span>
+                                                  {/* Small dynamic line preview showing style, color, and thickness */}
+                                                  <span
+                                                    id={`divider-line-preview-toggle-${sectionId}`}
+                                                    data-testid={`divider-line-preview-toggle-${item.id}`}
+                                                    data-testid-section={`divider-line-preview-toggle-${sectionId}`}
+                                                    className={`inline-block w-6 transition-all shrink-0 rounded-xs ml-0.5 ${
+                                                      !isDivider ? 'opacity-20 grayscale' : 'opacity-100'
+                                                    }`}
+                                                    style={{
+                                                      borderColor: isDivider ? ((pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1') : '#71717a',
+                                                      borderTopStyle: isDivider ? (String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase() === 'dashed' ? 'dashed' : String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase() === 'dotted' ? 'dotted' : 'solid') : 'solid',
+                                                      borderTopWidth: `${Math.max(1, Math.min(4, Math.round(Number((pdfExportSections as any)[item.dividerThicknessKey] ?? 1.5))))}px`,
+                                                      height: 0
+                                                    }}
+                                                    title={`Live Divider Preview: ${String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toUpperCase()} • ${(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'} • ${Number((pdfExportSections as any)[item.dividerThicknessKey] ?? 1.5)}px`}
+                                                    aria-label="Divider line preview"
+                                                  />
+                                                </label>
+                                              );
+                                            })()}
+                                            {isDivider && (
+                                              <select
+                                                id={`select-divider-color-${sectionId}`}
+                                                data-testid={`select-divider-color-${item.id}`}
+                                                value={(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'}
+                                                onChange={(e) => {
+                                                  const val = e.target.value;
+                                                  setPdfExportSections((prev) => ({ ...prev, [item.dividerColorKey]: val }));
+                                                  handleGenerateSnapshot(item.id);
+                                                }}
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="ml-1 bg-zinc-900 border border-zinc-700 hover:border-zinc-500 rounded px-1 py-0.5 text-[8.5px] font-mono text-zinc-300 focus:outline-none cursor-pointer"
+                                                title={`Divider line color for ${displayTitle}`}
+                                                aria-label={`Divider line color for ${displayTitle}`}
+                                              >
+                                                <option value="#cbd5e1">Slate (Default)</option>
+                                                <option value="#f59e0b">Amber</option>
+                                                <option value="#10b981">Emerald</option>
+                                                <option value="#3b82f6">Blue</option>
+                                                <option value="#71717a">Zinc</option>
+                                                <option value="#ef4444">Rose</option>
+                                              </select>
+                                            )}
+
+                                            {/* Dropdown configuration to toggle between Solid, Dashed, and Dotted line styles */}
+                                            <div className="flex items-center gap-1 ml-1.5">
+                                              <label
+                                                htmlFor={isDuplicate ? `select-divider-style-${sectionId}` : item.inputDividerStyleId}
+                                                className={`text-[8.5px] font-mono select-none flex items-center gap-0.5 ${
+                                                  !isIncluded ? 'opacity-40 pointer-events-none text-zinc-500' : 'text-zinc-400'
+                                                }`}
+                                                title={`Section divider line style for ${displayTitle}`}
+                                              >
+                                                <span className="font-medium hidden sm:inline">Style:</span>
+                                              </label>
+                                              <select
+                                                id={isDuplicate ? `select-divider-style-${sectionId}` : item.inputDividerStyleId}
+                                                data-testid={`select-divider-style-${item.id}`}
+                                                data-testid-section={`select-divider-style-${sectionId}`}
+                                                name={`divider-style-${sectionId}`}
+                                                disabled={!isIncluded}
+                                                value={String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase()}
+                                                onChange={(e) => {
+                                                  const val = e.target.value.toLowerCase();
+                                                  setPdfExportSections((prev) => ({
+                                                    ...prev,
+                                                    [item.dividerStyleKey]: val,
+                                                    [item.showDividerKey]: true
+                                                  }));
+                                                  handleGenerateSnapshot(item.id);
+                                                }}
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-1.5 py-0.5 text-[8.5px] font-mono text-zinc-200 cursor-pointer disabled:opacity-40 shadow-xs"
+                                                title={`Select section divider line style for ${displayTitle} (Solid, Dashed, Dotted)`}
+                                                aria-label={`Select section divider line style for ${displayTitle}`}
+                                              >
+                                                <option value="solid">Solid</option>
+                                                <option value="dashed">Dashed</option>
+                                                <option value="dotted">Dotted</option>
+                                              </select>
+
+                                              {/* Segmented Toggle Buttons for quick line style toggling */}
+                                              <div
+                                                id={`container-divider-style-${sectionId}`}
+                                                data-testid={`container-divider-style-${item.id}`}
+                                                role="group"
+                                                aria-label={`Toggle divider line style for ${displayTitle}`}
+                                                className="inline-flex items-center rounded bg-zinc-900 border border-zinc-700/80 p-0.5 text-[8px] font-mono select-none"
+                                                title={`Divider line style for ${displayTitle}: Solid, Dashed, or Dotted`}
+                                                onClick={(e) => e.stopPropagation()}
+                                              >
+                                                {(['Solid', 'Dashed', 'Dotted'] as const).map((styleOpt) => {
+                                                  const sVal = styleOpt.toLowerCase();
+                                                  const activeStyle = String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase();
+                                                  const isSelected = activeStyle === sVal;
+                                                  return (
+                                                    <button
+                                                      key={styleOpt}
+                                                      id={`btn-divider-style-${sVal}-${sectionId}`}
+                                                      data-testid={`btn-divider-style-${sVal}-${item.id}`}
+                                                      type="button"
+                                                      disabled={!isIncluded}
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setPdfExportSections((prev) => ({
+                                                          ...prev,
+                                                          [item.dividerStyleKey]: sVal,
+                                                          [item.showDividerKey]: true
+                                                        }));
+                                                        handleGenerateSnapshot(item.id);
+                                                      }}
+                                                      className={`px-1.5 py-0.2 rounded transition-all cursor-pointer font-medium ${
+                                                        isSelected
+                                                          ? 'bg-amber-500 text-zinc-950 font-bold shadow-xs'
+                                                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                                                      }`}
+                                                      title={`Switch divider line style to ${styleOpt}`}
+                                                      aria-label={`${styleOpt} divider style for ${displayTitle}`}
+                                                      aria-pressed={isSelected}
+                                                    >
+                                                      {styleOpt}
+                                                    </button>
+                                                  );
+                                                })}
+                                              </div>
+                                            </div>
                                           </div>
 
                                           <div className="flex items-center gap-0.5">
@@ -5667,10 +7944,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                               id={`btn-move-up-section-${item.id}`}
                                               data-testid={`btn-move-up-section-${item.id}`}
                                               type="button"
-                                              disabled={index === 0}
+                                              disabled={currentSectionOrder.indexOf(sectionId) <= 0}
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                handleMovePdfSection(index, index - 1);
+                                                handleMovePdfSectionBySectionId(sectionId, 'up');
                                               }}
                                               className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-25 disabled:pointer-events-none transition-colors cursor-pointer"
                                               title={`Move ${item.title} up in PDF report order`}
@@ -5682,10 +7959,10 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                               id={`btn-move-down-section-${item.id}`}
                                               data-testid={`btn-move-down-section-${item.id}`}
                                               type="button"
-                                              disabled={index === filteredSectionOrder.length - 1}
+                                              disabled={currentSectionOrder.indexOf(sectionId) >= currentSectionOrder.length - 1}
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                handleMovePdfSection(index, index + 1);
+                                                handleMovePdfSectionBySectionId(sectionId, 'down');
                                               }}
                                               className="p-0.5 rounded text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-25 disabled:pointer-events-none transition-colors cursor-pointer"
                                               title={`Move ${item.title} down in PDF report order`}
@@ -5721,6 +7998,48 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                                <FileSpreadsheet className="w-2.5 h-2.5 text-emerald-400" />
                                                <span>Export Section Data</span>
                                              </button>
+                                             <button
+                                               id={`btn-export-section-stats-${item.id}`}
+                                               data-testid={`btn-export-section-stats-${item.id}`}
+                                               type="button"
+                                               onClick={(e) => {
+                                                 e.stopPropagation();
+                                                 handleExportSectionStats(item.id);
+                                               }}
+                                               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-purple-300 border border-zinc-700 text-[8.5px] font-medium transition-colors cursor-pointer ml-1"
+                                               title={`Export configuration metadata (padding, note, delimiters, and break settings) for ${item.title} as a JSON file`}
+                                             >
+                                               <FileJson className="w-2.5 h-2.5 text-purple-400" />
+                                               <span>Export Section Stats</span>
+                                             </button>
+                                             <button
+                                               id={isDuplicate ? `btn-copy-json-${sectionId}` : `btn-copy-json-${item.id}`}
+                                               data-testid={`btn-copy-json-${item.id}`}
+                                               type="button"
+                                               onClick={(e) => {
+                                                 e.stopPropagation();
+                                                 handleCopySectionConfiguration(sectionId);
+                                               }}
+                                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8.5px] font-medium transition-all cursor-pointer ml-1 select-none ${
+                                                 copiedSectionConfigId === sectionId
+                                                   ? 'bg-emerald-950/80 border-emerald-500/60 text-emerald-300 shadow-xs ring-1 ring-emerald-500/30'
+                                                   : 'bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-amber-300 border-zinc-700'
+                                               }`}
+                                               title={`Copy JSON: Copy configuration state (padding, note, delimiter, metadata, dividers) for ${displayTitle} to clipboard as formatted JSON`}
+                                               aria-label={`Copy JSON for ${displayTitle}`}
+                                             >
+                                               {copiedSectionConfigId === sectionId ? (
+                                                 <>
+                                                   <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                                   <span className="text-emerald-300 font-semibold">Copied JSON!</span>
+                                                 </>
+                                               ) : (
+                                                 <>
+                                                   <Copy className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                                   <span>Copy JSON</span>
+                                                 </>
+                                               )}
+                                             </button>
                                           </div>
                                         </div>
 
@@ -5744,30 +8063,120 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                           />
                                            <div className="flex flex-col text-[10.5px] flex-1">
                                              <div className="flex items-center justify-between gap-1 w-full">
-                                               <span
-                                                 onClick={() => handleScrollToSection(item.id)}
-                                                 className="font-semibold text-zinc-200 flex items-center gap-1.5 cursor-pointer hover:text-amber-300 transition-colors group/title"
-                                                 title="Click to smoothly scroll and highlight card configuration"
-                                               >
-                                                 <item.icon className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover/title:scale-110 transition-transform" />
-                                                 <span>{item.title}</span>
-                                                 <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${item.badgeClass}`}>
-                                                   {item.badge}
-                                                 </span>
-                                                 <span
-                                                   data-testid={`badge-data-points-${item.id}`}
-                                                   className="text-[8.5px] font-mono px-1.5 py-0.2 rounded bg-amber-950/40 text-amber-300 border border-amber-500/40"
-                                                   title={`Estimated rows / data points for ${item.title} based on current database query filters (${queryResult.records.length} records)`}
-                                                 >
-                                                   {item.id === 'sparklines'
-                                                     ? `${Math.max(12, Math.round(queryResult.records.length * 1.5))} pts`
-                                                     : item.id === 'mutationHistory'
-                                                     ? `${queryResult.records.length} records`
-                                                     : item.id === 'recommendations'
-                                                     ? `${Math.min(10, Math.max(3, Math.round(queryResult.records.length / 4)))} items`
-                                                     : `${Math.max(1, Math.round(queryResult.records.length / 8))} findings`}
-                                                 </span>
-                                               </span>
+                                               {(() => {
+                                                 const paddingVal = Number(pdfExportSections[item.paddingKey] ?? 10);
+                                                 const metricsExplanation = getSectionMetricsExplanation(
+                                                   baseId as DiagnosticPdfSectionId,
+                                                   displayTitle,
+                                                   queryResult.records.length,
+                                                   thresholdViolationsHistory.length,
+                                                   isIncluded,
+                                                   paddingVal,
+                                                   isBreak
+                                                 );
+
+                                                 return (
+                                                   <span
+                                                     onClick={() => handleScrollToSection(item.id)}
+                                                     className="font-semibold text-zinc-200 flex items-center gap-1.5 cursor-pointer hover:text-amber-300 transition-colors group/title flex-wrap"
+                                                     title="Click to smoothly scroll and highlight card configuration"
+                                                   >
+                                                     <item.icon className="w-3.5 h-3.5 text-amber-400 shrink-0 group-hover/title:scale-110 transition-transform" />
+                                                     <span>{displayTitle}</span>
+
+                                                     {/* Info Icon with Dynamic Tooltip explaining specific data metrics included */}
+                                                     <span
+                                                       className="relative inline-flex items-center"
+                                                       onClick={(e) => e.stopPropagation()}
+                                                     >
+                                                       <button
+                                                         id={`btn-info-section-${item.id}`}
+                                                         data-testid={`btn-info-section-${item.id}`}
+                                                         type="button"
+                                                         onClick={(e) => {
+                                                           e.stopPropagation();
+                                                           e.preventDefault();
+                                                           setActiveInfoTooltipSectionId(activeInfoTooltipSectionId === sectionId ? null : sectionId);
+                                                         }}
+                                                         onMouseEnter={() => setActiveInfoTooltipSectionId(sectionId)}
+                                                         onMouseLeave={() => setActiveInfoTooltipSectionId(null)}
+                                                         className="p-0.5 rounded text-cyan-400 hover:text-cyan-200 hover:bg-cyan-950/60 transition-colors cursor-pointer inline-flex items-center justify-center focus:outline-none"
+                                                         title={metricsExplanation.textSummary}
+                                                         aria-label={`View data metrics included in ${displayTitle}`}
+                                                       >
+                                                         <Info className="w-3 h-3 text-cyan-400 hover:text-cyan-300 transition-colors" />
+                                                       </button>
+
+                                                       {/* Dynamic Tooltip Popover */}
+                                                       {activeInfoTooltipSectionId === sectionId && (
+                                                         <div
+                                                           id={`tooltip-info-section-${item.id}`}
+                                                           data-testid={`tooltip-info-section-${item.id}`}
+                                                           role="tooltip"
+                                                           className="absolute left-0 sm:left-auto sm:right-0 top-full mt-1.5 z-50 w-72 sm:w-80 p-2.5 rounded-lg bg-zinc-900/98 border border-cyan-500/60 shadow-2xl text-[10.5px] text-zinc-200 pointer-events-auto backdrop-blur-md animate-fadeIn"
+                                                         >
+                                                           <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-zinc-800">
+                                                             <div className="flex items-center gap-1.5 text-cyan-300 font-semibold text-[11px]">
+                                                               <Info className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                                                               <span>{displayTitle} — Included Metrics</span>
+                                                             </div>
+                                                             <span className="text-[8.5px] font-mono px-1 py-0.2 rounded bg-cyan-950/70 text-cyan-300 border border-cyan-800">
+                                                               {metricsExplanation.category}
+                                                             </span>
+                                                           </div>
+
+                                                           <p className="text-[10px] text-zinc-300 leading-tight mb-2 font-normal">
+                                                             {metricsExplanation.summary}
+                                                           </p>
+
+                                                           <div className="space-y-1.5 bg-zinc-950/80 rounded p-2 border border-zinc-800/80 mb-2 font-normal">
+                                                             <span className="text-[9px] font-bold text-cyan-400 uppercase tracking-wider block">
+                                                               Specific Metrics Measured:
+                                                             </span>
+                                                             <ul className="space-y-1 text-[9.5px]">
+                                                               {metricsExplanation.metrics.map((m, idx) => (
+                                                                 <li key={idx} className="flex items-start gap-1.5 leading-snug">
+                                                                   <span className="text-cyan-400 mt-0.5">•</span>
+                                                                   <span>
+                                                                     <strong className="text-zinc-100 font-medium">{m.label}:</strong>{' '}
+                                                                     <span className="text-zinc-300">{m.value}</span>
+                                                                   </span>
+                                                                 </li>
+                                                               ))}
+                                                             </ul>
+                                                           </div>
+
+                                                           <div className="flex items-center justify-between text-[9px] font-mono text-zinc-400 border-t border-zinc-800/80 pt-1.5 font-normal">
+                                                             <span className="text-amber-400/90 font-medium">
+                                                               Live telemetry: {queryResult.records.length} records analyzed
+                                                             </span>
+                                                             <span className="text-zinc-500">
+                                                               Section: {isIncluded ? 'Included' : 'Excluded'}
+                                                             </span>
+                                                           </div>
+                                                         </div>
+                                                       )}
+                                                     </span>
+
+                                                     <span className={`text-[9px] font-mono px-1 py-0.2 rounded ${item.badgeClass}`}>
+                                                       {item.badge}
+                                                     </span>
+                                                     <span
+                                                       data-testid={`badge-data-points-${item.id}`}
+                                                       className="text-[8.5px] font-mono px-1.5 py-0.2 rounded bg-amber-950/40 text-amber-300 border border-amber-500/40"
+                                                       title={`Estimated rows / data points for ${item.title} based on current database query filters (${queryResult.records.length} records)`}
+                                                     >
+                                                       {item.id === 'sparklines'
+                                                         ? `${Math.max(12, Math.round(queryResult.records.length * 1.5))} pts`
+                                                         : item.id === 'mutationHistory'
+                                                         ? `${queryResult.records.length} records`
+                                                         : item.id === 'recommendations'
+                                                         ? `${Math.min(10, Math.max(3, Math.round(queryResult.records.length / 4)))} items`
+                                                         : `${Math.max(1, Math.round(queryResult.records.length / 8))} findings`}
+                                                     </span>
+                                                   </span>
+                                                 );
+                                               })()}
                                                <span
                                                  title={item.tip}
                                                  className="text-zinc-400 hover:text-amber-300 transition-colors cursor-help p-0.5 inline-flex items-center shrink-0"
@@ -5918,6 +8327,104 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                         </label>
                                        </div>
 
+                                       {/* Section Divider Line Style Dropdown Configuration */}
+                                       {isDivider && (
+                                         <div
+                                          id={`container-divider-style-detailed-${sectionId}`}
+                                          data-testid={`container-divider-style-detailed-${item.id}`}
+                                          className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between gap-2 flex-wrap text-[9.5px]"
+                                        >
+                                          <div className="flex items-center gap-1.5">
+                                            <SeparatorHorizontal className="w-3 h-3 text-amber-400 shrink-0" />
+                                            <label
+                                              htmlFor={`select-divider-style-detailed-${sectionId}`}
+                                              className="font-mono text-zinc-300 font-medium cursor-pointer"
+                                            >
+                                              Divider Line Style:
+                                            </label>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <select
+                                              id={`select-divider-style-detailed-${sectionId}`}
+                                              data-testid={`select-divider-style-detailed-${item.id}`}
+                                              disabled={!isIncluded}
+                                              value={String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase()}
+                                              onChange={(e) => {
+                                                const val = e.target.value.toLowerCase();
+                                                setPdfExportSections((prev) => ({
+                                                  ...prev,
+                                                  [item.dividerStyleKey]: val,
+                                                  [item.showDividerKey]: true
+                                                }));
+                                                handleGenerateSnapshot(item.id);
+                                              }}
+                                              onClick={(e) => e.stopPropagation()}
+                                              className="bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none rounded px-2 py-0.5 text-[9px] font-mono text-zinc-200 cursor-pointer shadow-xs disabled:opacity-40"
+                                              title={`Select section divider line style for ${displayTitle} (Solid, Dashed, Dotted)`}
+                                              aria-label={`Select section divider line style for ${displayTitle}`}
+                                            >
+                                              <option value="solid">Solid</option>
+                                              <option value="dashed">Dashed</option>
+                                              <option value="dotted">Dotted</option>
+                                            </select>
+
+                                            <div
+                                              className="inline-flex items-center rounded bg-zinc-900 border border-zinc-700 p-0.5 text-[8.5px] font-mono select-none"
+                                              role="group"
+                                              aria-label={`Toggle divider line style for ${displayTitle}`}
+                                            >
+                                              {(['Solid', 'Dashed', 'Dotted'] as const).map((styleOpt) => {
+                                                const sVal = styleOpt.toLowerCase();
+                                                const activeStyle = String((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toLowerCase();
+                                                const isSelected = activeStyle === sVal;
+                                                return (
+                                                  <button
+                                                    key={styleOpt}
+                                                    id={`btn-divider-style-detailed-${sVal}-${sectionId}`}
+                                                    data-testid={`btn-divider-style-detailed-${sVal}-${item.id}`}
+                                                    type="button"
+                                                    disabled={!isIncluded}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      setPdfExportSections((prev) => ({
+                                                        ...prev,
+                                                        [item.dividerStyleKey]: sVal,
+                                                        [item.showDividerKey]: true
+                                                      }));
+                                                      handleGenerateSnapshot(item.id);
+                                                    }}
+                                                    className={`px-2 py-0.5 rounded transition-all cursor-pointer font-medium ${
+                                                      isSelected
+                                                        ? 'bg-amber-500 text-zinc-950 font-bold shadow-xs'
+                                                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                                                    }`}
+                                                    title={`Switch divider line style to ${styleOpt}`}
+                                                    aria-label={`${styleOpt} divider style for ${displayTitle}`}
+                                                    aria-pressed={isSelected}
+                                                  >
+                                                    {styleOpt}
+                                                  </button>
+                                                );
+                                              })}
+                                            </div>
+                                            {/* Live line style preview mini border */}
+                                            <motion.div
+                                              key={String((pdfExportSections as any)[item.dividerStyleKey] || 'solid') + '-' + Number((pdfExportSections as any)[item.dividerThicknessKey] || 1.5)}
+                                              initial={{ opacity: 0.4, scaleX: 0.9 }}
+                                              animate={{ opacity: 1, scaleX: 1 }}
+                                              transition={{ duration: 0.3, ease: 'easeInOut' }}
+                                              className="w-12 h-0 border-t transition-all shrink-0"
+                                              style={{
+                                                borderColor: (pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1',
+                                                borderTopStyle: ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dashed' ? 'dashed' : ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dotted' ? 'dotted' : 'solid',
+                                                borderTopWidth: `${Number((pdfExportSections as any)[item.dividerThicknessKey] || 1.5)}px`
+                                              }}
+                                              title={`Live Divider Line Preview: ${((pdfExportSections as any)[item.dividerStyleKey] || 'Solid')} style, ${Number((pdfExportSections as any)[item.dividerThicknessKey] || 1.5)}px thick, ${(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'}`}
+                                            />
+                                          </div>
+                                        </div>
+                                       )}
+
                                        {/* Vertical Padding Slider Control */}
                                        <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex items-center justify-between gap-2">
                                          <label
@@ -5951,11 +8458,328 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
                                            className="w-24 accent-amber-500 cursor-pointer h-1.5 bg-zinc-800 rounded"
                                          />
                                        </div>
+
+                                       {/* CSV Filename Prefix & Pattern Control */}
+                                       <div className="mt-2 pt-1.5 border-t border-zinc-800/70 flex flex-col gap-1">
+                                         <div className="flex items-center justify-between text-[9.5px]">
+                                           <label
+                                             htmlFor={item.inputFilenamePrefixId}
+                                             className={`flex items-center gap-1 font-mono cursor-pointer select-none transition-colors ${
+                                               !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-300 hover:text-amber-200'
+                                             }`}
+                                             title="Customize exported CSV filename prefix for this section"
+                                             onClick={(e) => e.stopPropagation()}
+                                           >
+                                             <FileSpreadsheet className="w-3 h-3 text-emerald-400 shrink-0" />
+                                             <span>CSV Filename Prefix:</span>
+                                           </label>
+                                           <div className="flex items-center gap-1">
+                                             <button
+                                               id={`btn-apply-pattern-section-${item.id}`}
+                                               data-testid={`btn-apply-pattern-section-${item.id}`}
+                                               type="button"
+                                               disabled={!isIncluded}
+                                               onClick={(e) => {
+                                                 e.stopPropagation();
+                                                 const resolved = resolveNamingPattern(globalCsvNamingPattern, item.id);
+                                                 setPdfExportSections((prev) => ({
+                                                   ...prev,
+                                                   [item.filenamePrefixKey]: resolved
+                                                 }));
+                                               }}
+                                               className="px-1.5 py-0.2 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-300 hover:text-amber-200 border border-zinc-700 text-[8.5px] font-medium transition-colors cursor-pointer disabled:opacity-25"
+                                               title="Apply global naming pattern to this section"
+                                             >
+                                               Apply Pattern
+                                             </button>
+                                             {String(pdfExportSections[item.filenamePrefixKey] || '').trim() && (
+                                               <button
+                                                 type="button"
+                                                 disabled={!isIncluded}
+                                                 onClick={(e) => {
+                                                   e.stopPropagation();
+                                                   setPdfExportSections((prev) => ({
+                                                     ...prev,
+                                                     [item.filenamePrefixKey]: ''
+                                                   }));
+                                                 }}
+                                                 className="text-zinc-500 hover:text-zinc-300 text-[8.5px] underline cursor-pointer"
+                                                 title="Clear custom prefix and use dynamic pattern default"
+                                               >
+                                                 Clear
+                                               </button>
+                                             )}
+                                           </div>
+                                         </div>
+                                         <div className="flex items-center gap-1.5">
+                                           <input
+                                             id={item.inputFilenamePrefixId}
+                                             data-testid={item.inputFilenamePrefixId}
+                                             type="text"
+                                             disabled={!isIncluded}
+                                             placeholder={`Pattern: ${resolveNamingPattern(globalCsvNamingPattern, item.id)}`}
+                                             value={String(pdfExportSections[item.filenamePrefixKey] || '')}
+                                             onChange={(e) => {
+                                               const val = e.target.value;
+                                               setPdfExportSections((prev) => ({
+                                                 ...prev,
+                                                 [item.filenamePrefixKey]: val
+                                               }));
+                                             }}
+                                             onClick={(e) => e.stopPropagation()}
+                                             onMouseDown={(e) => e.stopPropagation()}
+                                             className="flex-1 px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-200 placeholder:text-zinc-600 text-[10px] focus:outline-none focus:border-amber-500/80 disabled:opacity-30 font-mono"
+                                           />
+                                           <span className="text-[9px] font-mono text-zinc-400 font-semibold">
+                                             {((pdfExportSections as any)[item.delimiterKey] === '\t' || (pdfExportSections as any)[item.delimiterKey] === 'tab' || (pdfExportSections as any)[item.delimiterKey] === '\\t') ? '.tsv' : '.csv'}
+                                           </span>
+                                         </div>
+
+                                         {/* Delimiter Selection Dropdown */}
+                                         <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-800/60 text-[9.5px]">
+                                           <label
+                                             htmlFor={item.inputDelimiterId}
+                                             className={`flex items-center gap-1 font-mono cursor-pointer select-none transition-colors ${
+                                               !isIncluded ? 'opacity-40 pointer-events-none' : 'text-zinc-400 hover:text-zinc-200'
+                                             }`}
+                                             onClick={(e) => e.stopPropagation()}
+                                             title="Toggle between Comma, Tab, and Semicolon delimiters for individual CSV export"
+                                           >
+                                             <span className="font-semibold text-zinc-300">Delimiter:</span>
+                                           </label>
+                                           <div className="flex items-center gap-1.5">
+                                             <select
+                                               id={item.inputDelimiterId}
+                                               data-testid={item.inputDelimiterId}
+                                               aria-label={`Delimiter for ${item.title}`}
+                                               disabled={!isIncluded}
+                                               value={
+                                                 (pdfExportSections as any)[item.delimiterKey] === '\t' ||
+                                                 (pdfExportSections as any)[item.delimiterKey] === 'tab' ||
+                                                 (pdfExportSections as any)[item.delimiterKey] === '\\t'
+                                                   ? '\t'
+                                                   : (pdfExportSections as any)[item.delimiterKey] === ';'
+                                                   ? ';'
+                                                   : ','
+                                               }
+                                               onChange={(e) => {
+                                                 const val = e.target.value;
+                                                 setPdfExportSections((prev) => ({
+                                                   ...prev,
+                                                   [item.delimiterKey]: val
+                                                 }));
+                                               }}
+                                               onClick={(e) => e.stopPropagation()}
+                                               onMouseDown={(e) => e.stopPropagation()}
+                                               className="px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 hover:border-amber-500/60 focus:border-amber-400 focus:outline-none text-zinc-100 text-[9.5px] font-mono disabled:opacity-30 cursor-pointer shadow-xs"
+                                             >
+                                               <option value=",">Comma (,)</option>
+                                               <option value={'\t'}>Tab (\t)</option>
+                                               <option value=";">Semicolon (;)</option>
+                                             </select>
+                                             <span className="text-[9px] font-mono text-zinc-500 hidden sm:inline">
+                                               {((pdfExportSections as any)[item.delimiterKey] === '\t' || (pdfExportSections as any)[item.delimiterKey] === 'tab' || (pdfExportSections as any)[item.delimiterKey] === '\\t')
+                                                 ? 'TSV'
+                                                 : (pdfExportSections as any)[item.delimiterKey] === ';'
+                                                 ? 'Semicolon'
+                                                 : 'CSV'}
+                                             </span>
+                                           </div>
+                                         </div>
+
+                                         {/* Card Configuration Stats Summary Footer */}
+                                         <div className="mt-2 pt-1.5 border-t border-zinc-800/80 flex items-center justify-between gap-1.5 flex-wrap text-[9px]">
+                                           <div className="flex items-center gap-1.5 text-zinc-400 font-mono text-[8.5px]">
+                                             <span>Padding: <strong className="text-amber-300">{Number(pdfExportSections[item.paddingKey] ?? 10)}px</strong></span>
+                                             <span>•</span>
+                                             <span>Break: <strong className={isBreak ? 'text-amber-300' : 'text-zinc-500'}>{isBreak ? 'Yes' : 'No'}</strong></span>
+                                             <span>•</span>
+                                             <span>Note: <strong className={String(pdfExportSections[item.noteKey] || '').trim() ? 'text-emerald-400' : 'text-zinc-500'}>{String(pdfExportSections[item.noteKey] || '').trim() ? 'Custom' : 'None'}</strong></span>
+                                             <span>•</span>
+                                             <span>Dividers: <strong className={isDivider ? 'text-amber-300' : 'text-zinc-500'}>{isDivider ? `${((pdfExportSections as any)[item.dividerStyleKey] || 'solid').toUpperCase()} (${(pdfExportSections as any)[item.dividerColorKey] || 'Slate'})` : 'No'}</strong></span>
+                                           </div>
+                                           <button
+                                             id={`btn-export-section-stats-detailed-${item.id}`}
+                                             data-testid={`btn-export-section-stats-detailed-${item.id}`}
+                                             type="button"
+                                             onClick={(e) => {
+                                               e.stopPropagation();
+                                               handleExportSectionStats(item.id);
+                                             }}
+                                             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-purple-300 hover:text-purple-200 border border-purple-500/30 text-[8.5px] font-medium transition-colors cursor-pointer"
+                                             title={`Download JSON summarizing configuration metadata (padding, note, delimiters, break settings) for ${item.title}`}
+                                           >
+                                             <FileJson className="w-2.5 h-2.5 text-purple-400" />
+                                             <span>Export Section Stats</span>
+                                           </button>
+                                         </div>
+                                       </div>
                                        </>
+                                       )}
+
+                                       {/* Visual Live Divider Preview at Bottom of Card */}
+                                       {isDivider && (
+                                         <div
+                                           id={`divider-preview-${sectionId}`}
+                                           data-testid={`divider-preview-${item.id}`}
+                                           className="w-full mt-2 pt-1 border-t transition-all select-none"
+                                           style={{
+                                             borderColor: (pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1',
+                                             borderTopStyle: ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dashed' ? 'dashed' : ((pdfExportSections as any)[item.dividerStyleKey] || 'solid') === 'dotted' ? 'dotted' : 'solid',
+                                             borderTopWidth: '1.5px'
+                                           }}
+                                           title={`Live PDF Section Divider Preview: ${((pdfExportSections as any)[item.dividerStyleKey] || 'Solid')} style (${(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'})`}
+                                         >
+                                           <div className="flex items-center justify-between text-[7.5px] font-mono text-zinc-400 uppercase tracking-wider pt-0.5">
+                                             <span>Divider: {((pdfExportSections as any)[item.dividerStyleKey] || 'Solid')}</span>
+                                             <span>Color: {(pdfExportSections as any)[item.dividerColorKey] || '#cbd5e1'}</span>
+                                           </div>
+                                         </div>
                                        )}
                                     </div>
                                   );
-                                })
+                                   };
+
+                                   const sectionGroupsToRender = (pdfExportSections.sectionGroups && pdfExportSections.sectionGroups.length > 0)
+                                     ? pdfExportSections.sectionGroups
+                                     : DEFAULT_PDF_SECTION_GROUPS;
+
+                                   const assignedSectionIds = new Set(
+                                     sectionGroupsToRender.flatMap((g) => g.sectionIds)
+                                   );
+                                   const ungroupedSections = filteredSectionOrder.filter((sectionId) => {
+                                     const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+                                     return !assignedSectionIds.has(baseId as DiagnosticPdfSectionId) && !assignedSectionIds.has(sectionId as any);
+                                   });
+
+                                   return (
+                                     <div className="col-span-full flex flex-col gap-2.5 w-full">
+                                       {sectionGroupsToRender.map((group) => {
+                                         const groupSections = filteredSectionOrder.filter((sectionId) => {
+                                           const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+                                           return group.sectionIds.includes(baseId as DiagnosticPdfSectionId) || group.sectionIds.includes(sectionId as any);
+                                         });
+
+                                         return (
+                                           <div
+                                             key={group.id}
+                                             id={`section-group-folder-${group.id}`}
+                                             data-testid={`section-group-folder-${group.id}`}
+                                             className="rounded-lg bg-zinc-950/70 border border-zinc-800/90 overflow-hidden shadow-xs transition-all"
+                                           >
+                                             {/* Folder Header */}
+                                             <div
+                                               className="flex items-center justify-between px-3 py-2 bg-zinc-900/90 border-b border-zinc-800/80 cursor-pointer select-none hover:bg-zinc-850 transition-colors"
+                                               onClick={() => handleToggleSectionGroupCollapse(group.id)}
+                                             >
+                                               <div className="flex items-center gap-2">
+                                                 <button
+                                                   type="button"
+                                                   id={`btn-toggle-group-collapse-${group.id}`}
+                                                   data-testid={`btn-toggle-group-collapse-${group.id}`}
+                                                   onClick={(e) => {
+                                                     e.stopPropagation();
+                                                     handleToggleSectionGroupCollapse(group.id);
+                                                   }}
+                                                   className="p-0.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-amber-300 transition-colors cursor-pointer"
+                                                   aria-label={group.isCollapsed ? `Expand ${group.title}` : `Collapse ${group.title}`}
+                                                   title={group.isCollapsed ? `Expand ${group.title}` : `Collapse ${group.title}`}
+                                                 >
+                                                   {group.isCollapsed ? (
+                                                     <ChevronRight className="w-3.5 h-3.5 text-zinc-400" />
+                                                   ) : (
+                                                     <ChevronDown className="w-3.5 h-3.5 text-amber-400" />
+                                                   )}
+                                                 </button>
+
+                                                 {group.isCollapsed ? (
+                                                   <Folder className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                                 ) : (
+                                                   <FolderOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                                 )}
+
+                                                 <div className="flex items-center gap-2 flex-wrap">
+                                                   <span className="font-semibold text-xs text-zinc-200">{group.title}</span>
+                                                   <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-zinc-800 text-amber-300 border border-zinc-700/80">
+                                                     {groupSections.length} {groupSections.length === 1 ? 'section' : 'sections'}
+                                                   </span>
+                                                   {group.isCollapsed && (
+                                                     <span className="text-[9px] text-zinc-500 font-mono italic">
+                                                       (Collapsed)
+                                                     </span>
+                                                   )}
+                                                 </div>
+                                               </div>
+
+                                               <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                                 <button
+                                                   type="button"
+                                                   onClick={() => handleToggleSectionGroupCollapse(group.id)}
+                                                   className="text-[9px] font-medium px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border border-zinc-700 transition-colors cursor-pointer"
+                                                 >
+                                                   {group.isCollapsed ? 'Expand' : 'Collapse'}
+                                                 </button>
+                                               </div>
+                                             </div>
+
+                                             {/* Folder Content */}
+                                             {!group.isCollapsed ? (
+                                               <div className="p-2">
+                                                 {groupSections.length === 0 ? (
+                                                   <div className="py-2.5 text-center text-zinc-500 text-[10px] italic">
+                                                     No matching sections in this folder
+                                                   </div>
+                                                 ) : (
+                                                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                     {groupSections.map((secId) => {
+                                                       const idx = filteredSectionOrder.indexOf(secId);
+                                                       return renderCard(secId, idx >= 0 ? idx : 0);
+                                                     })}
+                                                   </div>
+                                                 )}
+                                               </div>
+                                             ) : (
+                                               <div
+                                                 onClick={() => handleToggleSectionGroupCollapse(group.id)}
+                                                 className="px-3 py-1.5 text-[9.5px] text-zinc-500 hover:text-zinc-300 cursor-pointer flex items-center justify-between border-t border-zinc-900/40 bg-zinc-950/40 hover:bg-zinc-900/30 transition-colors"
+                                               >
+                                                 <span>Folder collapsed — {groupSections.length} section{groupSections.length === 1 ? '' : 's'} hidden</span>
+                                                 <span className="text-amber-400/80 hover:text-amber-300 text-[9px] underline">Click to expand</span>
+                                               </div>
+                                             )}
+                                           </div>
+                                         );
+                                       })}
+
+                                       {/* Ungrouped Sections if any */}
+                                       {ungroupedSections.length > 0 && (
+                                         <div
+                                           id="section-group-folder-ungrouped"
+                                           data-testid="section-group-folder-ungrouped"
+                                           className="rounded-lg bg-zinc-950/70 border border-zinc-800/90 overflow-hidden shadow-xs"
+                                         >
+                                           <div className="flex items-center justify-between px-3 py-2 bg-zinc-900/90 border-b border-zinc-800/80">
+                                             <div className="flex items-center gap-2">
+                                               <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+                                               <span className="font-semibold text-xs text-zinc-200">Other / Ungrouped Sections</span>
+                                               <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-zinc-800 text-amber-300 border border-zinc-700/80">
+                                                 {ungroupedSections.length} {ungroupedSections.length === 1 ? 'section' : 'sections'}
+                                               </span>
+                                             </div>
+                                           </div>
+                                           <div className="p-2">
+                                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                               {ungroupedSections.map((secId) => {
+                                                 const idx = filteredSectionOrder.indexOf(secId);
+                                                 return renderCard(secId, idx >= 0 ? idx : 0);
+                                               })}
+                                             </div>
+                                           </div>
+                                         </div>
+                                       )}
+                                     </div>
+                                   );
+                                 })()
                               )}
                             </div>
 
@@ -6935,6 +9759,51 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
         </div>
       )}
 
+      {/* Floating Configuration Copied to Clipboard Notification Toast */}
+      {copyConfigToast && (
+        <div
+          id="toast-config-copied-clipboard"
+          data-testid="toast-config-copied-clipboard"
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-md w-auto bg-zinc-900/95 border border-emerald-500/70 text-white rounded-xl px-4 py-3 shadow-2xl shadow-emerald-950/40 backdrop-blur-md animate-in slide-in-from-bottom-4 fade-in duration-200 pointer-events-auto"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/40">
+              <Check className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="flex flex-col min-w-0 pr-1">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-xs text-white">
+                  Configuration copied to clipboard
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 text-amber-300 border border-zinc-700 font-medium">
+                  {copyConfigToast.sectionTitle}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-0.5">
+                Section JSON configuration ready to share or audit.
+              </p>
+            </div>
+            <button
+              id="btn-dismiss-toast-config-copied"
+              data-testid="btn-dismiss-toast-config-copied"
+              type="button"
+              onClick={() => {
+                if (copyConfigToastTimeoutRef.current) {
+                  clearTimeout(copyConfigToastTimeoutRef.current);
+                }
+                setCopyConfigToast(null);
+              }}
+              className="text-zinc-400 hover:text-white p-1 rounded-md hover:bg-zinc-800 transition-colors cursor-pointer shrink-0 ml-1"
+              aria-label="Dismiss copy confirmation toast"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Floating Export Paused (Mid-Process Mutation) Notification Toast */}
       {exportPausedToast && (
         <div
@@ -7138,6 +10007,96 @@ Timestamp: ${new Date(item.timestamp).toLocaleTimeString()}`;
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export {pendingExportFormat.toUpperCase()}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Export Confirmation Modal */}
+      {showBatchExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 animate-in fade-in duration-200">
+          <div
+            id="modal-batch-export-confirmation"
+            data-testid="modal-batch-export-confirmation"
+            className="w-full max-w-md rounded-xl bg-zinc-900 border border-zinc-800 shadow-2xl overflow-hidden flex flex-col p-5 gap-4 text-zinc-100"
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                  <Download className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-zinc-100">Confirm Batch Data Export</h3>
+                  <p className="text-[11px] text-zinc-400">Export multiple sections simultaneously</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBatchExportModal(false)}
+                className="text-zinc-400 hover:text-zinc-200 p-1 rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2.5 text-xs text-zinc-300">
+              <p>
+                You are about to export all enabled sections in your current PDF export configuration.
+              </p>
+              <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 flex flex-col gap-1.5 max-h-48 overflow-y-auto">
+                <span className="text-[11px] text-zinc-400 font-medium">Sections to be exported:</span>
+                <ul className="list-disc list-inside text-[11px] text-zinc-200 space-y-1 font-mono">
+                  {Object.values(PDF_SECTION_CONFIG_ITEMS)
+                    .filter((item) => Boolean((pdfExportSections as any)[item.includeKey]))
+                    .map((item) => {
+                      const prefixKey = item.filenamePrefixKey;
+                      const customPrefix = prefixKey ? (pdfExportSections as any)[prefixKey] : '';
+                      let cleanPrefix = '';
+                      if (customPrefix && customPrefix.trim()) {
+                        cleanPrefix = customPrefix.includes('{')
+                          ? resolveNamingPattern(customPrefix, item.id)
+                          : customPrefix.trim();
+                      } else {
+                        cleanPrefix = resolveNamingPattern(globalCsvNamingPattern || '{section_name}_{timestamp}', item.id);
+                      }
+                      const delimiterKey = item.delimiterKey;
+                      const rawDelimiter = delimiterKey ? (pdfExportSections as any)[delimiterKey] : ',';
+                      const ext = rawDelimiter === '\t' || rawDelimiter === 'tab' || rawDelimiter === '\\t' ? 'tsv' : 'csv';
+                      return (
+                        <li key={item.id} className="flex items-center justify-between">
+                          <span>{item.title}</span>
+                          <span className="text-amber-400 text-[10px]">{cleanPrefix}.{ext}</span>
+                        </li>
+                      );
+                    })}
+                </ul>
+              </div>
+              <p className="text-[10px] text-zinc-400">
+                Total files to be generated:{' '}
+                <span className="text-zinc-100 font-semibold font-mono">
+                  {Object.values(PDF_SECTION_CONFIG_ITEMS).filter((item) => Boolean((pdfExportSections as any)[item.includeKey])).length}
+                </span>
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setShowBatchExportModal(false)}
+                className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="btn-confirm-batch-export"
+                data-testid="btn-confirm-batch-export"
+                onClick={confirmBatchExport}
+                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-zinc-950 text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-lg shadow-amber-900/20 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Confirm & Export All</span>
               </button>
             </div>
           </div>

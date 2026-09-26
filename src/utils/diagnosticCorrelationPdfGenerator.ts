@@ -27,8 +27,29 @@ export interface DiagnosticPdfSectionGroup {
   isCollapsed?: boolean;
 }
 
+export type DividerLineStyle = 'solid' | 'dashed' | 'dotted';
+
 export interface DiagnosticPdfSectionsConfig {
   includePageNumbers?: boolean;
+  showDividerSparklines?: boolean;
+  showDividerMutationHistory?: boolean;
+  showDividerRecommendations?: boolean;
+  showDividerExecutiveSummary?: boolean;
+  dividerColor?: string;
+  dividerColorSparklines?: string;
+  dividerColorMutationHistory?: string;
+  dividerColorRecommendations?: string;
+  dividerColorExecutiveSummary?: string;
+  dividerStyle?: DividerLineStyle | string;
+  dividerStyleSparklines?: DividerLineStyle | string;
+  dividerStyleMutationHistory?: DividerLineStyle | string;
+  dividerStyleRecommendations?: DividerLineStyle | string;
+  dividerStyleExecutiveSummary?: DividerLineStyle | string;
+  dividerThickness?: number | string;
+  dividerThicknessSparklines?: number | string;
+  dividerThicknessMutationHistory?: number | string;
+  dividerThicknessRecommendations?: number | string;
+  dividerThicknessExecutiveSummary?: number | string;
   sparklinesDelimiter?: string;
   mutationHistoryDelimiter?: string;
   recommendationsDelimiter?: string;
@@ -37,6 +58,7 @@ export interface DiagnosticPdfSectionsConfig {
   mutationHistoryFilenamePrefix?: string;
   recommendationsFilenamePrefix?: string;
   executiveSummaryFilenamePrefix?: string;
+  globalCsvNamingPattern?: string;
   includeSparklines?: boolean;
   includeMutationHistory?: boolean;
   includeRecommendations?: boolean;
@@ -565,6 +587,20 @@ export async function generateDiagnosticCorrelationPdf(params: {
     includeMutationHistory: true,
     includeRecommendations: true,
     includeExecutiveSummary: true,
+    showDividerSparklines: true,
+    showDividerMutationHistory: true,
+    showDividerRecommendations: true,
+    showDividerExecutiveSummary: true,
+    dividerStyleSparklines: 'solid',
+    dividerStyleMutationHistory: 'solid',
+    dividerStyleRecommendations: 'solid',
+    dividerStyleExecutiveSummary: 'solid',
+    dividerStyle: 'solid',
+    dividerThicknessSparklines: 1.5,
+    dividerThicknessMutationHistory: 1.5,
+    dividerThicknessRecommendations: 1.5,
+    dividerThicknessExecutiveSummary: 1.5,
+    dividerThickness: 1.5,
     breakBeforeSparklines: false,
     breakBeforeMutationHistory: true,
     breakBeforeRecommendations: false,
@@ -638,6 +674,72 @@ export async function generateDiagnosticCorrelationPdf(params: {
     doc.text(splitNote, margin + 3, currentY + 8);
 
     currentY += boxHeight + 3;
+  };
+
+  // Helper for rendering a visible separator line between sections
+  const renderSectionDivider = (
+    showDivider?: boolean,
+    customColor?: string,
+    customStyle?: DividerLineStyle | string,
+    customThickness?: number | string
+  ) => {
+    if (showDivider === false) return;
+    if (currentY + 6 < pageHeight - 16) {
+      currentY += 1.5;
+      const color = customColor || sectionsConfig.dividerColor || '#cbd5e1';
+      if (color.startsWith('#') && color.length === 7) {
+        const r = parseInt(color.slice(1, 3), 16);
+        const g = parseInt(color.slice(3, 5), 16);
+        const b = parseInt(color.slice(5, 7), 16);
+        doc.setDrawColor(r, g, b);
+      } else {
+        doc.setDrawColor(203, 213, 225);
+      }
+
+      const rawThickness = customThickness ?? sectionsConfig.dividerThickness ?? 1.5;
+      const numThickness = typeof rawThickness === 'string' ? parseFloat(rawThickness) || 1.5 : Number(rawThickness);
+      const pdfLineWidth = numThickness <= 0.6 ? numThickness : numThickness * 0.35;
+      doc.setLineWidth(Math.max(0.2, pdfLineWidth));
+
+      const style = String(customStyle || sectionsConfig.dividerStyle || 'solid').toLowerCase();
+      if (style === 'dashed') {
+        if (typeof (doc as any).setLineDashPattern === 'function') {
+          (doc as any).setLineDashPattern([3, 2], 0);
+        } else if (typeof (doc as any).setLineDash === 'function') {
+          (doc as any).setLineDash([3, 2], 0);
+        }
+        doc.line(margin, currentY, margin + contentWidth, currentY);
+        // Reset line dash pattern back to solid
+        if (typeof (doc as any).setLineDashPattern === 'function') {
+          (doc as any).setLineDashPattern([], 0);
+        } else if (typeof (doc as any).setLineDash === 'function') {
+          (doc as any).setLineDash([], 0);
+        }
+      } else if (style === 'dotted') {
+        if (typeof (doc as any).setLineDashPattern === 'function') {
+          (doc as any).setLineDashPattern([0.8, 1.6], 0);
+        } else if (typeof (doc as any).setLineDash === 'function') {
+          (doc as any).setLineDash([0.8, 1.6], 0);
+        }
+        doc.line(margin, currentY, margin + contentWidth, currentY);
+        // Reset line dash pattern back to solid
+        if (typeof (doc as any).setLineDashPattern === 'function') {
+          (doc as any).setLineDashPattern([], 0);
+        } else if (typeof (doc as any).setLineDash === 'function') {
+          (doc as any).setLineDash([], 0);
+        }
+      } else {
+        // Solid
+        if (typeof (doc as any).setLineDashPattern === 'function') {
+          (doc as any).setLineDashPattern([], 0);
+        } else if (typeof (doc as any).setLineDash === 'function') {
+          (doc as any).setLineDash([], 0);
+        }
+        doc.line(margin, currentY, margin + contentWidth, currentY);
+      }
+
+      currentY += 3.5;
+    }
   };
 
   // ================= PAGE 1 =================
@@ -793,6 +895,7 @@ export async function generateDiagnosticCorrelationPdf(params: {
     renderSectionNote(sectionsConfig.executiveSummaryNote);
     renderSectionMetadataFooter(sectionsConfig.includeMetadataExecutiveSummary, `${formattedDate} ${formattedTime}`, `${diagnosticData.executiveSummary.totalActiveThresholdAlerts} threshold alerts`);
     currentY += 4 + ((sectionsConfig.paddingExecutiveSummary ?? 10) * 0.25);
+    renderSectionDivider(sectionsConfig.showDividerExecutiveSummary, sectionsConfig.dividerColorExecutiveSummary, sectionsConfig.dividerStyleExecutiveSummary, sectionsConfig.dividerThicknessExecutiveSummary);
   };
 
   // Section 2: Visual Trend Sparklines (Conditional)
@@ -870,6 +973,7 @@ export async function generateDiagnosticCorrelationPdf(params: {
     renderSectionNote(sectionsConfig.sparklinesNote);
     renderSectionMetadataFooter(sectionsConfig.includeMetadataSparklines, `${formattedDate} ${formattedTime}`, `${trendHistory.length} telemetry points`);
     currentY += 4 + ((sectionsConfig.paddingSparklines ?? 10) * 0.25);
+    renderSectionDivider(sectionsConfig.showDividerSparklines, sectionsConfig.dividerColorSparklines, sectionsConfig.dividerStyleSparklines, sectionsConfig.dividerThicknessSparklines);
   };
 
   // Section 3: Detailed Mutation History Section (Conditional)
@@ -1011,6 +1115,7 @@ export async function generateDiagnosticCorrelationPdf(params: {
     renderSectionNote(sectionsConfig.mutationHistoryNote);
     renderSectionMetadataFooter(sectionsConfig.includeMetadataMutationHistory, `${formattedDate} ${formattedTime}`, `${diagnosticData.mutationClusters.length} mutation clusters (${mutationHistory.length} writes)`);
     currentY += 4 + ((sectionsConfig.paddingMutationHistory ?? 10) * 0.25);
+    renderSectionDivider(sectionsConfig.showDividerMutationHistory, sectionsConfig.dividerColorMutationHistory, sectionsConfig.dividerStyleMutationHistory, sectionsConfig.dividerThicknessMutationHistory);
   };
 
   // Section 4: Strategic Recommendations for Stakeholders (Conditional)
@@ -1093,13 +1198,15 @@ export async function generateDiagnosticCorrelationPdf(params: {
     renderSectionNote(sectionsConfig.recommendationsNote);
     renderSectionMetadataFooter(sectionsConfig.includeMetadataRecommendations, `${formattedDate} ${formattedTime}`, '3 engineering rules');
     currentY += 4 + ((sectionsConfig.paddingRecommendations ?? 10) * 0.25);
+    renderSectionDivider(sectionsConfig.showDividerRecommendations, sectionsConfig.dividerColorRecommendations, sectionsConfig.dividerStyleRecommendations, sectionsConfig.dividerThicknessRecommendations);
   };
 
-  // Build the effective section order, ensuring all 4 sections are accounted for
+  // Build the effective section order, ensuring all sections (including duplicates) are accounted for
   const configuredOrder = sectionsConfig.sectionOrder || DEFAULT_PDF_SECTION_ORDER;
-  const effectiveSectionOrder: DiagnosticPdfSectionId[] = [];
-  configuredOrder.forEach((id) => {
-    if (DEFAULT_PDF_SECTION_ORDER.includes(id) && !effectiveSectionOrder.includes(id)) {
+  const effectiveSectionOrder: string[] = [];
+  configuredOrder.forEach((id: string) => {
+    const baseId = id.includes('_dup_') ? (id.split('_dup_')[0] as DiagnosticPdfSectionId) : id;
+    if (DEFAULT_PDF_SECTION_ORDER.includes(baseId as DiagnosticPdfSectionId) && !effectiveSectionOrder.includes(id)) {
       effectiveSectionOrder.push(id);
     }
   });
@@ -1118,8 +1225,10 @@ export async function generateDiagnosticCorrelationPdf(params: {
 
   if (sectionsConfig.groupByTag) {
     effectiveSectionOrder.sort((a, b) => {
-      const tagA = SECTION_TAGS[a] || 'Other';
-      const tagB = SECTION_TAGS[b] || 'Other';
+      const baseA = a.includes('_dup_') ? a.split('_dup_')[0] as DiagnosticPdfSectionId : a as DiagnosticPdfSectionId;
+      const baseB = b.includes('_dup_') ? b.split('_dup_')[0] as DiagnosticPdfSectionId : b as DiagnosticPdfSectionId;
+      const tagA = SECTION_TAGS[baseA] || 'Other';
+      const tagB = SECTION_TAGS[baseB] || 'Other';
       return tagA.localeCompare(tagB);
     });
   }
@@ -1127,7 +1236,8 @@ export async function generateDiagnosticCorrelationPdf(params: {
   // Render each section in the customized visual order
   let lastTag: string | null = null;
   effectiveSectionOrder.forEach((sectionId) => {
-    const currentTag = SECTION_TAGS[sectionId] || 'Other';
+    const baseId = sectionId.includes('_dup_') ? sectionId.split('_dup_')[0] : sectionId;
+    const currentTag = SECTION_TAGS[baseId as DiagnosticPdfSectionId] || 'Other';
     if (sectionsConfig.groupByTag && currentTag !== lastTag) {
       lastTag = currentTag;
       ensureSpace(12);
@@ -1140,13 +1250,13 @@ export async function generateDiagnosticCorrelationPdf(params: {
       currentY += 9;
     }
 
-    if (sectionId === 'executiveSummary') {
+    if (baseId === 'executiveSummary') {
       renderExecutiveSummary();
-    } else if (sectionId === 'sparklines') {
+    } else if (baseId === 'sparklines') {
       renderSparklines();
-    } else if (sectionId === 'mutationHistory') {
+    } else if (baseId === 'mutationHistory') {
       renderMutationHistory();
-    } else if (sectionId === 'recommendations') {
+    } else if (baseId === 'recommendations') {
       renderRecommendations();
     }
   });
