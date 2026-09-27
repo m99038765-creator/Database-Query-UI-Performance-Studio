@@ -2973,7 +2973,7 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                 containerHeight={containerDimensions.height}
                 currentFlags={currentFlags}
                 onApplyFlags={(targetFlags) => {
-                  (Object.keys(targetFlags) as (keyof OptimizationFlags)[]).forEach((flagKey) => {
+                  (Object.keys(targetFlags || {}) as (keyof OptimizationFlags)[]).forEach((flagKey) => {
                     if (currentFlags[flagKey] !== targetFlags[flagKey]) {
                       onToggleFlag(flagKey);
                     }
@@ -3105,7 +3105,13 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                   Flags at Snapshot:
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  {Object.entries(activeDetailPoint.flags).map(([key, val]) => (
+                  {Object.entries(activeDetailPoint?.flags || {
+                    batchEagerLoading: true,
+                    btreeIndexing: true,
+                    queryCaching: true,
+                    virtualizedDOM: true,
+                    deferredRendering: true
+                  }).map(([key, val]) => (
                     <span
                       key={key}
                       className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${

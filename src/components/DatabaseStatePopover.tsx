@@ -63,6 +63,14 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
     ? Math.max(10, position.y - popoverEstimatedHeight - 16)
     : Math.min(containerHeight - popoverEstimatedHeight - 10, position.y + 20);
 
+  const flags = point?.flags || {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: true,
+    deferredRendering: true
+  };
+
   // SLA and Performance classification
   const isFast = point.executionTimeMs < 15;
   const isAcceptable = point.executionTimeMs >= 15 && point.executionTimeMs <= 60;
@@ -71,7 +79,7 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
   // Technical Specs derivations
   const accessMethod = point.cacheHit
     ? 'LRU In-Memory Hash Lookup'
-    : point.flags.btreeIndexing
+    : flags.btreeIndexing
     ? 'B-Tree Index Scan (idx_orders_status_category)'
     : 'Full Sequential Table Scan (Heap Scan)';
 
@@ -82,7 +90,7 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
     ? { text: '25 / 25 Conns [EXHAUSTED]', color: 'text-rose-600 bg-rose-50 border-rose-200' }
     : { text: `${Math.min(point.activeQueriesCount, 25)} / 25 Conns [HEALTHY]`, color: 'text-emerald-700 bg-emerald-50 border-emerald-200' };
 
-  const queryPattern = point.flags.batchEagerLoading
+  const queryPattern = flags.batchEagerLoading
     ? 'Eager 2-Stage Batch Join'
     : `N+1 Query Loop (${point.activeQueriesCount} roundtrips)`;
 
@@ -111,7 +119,7 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
         isHighDurationMutation: point.isHighDurationMutation || false,
         correlatedThresholdViolation: point.correlatedThresholdViolation || null
       },
-      optimizationFlags: point.flags
+      optimizationFlags: flags
     };
 
     navigator.clipboard.writeText(JSON.stringify(specs, null, 2));
@@ -120,8 +128,8 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
   };
 
   // Check if flags differ from current active flags
-  const flagsDiffer = Object.keys(point.flags).some(
-    (k) => point.flags[k as keyof OptimizationFlags] !== currentFlags[k as keyof OptimizationFlags]
+  const flagsDiffer = Object.keys(flags).some(
+    (k) => flags[k as keyof OptimizationFlags] !== currentFlags[k as keyof OptimizationFlags]
   );
 
   return (
@@ -367,44 +375,44 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
               Database Optimization Flags
             </span>
             <span className="font-mono text-[10px] text-zinc-500">
-              {Object.values(point.flags).filter(Boolean).length}/5 Active
+              {Object.values(flags).filter(Boolean).length}/5 Active
             </span>
           </div>
 
           <div className="grid grid-cols-2 gap-1.5">
             <div className={`p-1.5 rounded border text-[10px] flex items-center justify-between ${
-              point.flags.btreeIndexing ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
+              flags.btreeIndexing ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
             }`}>
               <span>B-Tree Indexing</span>
-              <span className="font-bold">{point.flags.btreeIndexing ? 'ON' : 'OFF'}</span>
+              <span className="font-bold">{flags.btreeIndexing ? 'ON' : 'OFF'}</span>
             </div>
 
             <div className={`p-1.5 rounded border text-[10px] flex items-center justify-between ${
-              point.flags.batchEagerLoading ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
+              flags.batchEagerLoading ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
             }`}>
               <span>Batch Eager Join</span>
-              <span className="font-bold">{point.flags.batchEagerLoading ? 'ON' : 'OFF'}</span>
+              <span className="font-bold">{flags.batchEagerLoading ? 'ON' : 'OFF'}</span>
             </div>
 
             <div className={`p-1.5 rounded border text-[10px] flex items-center justify-between ${
-              point.flags.queryCaching ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
+              flags.queryCaching ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
             }`}>
               <span>LRU Query Caching</span>
-              <span className="font-bold">{point.flags.queryCaching ? 'ON' : 'OFF'}</span>
+              <span className="font-bold">{flags.queryCaching ? 'ON' : 'OFF'}</span>
             </div>
 
             <div className={`p-1.5 rounded border text-[10px] flex items-center justify-between ${
-              point.flags.virtualizedDOM ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
+              flags.virtualizedDOM ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
             }`}>
               <span>Virtualized DOM</span>
-              <span className="font-bold">{point.flags.virtualizedDOM ? 'ON' : 'OFF'}</span>
+              <span className="font-bold">{flags.virtualizedDOM ? 'ON' : 'OFF'}</span>
             </div>
 
             <div className={`p-1.5 rounded border text-[10px] col-span-2 flex items-center justify-between ${
-              point.flags.deferredRendering ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
+              flags.deferredRendering ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900 font-medium' : 'bg-white border-zinc-200 text-zinc-400 line-through'
             }`}>
               <span>Concurrent Deferred Rendering</span>
-              <span className="font-bold">{point.flags.deferredRendering ? 'ON' : 'OFF'}</span>
+              <span className="font-bold">{flags.deferredRendering ? 'ON' : 'OFF'}</span>
             </div>
           </div>
         </div>
@@ -427,7 +435,7 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
           <button
             id="btn-popover-apply-flags"
             type="button"
-            onClick={() => onApplyFlags(point.flags)}
+            onClick={() => onApplyFlags(flags)}
             className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
             title="Update live database engine toggles to match this snapshot's state"
           >

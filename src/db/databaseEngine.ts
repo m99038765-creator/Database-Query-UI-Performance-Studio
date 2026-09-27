@@ -387,10 +387,26 @@ export interface QueryFilters {
 }
 
 export function executeQuery(
-  filters: QueryFilters,
-  flags: OptimizationFlags
+  filtersOrConfig: QueryFilters & { flags?: OptimizationFlags },
+  flagsArg?: OptimizationFlags
 ): QueryExecutionResult {
   initializeDatabase();
+
+  const flags = flagsArg || filtersOrConfig.flags || {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: true,
+    deferredRendering: true
+  };
+
+  const filters: QueryFilters = {
+    searchTerm: filtersOrConfig.searchTerm,
+    status: filtersOrConfig.status,
+    category: filtersOrConfig.category,
+    page: filtersOrConfig.page ?? 1,
+    pageSize: filtersOrConfig.pageSize ?? 100
+  };
 
   const cacheKey = JSON.stringify({ filters, flags });
 

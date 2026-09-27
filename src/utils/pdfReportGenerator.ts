@@ -506,7 +506,13 @@ export async function generatePerformancePdfReport(params: {
           : '0 ms'
         : 'Initial';
 
-    const flagsSummary = Object.entries(pt.flags)
+    const flagsSummary = Object.entries(pt?.flags || {
+      batchEagerLoading: true,
+      btreeIndexing: true,
+      queryCaching: true,
+      virtualizedDOM: true,
+      deferredRendering: true
+    })
       .filter(([_, enabled]) => enabled)
       .map(([k]) => {
         if (k === 'btreeIndexing') return 'Idx';
