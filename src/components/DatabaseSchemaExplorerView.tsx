@@ -16,6 +16,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [selectedTable, setSelectedTable] = useState<string>('transactions');
   const [createdCustomIndexes, setCreatedCustomIndexes] = useState<string[]>([]);
   const [showQueryComplexityInfo, setShowQueryComplexityInfo] = useState<boolean>(false);
+  const [compareWithBaseline, setCompareWithBaseline] = useState<boolean>(false);
 
   const tables = [
     {
@@ -130,7 +131,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-indigo-50/60 border border-indigo-200 rounded-lg text-xs font-semibold text-indigo-900 cursor-pointer select-none">
+            <span>Compare with Baseline</span>
+            <input
+              type="checkbox"
+              id="toggle-compare-baseline"
+              checked={compareWithBaseline}
+              onChange={(e) => setCompareWithBaseline(e.target.checked)}
+              className="w-4 h-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+            />
+          </label>
+
           <button
             type="button"
             onClick={handleDownloadSchemaReport}
@@ -162,6 +174,19 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           )}
         </div>
       </div>
+
+      {/* Baseline Comparison Overlay Banner */}
+      {compareWithBaseline && (
+        <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 text-xs text-amber-900 flex items-center justify-between animate-fadeIn">
+          <div className="flex items-center gap-2.5 font-medium">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            <span>Baseline Comparison Overlay Active: Comparing current optimized schema against unoptimized default (Baseline: 0 composite B-Tree indexes, unindexed foreign keys).</span>
+          </div>
+          <span className="font-mono font-bold bg-amber-200/80 text-amber-950 px-2.5 py-0.5 rounded text-[11px]">
+            Δ: +{flags.btreeIndexing ? '2 Indexes' : '0 Indexes'} (O(log n) vs O(n))
+          </span>
+        </div>
+      )}
 
       {/* Query Complexity Modal Popup */}
       {showQueryComplexityInfo && (
