@@ -30,22 +30,23 @@ import {
 } from 'lucide-react';
 
 interface SerializationErrorLogPanelProps {
-  logs: SerializationLogEntry[];
-  onClearLogs: () => void;
-  onDismissLog: (id: string) => void;
-  onSimulateFault: (mode: 'failure' | 'throughput_anomaly' | 'cpu_spike' | 'latency_anomaly') => void;
-  currentFormat: ExportFormat;
-  currentRecordCount: number;
+  logs?: SerializationLogEntry[];
+  onClearLogs?: () => void;
+  onDismissLog?: (id: string) => void;
+  onSimulateFault?: (mode?: 'failure' | 'throughput_anomaly' | 'cpu_spike' | 'latency_anomaly') => void;
+  currentFormat?: ExportFormat;
+  currentRecordCount?: number;
 }
 
 export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProps> = ({
-  logs,
-  onClearLogs,
-  onDismissLog,
-  onSimulateFault,
-  currentFormat,
-  currentRecordCount
+  logs = [],
+  onClearLogs = () => {},
+  onDismissLog = (_id?: any) => {},
+  onSimulateFault = (_mode?: any) => {},
+  currentFormat = 'csv',
+  currentRecordCount = 50000
 }) => {
+  const safeLogs = logs || [];
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
   const [severityFilter, setSeverityFilter] = useState<SerializationLogSeverity | 'all'>('all');
   const [formatFilter, setFormatFilter] = useState<'all' | 'csv' | 'json' | 'engine'>('all');
@@ -53,7 +54,7 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
 
   // Filtered log entries
   const filteredLogs = useMemo(() => {
-    return logs.filter((log) => {
+    return safeLogs.filter((log) => {
       const matchesSeverity = severityFilter === 'all' || log.severity === severityFilter;
       const matchesFormat =
         formatFilter === 'all' ||
@@ -62,24 +63,24 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
           : log.format === formatFilter);
       return matchesSeverity && matchesFormat;
     });
-  }, [logs, severityFilter, formatFilter]);
+  }, [safeLogs, severityFilter, formatFilter]);
 
   // Aggregate count by severity
   const counts = useMemo(() => {
-    const errorCount = logs.filter((l) => l.severity === 'error').length;
-    const anomalyCount = logs.filter((l) => l.severity === 'anomaly').length;
-    const warningCount = logs.filter((l) => l.severity === 'warning').length;
-    const latencyAnomaliesCount = logs.filter(
+    const errorCount = safeLogs.filter((l) => l.severity === 'error').length;
+    const anomalyCount = safeLogs.filter((l) => l.severity === 'anomaly').length;
+    const warningCount = safeLogs.filter((l) => l.severity === 'warning').length;
+    const latencyAnomaliesCount = safeLogs.filter(
       (l) => l.type === 'LATENCY_ANOMALY' || l.type === 'LATENCY_SPIKE'
     ).length;
     return {
-      total: logs.length,
+      total: safeLogs.length,
       errors: errorCount,
       anomalies: anomalyCount,
       warnings: warningCount,
       latencyAnomalies: latencyAnomaliesCount
     };
-  }, [logs]);
+  }, [safeLogs]);
 
   const toggleExpandLog = (id: string) => {
     setExpandedLogId((prev) => (prev === id ? null : id));

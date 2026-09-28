@@ -505,8 +505,8 @@ export const SnapshotCompareModal: React.FC<SnapshotCompareModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-zinc-100 font-normal">
                   {flagMeta.map((item) => {
-                    const enabledInA = pointA.flags[item.key];
-                    const enabledInB = pointB.flags[item.key];
+                    const enabledInA = pointA?.flags?.[item.key] ?? false;
+                    const enabledInB = pointB?.flags?.[item.key] ?? false;
                     const isChanged = enabledInA !== enabledInB;
 
                     return (

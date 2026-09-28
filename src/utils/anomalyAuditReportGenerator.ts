@@ -157,10 +157,10 @@ function deriveAccessMethod(point: LatencyTrendPoint): string {
   if (point.isHighDurationMutation) {
     return 'B-Tree Index Range Scan + Table Exclusive Mutex Wait';
   }
-  if (!point.flags.btreeIndexing) {
+  if (!point?.flags?.btreeIndexing) {
     return 'Sequential Table Scan (Full Heap Scan 50,000 Rows)';
   }
-  if (!point.flags.batchEagerLoading) {
+  if (!point?.flags?.batchEagerLoading) {
     return 'Indexed Primary Probe + 100 Child Queries (N+1 Cascade)';
   }
   return 'B-Tree Index Seek + Parallel Eager Fetch (Optimized)';
@@ -200,11 +200,11 @@ export function generateAnomalyAuditReport(options: {
   ) => number;
 }): AnomalyAuditReportPayload {
   const {
-    trendHistory,
-    baselineLatency,
-    meanLatency,
-    stdDevLatency,
-    anomalyThreshold,
+    trendHistory = [],
+    baselineLatency = 0.15,
+    meanLatency = 1.2,
+    stdDevLatency = 0.5,
+    anomalyThreshold = 5,
     thresholdViolations = [],
     mutationThreshold = 5,
     mutationHistory = [],
@@ -214,8 +214,13 @@ export function generateAnomalyAuditReport(options: {
     calculatePointMutationFreqFn
   } = options;
 
+  const safeTrendHistory = trendHistory || [];
+  const safeThresholdViolations = thresholdViolations || [];
+  const safeMutationHistory = mutationHistory || [];
+  const safeDataTapeEntries = dataTapeEntries || [];
+
   const now = new Date();
-  const sortedLatencies = [...trendHistory.map((p) => p.executionTimeMs)].sort((a, b) => a - b);
+  const sortedLatencies = [...safeTrendHistory.map((p) => p.executionTimeMs)].sort((a, b) => a - b);
 
   const minLatency = sortedLatencies.length > 0 ? sortedLatencies[0] : 0;
   const maxLatency = sortedLatencies.length > 0 ? sortedLatencies[sortedLatencies.length - 1] : 0;
@@ -224,23 +229,23 @@ export function generateAnomalyAuditReport(options: {
   const p95 = getPercentile(sortedLatencies, 95);
   const p99 = getPercentile(sortedLatencies, 99);
 
-  const slaComplianceCount = trendHistory.filter((p) => p.executionTimeMs < 15).length;
-  const acceptableCount = trendHistory.filter(
+  const slaComplianceCount = safeTrendHistory.filter((p) => p.executionTimeMs < 15).length;
+  const acceptableCount = safeTrendHistory.filter(
     (p) => p.executionTimeMs >= 15 && p.executionTimeMs <= 60
   ).length;
-  const breachedCount = trendHistory.filter((p) => p.executionTimeMs > 60).length;
+  const breachedCount = safeTrendHistory.filter((p) => p.executionTimeMs > 60).length;
 
   const slaCompliancePercent =
-    trendHistory.length > 0 ? Number(((slaComplianceCount / trendHistory.length) * 100).toFixed(1)) : 100;
+    safeTrendHistory.length > 0 ? Number(((slaComplianceCount / safeTrendHistory.length) * 100).toFixed(1)) : 100;
   const acceptableCompliancePercent =
-    trendHistory.length > 0 ? Number(((acceptableCount / trendHistory.length) * 100).toFixed(1)) : 0;
+    safeTrendHistory.length > 0 ? Number(((acceptableCount / safeTrendHistory.length) * 100).toFixed(1)) : 0;
   const slaBreachPercent =
-    trendHistory.length > 0 ? Number(((breachedCount / trendHistory.length) * 100).toFixed(1)) : 0;
+    safeTrendHistory.length > 0 ? Number(((breachedCount / safeTrendHistory.length) * 100).toFixed(1)) : 0;
 
-  const totalRowsScanned = trendHistory.reduce((sum, p) => sum + p.rowsScanned, 0);
-  const totalActiveQueries = trendHistory.reduce((sum, p) => sum + p.activeQueriesCount, 0);
-  const cacheHitCount = trendHistory.filter((p) => p.cacheHit).length;
-  const simulatedFaultsCount = trendHistory.filter((p) => Boolean(p.simulatedError)).length;
+  const totalRowsScanned = safeTrendHistory.reduce((sum, p) => sum + p.rowsScanned, 0);
+  const totalActiveQueries = safeTrendHistory.reduce((sum, p) => sum + p.activeQueriesCount, 0);
+  const cacheHitCount = safeTrendHistory.filter((p) => p.cacheHit).length;
+  const simulatedFaultsCount = safeTrendHistory.filter((p) => Boolean(p.simulatedError)).length;
 
   // Process and detect all latency anomalies
   const detectedAnomalies: AnomalyAuditReportPayload['latencyAnomalies'] = [];
@@ -249,13 +254,13 @@ export function generateAnomalyAuditReport(options: {
   let outlierSpikesCount = 0;
   let correlatedMutationIncidentsCount = 0;
 
-  trendHistory.forEach((point, idx) => {
+  safeTrendHistory.forEach((point, idx) => {
     const variance = point.executionTimeMs - baselineLatency;
     if (variance > maxVarianceObserved) {
       maxVarianceObserved = variance;
     }
 
-    const highDurationResult = checkHighDurationFn(point, thresholdViolations);
+    const highDurationResult = checkHighDurationFn(point, safeThresholdViolations);
     const isHighDuration = highDurationResult.isHighDurationMutation;
     const isOutlierVariance = variance >= anomalyThreshold;
     const isSlaBreached = point.executionTimeMs > 60;
@@ -372,7 +377,7 @@ export function generateAnomalyAuditReport(options: {
   const consolidatedMutationsMap = new Map<string, AnomalyAuditReportPayload['correlatedMutationEvents'][0]>();
 
   // Add all from mutationHistory
-  mutationHistory.forEach((m) => {
+  safeMutationHistory.forEach((m) => {
     const duration =
       m.durationMs !== undefined
         ? m.durationMs / 1000
@@ -404,7 +409,7 @@ export function generateAnomalyAuditReport(options: {
   });
 
   // Ensure any threshold violations not yet in mutationHistory are captured
-  thresholdViolations.forEach((v) => {
+  safeThresholdViolations.forEach((v) => {
     if (!consolidatedMutationsMap.has(v.mutationId)) {
       const exceeded = v.elapsedSeconds > v.thresholdSeconds;
       consolidatedMutationsMap.set(v.mutationId, {

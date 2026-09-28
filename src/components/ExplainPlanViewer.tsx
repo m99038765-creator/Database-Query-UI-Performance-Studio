@@ -3,21 +3,47 @@ import { ExplainPlanNode, OptimizationFlags, QueryExecutionResult } from '../typ
 import { Terminal, Database, Code, CheckCircle2, AlertTriangle, ArrowDownRight, Layers } from 'lucide-react';
 
 interface ExplainPlanViewerProps {
-  result: QueryExecutionResult;
-  flags: OptimizationFlags;
-  statusFilter: string;
-  categoryFilter: string;
-  searchTerm: string;
+  result?: QueryExecutionResult;
+  explainPlan?: ExplainPlanNode;
+  flags?: OptimizationFlags;
+  statusFilter?: string;
+  categoryFilter?: string;
+  searchTerm?: string;
 }
 
 export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
   result,
+  explainPlan,
   flags,
-  statusFilter,
-  categoryFilter,
-  searchTerm
+  statusFilter = 'all',
+  categoryFilter = 'all',
+  searchTerm = ''
 }) => {
   const [activeTab, setActiveTab] = useState<'plan' | 'sql' | 'architecture'>('plan');
+
+  const safeFlags = flags || {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: true,
+    deferredRendering: true,
+  };
+
+  const effectiveExplainPlan: ExplainPlanNode = explainPlan || result?.explainPlan || {
+    nodeType: safeFlags.btreeIndexing ? 'Index Scan' : 'Seq Scan',
+    relationName: 'transactions',
+    indexName: safeFlags.btreeIndexing ? 'idx_orders_status_category' : undefined,
+    cost: safeFlags.btreeIndexing ? 4.82 : 48.5,
+    actualTimeMs: result?.executionTimeMs ?? 1.2,
+    rowsScanned: result?.rowsScanned ?? 32,
+    rowsReturned: result?.records?.length ?? 32,
+    details: safeFlags.btreeIndexing
+      ? 'B-Tree index seek on (status, category)'
+      : 'Full sequential scan across 50,000 rows in memory'
+  };
+
+  const pageSize = result?.pageSize ?? 100;
+  const executionTime = result?.executionTimeMs ?? effectiveExplainPlan.actualTimeMs ?? 1.2;
 
   const unoptimizedSQL = `-- Query 1: Parent order query with unindexed sequential table scan
 SELECT o.id, o.order_number, o.customer_id, o.amount, o.status, o.category
@@ -25,7 +51,7 @@ FROM transactions o
 WHERE o.status = '${statusFilter !== 'all' ? statusFilter : 'completed'}' 
   AND o.category = '${categoryFilter !== 'all' ? categoryFilter : 'Cloud Infrastructure'}'
   ${searchTerm ? `AND (o.order_number ILIKE '%${searchTerm}%' OR o.customer_name ILIKE '%${searchTerm}%')` : ''}
-LIMIT ${result.pageSize};
+LIMIT ${pageSize};
 
 -- Query 2..N: N+1 Subquery Storm (fired synchronously for EACH order row)
 -- Executes 50-100+ separate roundtrips, exhausting connection pool:
@@ -44,7 +70,7 @@ WHERE o.status = '${statusFilter !== 'all' ? statusFilter : 'completed'}'
   AND o.category = '${categoryFilter !== 'all' ? categoryFilter : 'Cloud Infrastructure'}'
   ${searchTerm ? `AND (o.order_number ILIKE '%${searchTerm}%' OR o.customer_name ILIKE '%${searchTerm}%')` : ''}
 ORDER BY o.created_at DESC
-LIMIT ${result.pageSize};
+LIMIT ${pageSize};
 
 -- Step 3: Batch eager loading of child items in a SINGLE roundtrip (eliminates N+1)
 SELECT i.order_id, i.sku, i.name, i.unit_price, i.quantity
@@ -172,11 +198,11 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                 Execution Tree (PostgreSQL-compatible EXPLAIN ANALYZE format)
               </span>
               <span className="font-mono">
-                Total Query Cost: {result.explainPlan.cost.toFixed(2)} | Time: {result.executionTimeMs}ms
+                Total Query Cost: {effectiveExplainPlan.cost.toFixed(2)} | Time: {executionTime}ms
               </span>
             </div>
 
-            {renderPlanNode(result.explainPlan)}
+            {renderPlanNode(effectiveExplainPlan)}
           </div>
         )}
 
@@ -184,8 +210,8 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
           <div className="space-y-3">
             <div>
               <div className="flex items-center justify-between text-xs font-semibold mb-1">
-                <span className={flags.btreeIndexing && flags.batchEagerLoading ? 'text-emerald-700' : 'text-rose-700'}>
-                  {flags.btreeIndexing && flags.batchEagerLoading
+                <span className={safeFlags.btreeIndexing && safeFlags.batchEagerLoading ? 'text-emerald-700' : 'text-rose-700'}>
+                  {safeFlags.btreeIndexing && safeFlags.batchEagerLoading
                     ? '✓ Optimized Query Plan with Batch Eager Join & B-Tree Index'
                     : '✗ Unoptimized Query Plan (Full Sequential Scan + N+1 Subquery Storm)'}
                 </span>
@@ -193,7 +219,7 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
               </div>
 
               <pre className="p-3.5 bg-zinc-900 text-zinc-100 rounded-lg text-xs font-mono overflow-x-auto leading-relaxed border border-zinc-800">
-                {flags.btreeIndexing && flags.batchEagerLoading ? optimizedSQL : unoptimizedSQL}
+                {safeFlags.btreeIndexing && safeFlags.batchEagerLoading ? optimizedSQL : unoptimizedSQL}
               </pre>
             </div>
           </div>

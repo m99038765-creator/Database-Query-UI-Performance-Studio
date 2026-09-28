@@ -145,20 +145,20 @@ export interface DiagnosticCorrelationReport {
 /**
  * Groups mutations into time-adjacent clusters and correlates them with latency spikes and alerts.
  */
-export function generateDiagnosticCorrelationReport(options: {
-  thresholdViolations: ThresholdViolationRecord[];
-  mutationHistory: DatabaseMutationHistoryEntry[];
-  trendHistory: LatencyTrendPoint[];
-  mutationThreshold: number;
-  currentFlags: OptimizationFlags;
+export function generateDiagnosticCorrelationReport(options?: {
+  thresholdViolations?: ThresholdViolationRecord[];
+  mutationHistory?: DatabaseMutationHistoryEntry[];
+  trendHistory?: LatencyTrendPoint[];
+  mutationThreshold?: number;
+  currentFlags?: OptimizationFlags;
 }): DiagnosticCorrelationReport {
   const {
     thresholdViolations = [],
     mutationHistory = [],
     trendHistory = [],
     mutationThreshold = 5,
-    currentFlags
-  } = options;
+    currentFlags = {} as OptimizationFlags
+  } = options || {};
 
   const now = new Date();
   const baselineLatency =

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { OptimizationFlags, OrderStatus, ProductCategory, LatencyTrendPoint, BulkImportResult } from './types';
+import { OptimizationFlags, OrderStatus, ProductCategory, LatencyTrendPoint, BulkImportResult, SerializationLogEntry } from './types';
 import { executeQuery, initializeDatabase, getDatabaseStats } from './db/databaseEngine';
 import { useFpsMonitor } from './utils/fpsTracker';
 import { Header } from './components/Header';
@@ -13,6 +13,12 @@ import { BulkImportModal } from './components/BulkImportModal';
 import { DiagnosticPdfPreviewModal } from './components/DiagnosticPdfPreviewModal';
 import { HistoricalDataTapeModal } from './components/HistoricalDataTapeModal';
 import { SerializationErrorLogPanel } from './components/SerializationErrorLogPanel';
+import { SystemResourceMonitor } from './components/SystemResourceMonitor';
+import { LatencyComparisonView } from './components/LatencyComparisonView';
+import { DatabaseSchemaExplorerView } from './components/DatabaseSchemaExplorerView';
+import { OptimizationWizardModal } from './components/OptimizationWizardModal';
+import { LatencyLegend } from './components/LatencyLegend';
+import { AlertTriangle, X } from 'lucide-react';
 import {
   exportRecordsToCsv,
   ExportFormat,
@@ -177,8 +183,21 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState<OrderStatus | 'All'>('All');
   const [page, setPage] = useState(1);
   const [pageSize] = useState(100);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
+  const [alertThresholdMs, setAlertThresholdMs] = useState<number>(100);
+  const [showLatencyHeatmap, setShowLatencyHeatmap] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    if (!autoRefreshEnabled) return;
+    const interval = setInterval(() => {
+      setRefreshKey((k) => k + 1);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [autoRefreshEnabled]);
 
   const queryResult = useMemo(() => {
+    const _tick = refreshKey;
     return executeQuery({
       searchTerm: searchQuery,
       category: selectedCategory,
@@ -186,7 +205,7 @@ export default function App() {
       page,
       pageSize
     }, flags);
-  }, [flags, searchQuery, selectedCategory, statusFilter, page, pageSize]);
+  }, [flags, searchQuery, selectedCategory, statusFilter, page, pageSize, refreshKey]);
 
   const dbStats = useMemo(() => getDatabaseStats(), [queryResult]);
   const fps = useFpsMonitor();
@@ -197,6 +216,7 @@ export default function App() {
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [isHistoricalDataTapeOpen, setIsHistoricalDataTapeOpen] = useState(false);
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
+  const [isOptimizationWizardOpen, setIsOptimizationWizardOpen] = useState(false);
 
   // PDF Export Sections config
   const [pdfExportSections, setPdfExportSections] = useState<DiagnosticPdfSectionsConfig>(() => ({
@@ -256,16 +276,43 @@ export default function App() {
   const [isDiagnosticPdfSuccess, setIsDiagnosticPdfSuccess] = useState(false);
   const [thresholdViolationsHistory] = useState<any[]>([]);
   const [mutationHistory] = useState<DatabaseMutationHistoryEntry[]>(() => getDatabaseMutationHistory());
-  const [trendHistory] = useState<LatencyTrendPoint[]>([]);
+  const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>([]);
   const [mutationThreshold] = useState<number>(100);
+  const [activeView, setActiveView] = useState<'grid' | 'trends' | 'comparison' | 'schema'>('grid');
+  const [serializationLogs, setSerializationLogs] = useState<SerializationLogEntry[]>(() => getInitialSerializationLogs());
+  const [dataTapeEntries, setDataTapeEntries] = useState<DataTapeEntry[]>(() => getInitialDataTapeEntries());
+
+  const [proactiveToast, setProactiveToast] = useState<{
+    title: string;
+    message: string;
+    flagToEnable?: keyof OptimizationFlags;
+    flagName?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (queryResult.executionTimeMs > 130 && !flags.btreeIndexing) {
+      setProactiveToast({
+        title: 'High Latency Detected',
+        message: `Query took ${queryResult.executionTimeMs.toFixed(1)}ms due to sequential table scan.`,
+        flagToEnable: 'btreeIndexing',
+        flagName: 'B-Tree Indexing'
+      });
+    } else if (queryResult.executionTimeMs > 110 && !flags.batchEagerLoading) {
+      setProactiveToast({
+        title: 'Connection Pool Warning',
+        message: `N+1 query cascade detected (${queryResult.executionTimeMs.toFixed(1)}ms).`,
+        flagToEnable: 'batchEagerLoading',
+        flagName: 'Batch Eager Loading'
+      });
+    }
+  }, [queryResult.executionTimeMs, flags.btreeIndexing, flags.batchEagerLoading]);
 
   const handleGenerateDiagnosticCorrelationPdf = async () => {
     setIsGeneratingDiagnosticPdf(true);
     try {
       await exportDiagnosticCorrelationPdf({
-        queryResult,
-        flags,
-        sectionsConfig: pdfExportSections,
+        currentFlags: flags,
+        options: { sections: pdfExportSections },
         thresholdViolations: thresholdViolationsHistory,
         mutationHistory,
         trendHistory,
@@ -287,45 +334,152 @@ export default function App() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col selection:bg-amber-500/30 selection:text-amber-200">
       <Header
+        flags={flags}
+        onToggleAll={(enable) => setFlags({
+          batchEagerLoading: enable,
+          btreeIndexing: enable,
+          queryCaching: enable,
+          virtualizedDOM: enable,
+          deferredRendering: enable
+        })}
+        onRunBenchmark={() => setIsBenchmarkModalOpen(true)}
+        isBenchmarking={false}
+        hasErrors={false}
+        activeErrorCount={0}
+        activeView={activeView}
+        onSelectView={(view) => setActiveView(view)}
+        trendCount={trendHistory.length}
+        totalRecords={queryResult.totalCount || 50000}
         onOpenBenchmark={() => setIsBenchmarkModalOpen(true)}
-        onOpenTrends={() => setIsPerformanceTrendsOpen(true)}
+        onOpenTrends={() => {
+          setActiveView('trends');
+          setIsPerformanceTrendsOpen(true);
+        }}
         onOpenBulkImport={() => setIsBulkImportOpen(true)}
         onOpenHistoryTape={() => setIsHistoricalDataTapeOpen(true)}
         onExportCsv={handleExportCsv}
         onOpenPdfPreview={() => setShowPdfPreviewModal(true)}
+        onOpenWizard={() => setIsOptimizationWizardOpen(true)}
       />
 
       <OptimizationControls
         flags={flags}
         onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
         onResetAll={() => setFlags({ batchEagerLoading: true, btreeIndexing: true, queryCaching: true, virtualizedDOM: true, deferredRendering: true })}
+        onApplyFlags={(newFlags) => setFlags(newFlags)}
       />
 
       <MetricsBar
         queryResult={queryResult}
+        flags={flags}
         dbStats={dbStats}
         fps={fps}
+        currentFps={fps}
+        renderedDomCount={flags.virtualizedDOM ? Math.min(queryResult.records.length, 18) : queryResult.records.length}
+        totalDatabaseRecords={dbStats?.totalRecords || 50000}
+        onOpenBulkImport={() => setIsBulkImportOpen(true)}
+        autoRefreshEnabled={autoRefreshEnabled}
+        onToggleAutoRefresh={(enabled) => setAutoRefreshEnabled(enabled)}
+        alertThresholdMs={alertThresholdMs}
+        onAlertThresholdChange={(val) => setAlertThresholdMs(val)}
+        heatmapModeEnabled={showLatencyHeatmap}
+        onToggleHeatmapMode={setShowLatencyHeatmap}
+        onResetMetrics={() => {
+          setTrendHistory([]);
+          setSerializationLogs([]);
+          setDataTapeEntries([]);
+          setProactiveToast(null);
+        }}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
-        <ExplainPlanViewer explainPlan={queryResult.explainPlan} />
+        {activeView === 'grid' ? (
+          <>
+            <ExplainPlanViewer
+              result={queryResult}
+              explainPlan={queryResult.explainPlan}
+              flags={flags}
+              statusFilter={statusFilter}
+              categoryFilter={selectedCategory}
+              searchTerm={searchQuery}
+            />
 
-        <VirtualizedTable
-          records={queryResult.records}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
-          selectedCategory={selectedCategory}
-          onCategoryChange={setSelectedCategory}
-          statusFilter={statusFilter}
-          onStatusChange={setStatusFilter}
-          page={page}
-          pageSize={pageSize}
-          totalCount={queryResult.totalCount}
-          onPageChange={setPage}
-          virtualizedEnabled={flags.virtualizedDOM}
-        />
+            <LatencyLegend showLatencyHeatmap={showLatencyHeatmap} />
 
-        <SerializationErrorLogPanel />
+            <VirtualizedTable
+              records={queryResult.records}
+              totalCount={queryResult.totalCount}
+              flags={flags}
+              searchTerm={searchQuery}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              selectedCategory={selectedCategory}
+              categoryFilter={selectedCategory}
+              onCategoryChange={setSelectedCategory}
+              statusFilter={statusFilter}
+              onStatusChange={setStatusFilter}
+              page={page}
+              pageSize={pageSize}
+              onPageChange={setPage}
+              virtualizedEnabled={flags.virtualizedDOM}
+              simulatedError={queryResult.simulatedError}
+              warningNotice={queryResult.warningNotice}
+              showLatencyHeatmapProp={showLatencyHeatmap}
+              onToggleLatencyHeatmap={setShowLatencyHeatmap}
+              onFixNPlusOne={() => setFlags((prev) => ({ ...prev, batchEagerLoading: true }))}
+              onAutoOptimize={() => setFlags({
+                batchEagerLoading: true,
+                btreeIndexing: true,
+                queryCaching: true,
+                virtualizedDOM: true,
+                deferredRendering: true
+              })}
+              onOpenBulkImport={() => setIsBulkImportOpen(true)}
+              cacheHit={queryResult.cacheHit}
+            />
+
+            <SerializationErrorLogPanel
+              logs={serializationLogs}
+              onClearLogs={() => setSerializationLogs([])}
+              onDismissLog={(id) => setSerializationLogs((prev) => prev.filter((l) => l.id !== id))}
+              onSimulateFault={() => {}}
+              currentFormat="csv"
+              currentRecordCount={queryResult.totalCount || 50000}
+            />
+          </>
+        ) : activeView === 'comparison' ? (
+          <LatencyComparisonView
+            trendHistory={trendHistory}
+            onClose={() => setActiveView('grid')}
+          />
+        ) : activeView === 'schema' ? (
+          <DatabaseSchemaExplorerView
+            flags={flags}
+            onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+            onClose={() => setActiveView('grid')}
+          />
+        ) : (
+          <PerformanceTrendsView
+            trendHistory={trendHistory}
+            currentFlags={flags}
+            onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+            onToggleAll={(enable) => setFlags({
+              batchEagerLoading: enable,
+              btreeIndexing: enable,
+              queryCaching: enable,
+              virtualizedDOM: enable,
+              deferredRendering: enable
+            })}
+            onClearHistory={() => setTrendHistory([])}
+            onRunOptimizationSequence={() => {}}
+            isSimulatingSequence={false}
+            onAppendTrendPoint={(point) => setTrendHistory((prev) => [...prev, point])}
+            thresholdViolations={thresholdViolationsHistory}
+            mutationThreshold={mutationThreshold}
+            mutationHistory={mutationHistory}
+            dataTapeEntries={dataTapeEntries}
+          />
+        )}
       </main>
 
       {/* Modals */}
@@ -340,6 +494,23 @@ export default function App() {
         isOpen={isPerformanceTrendsOpen}
         onClose={() => setIsPerformanceTrendsOpen(false)}
         trendHistory={trendHistory}
+        currentFlags={flags}
+        onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+        onToggleAll={(enable) => setFlags({
+          batchEagerLoading: enable,
+          btreeIndexing: enable,
+          queryCaching: enable,
+          virtualizedDOM: enable,
+          deferredRendering: enable
+        })}
+        onClearHistory={() => setTrendHistory([])}
+        onRunOptimizationSequence={() => {}}
+        isSimulatingSequence={false}
+        onAppendTrendPoint={(point) => setTrendHistory((prev) => [...prev, point])}
+        thresholdViolations={thresholdViolationsHistory}
+        mutationThreshold={mutationThreshold}
+        mutationHistory={mutationHistory}
+        dataTapeEntries={dataTapeEntries}
       />
 
       <BulkImportModal
@@ -354,7 +525,9 @@ export default function App() {
       <HistoricalDataTapeModal
         isOpen={isHistoricalDataTapeOpen}
         onClose={() => setIsHistoricalDataTapeOpen(false)}
-        initialEntries={getInitialDataTapeEntries()}
+        entries={dataTapeEntries}
+        initialEntries={dataTapeEntries}
+        onClearTape={() => setDataTapeEntries([])}
       />
 
       <DiagnosticPdfPreviewModal
@@ -371,6 +544,69 @@ export default function App() {
         sectionsConfig={pdfExportSections}
         onUpdateSections={setPdfExportSections}
       />
+
+      {/* System Resource Monitor Widget */}
+      <SystemResourceMonitor
+        flags={flags}
+        recordCount={queryResult.totalCount}
+        cacheHit={queryResult.cacheHit}
+      />
+
+      {/* Optimization Wizard Modal */}
+      <OptimizationWizardModal
+        isOpen={isOptimizationWizardOpen}
+        onClose={() => setIsOptimizationWizardOpen(false)}
+        flags={flags}
+        queryResult={queryResult}
+        onApplyFlags={(newFlags) => setFlags(newFlags)}
+      />
+
+      {/* Proactive Optimization Suggestion Toast */}
+      {proactiveToast && (
+        <div className="fixed bottom-6 left-6 z-50 bg-zinc-900 border border-zinc-700 text-white p-4 rounded-xl shadow-2xl max-w-md animate-fadeIn flex items-start gap-3">
+          <div className="p-2 bg-amber-500/20 border border-amber-500/40 text-amber-400 rounded-lg shrink-0">
+            <AlertTriangle className="w-5 h-5 animate-pulse" />
+          </div>
+          <div className="flex-1">
+            <h4 className="text-xs font-bold text-white flex items-center justify-between">
+              <span>{proactiveToast.title}</span>
+              <button
+                type="button"
+                onClick={() => setProactiveToast(null)}
+                className="text-zinc-400 hover:text-white cursor-pointer p-0.5"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </h4>
+            <p className="text-xs text-zinc-300 mt-0.5">
+              {proactiveToast.message} Proactively suggest enabling <strong className="text-amber-300">{proactiveToast.flagName}</strong> to optimize performance.
+            </p>
+            {proactiveToast.flagToEnable && (
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (proactiveToast.flagToEnable) {
+                      setFlags((prev) => ({ ...prev, [proactiveToast.flagToEnable!]: true }));
+                    }
+                    setProactiveToast(null);
+                  }}
+                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-zinc-950 font-bold text-xs rounded-lg transition-colors cursor-pointer"
+                >
+                  Enable {proactiveToast.flagName} Now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProactiveToast(null)}
+                  className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs rounded-lg transition-colors cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

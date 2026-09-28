@@ -128,8 +128,9 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
   };
 
   // Check if flags differ from current active flags
-  const flagsDiffer = Object.keys(flags).some(
-    (k) => flags[k as keyof OptimizationFlags] !== currentFlags[k as keyof OptimizationFlags]
+  const safeCurrentFlags = currentFlags || flags;
+  const flagsDiffer = Object.keys(flags || {}).some(
+    (k) => (flags || {})[k as keyof OptimizationFlags] !== (safeCurrentFlags || {})[k as keyof OptimizationFlags]
   );
 
   return (
@@ -375,7 +376,7 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
               Database Optimization Flags
             </span>
             <span className="font-mono text-[10px] text-zinc-500">
-              {Object.values(flags).filter(Boolean).length}/5 Active
+              {Object.values(flags || {}).filter(Boolean).length}/5 Active
             </span>
           </div>
 

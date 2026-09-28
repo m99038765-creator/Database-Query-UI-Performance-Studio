@@ -29,7 +29,7 @@ interface ExportDiffComparisonViewProps {
 }
 
 export const ExportDiffComparisonView: React.FC<ExportDiffComparisonViewProps> = ({
-  history,
+  history = [],
   runAIndex,
   runBIndex,
   onSelectRunA,
@@ -39,8 +39,9 @@ export const ExportDiffComparisonView: React.FC<ExportDiffComparisonViewProps> =
   activeSlot,
   onSetActiveSlot
 }) => {
-  const runA = history[runAIndex] || history[0];
-  const runB = history[runBIndex] || history[Math.min(history.length - 1, 1)];
+  const safeHistory = history || [];
+  const runA = safeHistory[runAIndex] || safeHistory[0];
+  const runB = safeHistory[runBIndex] || safeHistory[Math.min(safeHistory.length - 1, 1)];
 
   // CPU Indicator calculations for both runs
   const cpuIndA = useMemo(() => getCpuPerformanceIndicator(runA ? runA.cpuUsagePercent : 0), [runA]);
@@ -110,8 +111,8 @@ export const ExportDiffComparisonView: React.FC<ExportDiffComparisonViewProps> =
   };
 
   const handlePresetCsvVsJson = () => {
-    const csvIdx = history.findIndex(p => p.format === 'csv');
-    const jsonIdx = history.findIndex(p => p.format === 'json');
+    const csvIdx = safeHistory.findIndex(p => p.format === 'csv');
+    const jsonIdx = safeHistory.findIndex(p => p.format === 'json');
     if (csvIdx !== -1 && jsonIdx !== -1) {
       onSelectRunA(csvIdx);
       onSelectRunB(jsonIdx);
@@ -119,12 +120,12 @@ export const ExportDiffComparisonView: React.FC<ExportDiffComparisonViewProps> =
   };
 
   const handlePresetFastestVsSlowest = () => {
-    if (history.length < 2) return;
+    if (safeHistory.length < 2) return;
     let minIdx = 0;
     let maxIdx = 0;
-    history.forEach((p, idx) => {
-      if (p.durationMs < history[minIdx].durationMs) minIdx = idx;
-      if (p.durationMs > history[maxIdx].durationMs) maxIdx = idx;
+    safeHistory.forEach((p, idx) => {
+      if (p.durationMs < safeHistory[minIdx].durationMs) minIdx = idx;
+      if (p.durationMs > safeHistory[maxIdx].durationMs) maxIdx = idx;
     });
     if (minIdx !== maxIdx) {
       onSelectRunA(minIdx);

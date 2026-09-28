@@ -1,37 +1,62 @@
 import React from 'react';
-import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud } from 'lucide-react';
+import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface HeaderProps {
-  flags: OptimizationFlags;
-  onToggleAll: (enable: boolean) => void;
-  onRunBenchmark: () => void;
-  isBenchmarking: boolean;
-  hasErrors: boolean;
-  activeErrorCount: number;
-  activeView: 'grid' | 'trends';
-  onSelectView: (view: 'grid' | 'trends') => void;
-  trendCount: number;
+  flags?: OptimizationFlags;
+  onToggleAll?: (enable: boolean) => void;
+  onRunBenchmark?: () => void;
+  isBenchmarking?: boolean;
+  hasErrors?: boolean;
+  activeErrorCount?: number;
+  activeView?: 'grid' | 'trends' | 'comparison' | 'schema';
+  onSelectView?: (view: 'grid' | 'trends' | 'comparison' | 'schema') => void;
+  trendCount?: number;
   totalRecords?: number;
   isIndexSynchronized?: boolean;
   onOpenBulkImport?: () => void;
+  onOpenBenchmark?: () => void;
+  onOpenTrends?: () => void;
+  onOpenHistoryTape?: () => void;
+  onExportCsv?: () => void;
+  onOpenPdfPreview?: () => void;
+  onOpenWizard?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  flags,
+  flags = {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: true,
+    deferredRendering: true,
+  },
   onToggleAll,
   onRunBenchmark,
-  isBenchmarking,
-  hasErrors,
-  activeErrorCount,
-  activeView,
+  isBenchmarking = false,
+  hasErrors = false,
+  activeErrorCount = 0,
+  activeView = 'grid',
   onSelectView,
-  trendCount,
+  trendCount = 0,
   totalRecords = 50000,
   isIndexSynchronized = true,
-  onOpenBulkImport
+  onOpenBulkImport,
+  onOpenBenchmark,
+  onOpenTrends,
+  onOpenHistoryTape,
+  onExportCsv,
+  onOpenPdfPreview,
+  onOpenWizard
 }) => {
-  const allOptimized = Object.values(flags).every(Boolean);
+  const currentFlags = flags || {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: true,
+    deferredRendering: true,
+  };
+  const allOptimized = Object.values(currentFlags || {}).every(Boolean);
 
   return (
     <header className="border-b border-zinc-200 bg-white/95 backdrop-blur-sm sticky top-0 z-30">
@@ -102,6 +127,32 @@ export const Header: React.FC<HeaderProps> = ({
                 D3
               </span>
             </button>
+            <button
+              id="header-nav-comparison"
+              type="button"
+              onClick={() => onSelectView('comparison')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                activeView === 'comparison'
+                  ? 'bg-white text-blue-900 font-semibold shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-900'
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5 text-blue-600" />
+              <span>Latency Comparison</span>
+            </button>
+            <button
+              id="header-nav-schema"
+              type="button"
+              onClick={() => onSelectView('schema')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                activeView === 'schema'
+                  ? 'bg-white text-indigo-900 font-semibold shadow-xs'
+                  : 'text-zinc-600 hover:text-zinc-900'
+              }`}
+            >
+              <Database className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Schema Explorer</span>
+            </button>
           </div>
 
           {onOpenBulkImport && (
@@ -117,6 +168,19 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="font-mono text-[10px] bg-blue-200/80 text-blue-900 px-1.5 py-0.2 rounded font-bold">
                 {totalRecords > 50000 ? `${(totalRecords / 1000).toFixed(1)}k` : '50k'}
               </span>
+            </button>
+          )}
+
+          {onOpenWizard && (
+            <button
+              id="header-btn-optimization-wizard"
+              type="button"
+              onClick={onOpenWizard}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 shadow-2xs transition-colors cursor-pointer"
+              title="Open interactive optimization wizard checklist"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
+              <span>Optimization Wizard</span>
             </button>
           )}
 
@@ -139,7 +203,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="btn-toggle-unoptimized"
               type="button"
-              onClick={() => onToggleAll(false)}
+              onClick={() => onToggleAll?.(false)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-zinc-100 text-zinc-800 hover:bg-zinc-200 border border-zinc-300 transition-colors cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5 text-zinc-600" />
@@ -149,7 +213,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="btn-toggle-optimized"
               type="button"
-              onClick={() => onToggleAll(true)}
+              onClick={() => onToggleAll?.(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 shadow-xs transition-colors cursor-pointer"
             >
               <Zap className="w-3.5 h-3.5 fill-white" />

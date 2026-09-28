@@ -36,24 +36,27 @@ import { TapeSliceDiffOverlay } from './TapeSliceDiffOverlay';
 interface HistoricalDataTapeModalProps {
   isOpen: boolean;
   onClose: () => void;
-  entries: DataTapeEntry[];
-  isAutoSaveEnabled: boolean;
-  onToggleAutoSave: () => void;
-  onClearTape: () => void;
-  onTriggerManualSlice: () => void;
-  onMutateDatabase: (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => void | Promise<void>;
+  entries?: DataTapeEntry[];
+  initialEntries?: DataTapeEntry[];
+  isAutoSaveEnabled?: boolean;
+  onToggleAutoSave?: () => void;
+  onClearTape?: () => void;
+  onTriggerManualSlice?: () => void;
+  onMutateDatabase?: (type: 'status_transition' | 'high_risk_flag' | 'insert_live') => void | Promise<void>;
 }
 
 export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = ({
   isOpen,
   onClose,
   entries,
-  isAutoSaveEnabled,
-  onToggleAutoSave,
-  onClearTape,
-  onTriggerManualSlice,
-  onMutateDatabase
+  initialEntries,
+  isAutoSaveEnabled = true,
+  onToggleAutoSave = () => {},
+  onClearTape = () => {},
+  onTriggerManualSlice = () => {},
+  onMutateDatabase = (_type?: 'status_transition' | 'high_risk_flag' | 'insert_live') => {}
 }) => {
+  const safeEntries = entries || initialEntries || [];
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
   const [inspectedEntry, setInspectedEntry] = useState<DataTapeEntry | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -65,13 +68,13 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   // Unique trigger events for quick-filtering pills
   const uniqueTriggerEvents = useMemo(() => {
     const set = new Set<string>();
-    entries.forEach((e) => {
+    safeEntries.forEach((e) => {
       if (e.triggerEvent && e.triggerEvent.trim()) {
         set.add(e.triggerEvent.trim());
       }
     });
     return Array.from(set);
-  }, [entries]);
+  }, [safeEntries]);
 
   if (!isOpen) return null;
 
@@ -109,12 +112,12 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   };
 
   const handleDownloadLedgerCsv = () => {
-    const { blob, filename } = generateAuditLedgerCsv(entries);
+    const { blob, filename } = generateAuditLedgerCsv(safeEntries);
     triggerFileDownload(blob, filename);
   };
 
   const handleDownloadJsonBundle = () => {
-    const { blob, filename } = generateAuditTapeJsonBundle(entries);
+    const { blob, filename } = generateAuditTapeJsonBundle(safeEntries);
     triggerFileDownload(blob, filename);
   };
 
@@ -129,7 +132,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
 
   // Filter entries based on Trigger Event description filter and general search term
   const filteredEntries = useMemo(() => {
-    return entries.filter((e) => {
+    return safeEntries.filter((e) => {
       // 1. Dedicated 'Trigger Event' description filter
       if (triggerEventFilter.trim()) {
         const eventQuery = triggerEventFilter.toLowerCase().trim();
@@ -153,12 +156,12 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
 
       return true;
     });
-  }, [entries, triggerEventFilter, searchTerm]);
+  }, [safeEntries, triggerEventFilter, searchTerm]);
 
-  const totalRecordsAudited = entries.reduce((acc, curr) => acc + curr.recordCount, 0);
-  const totalBytesAudited = entries.reduce((acc, curr) => acc + curr.fileSizeBytes, 0);
-  const avgLatencyMs = entries.length > 0
-    ? (entries.reduce((acc, curr) => acc + curr.durationMs, 0) / entries.length).toFixed(2)
+  const totalRecordsAudited = safeEntries.reduce((acc, curr) => acc + curr.recordCount, 0);
+  const totalBytesAudited = safeEntries.reduce((acc, curr) => acc + curr.fileSizeBytes, 0);
+  const avgLatencyMs = safeEntries.length > 0
+    ? (safeEntries.reduce((acc, curr) => acc + curr.durationMs, 0) / safeEntries.length).toFixed(2)
     : '0.00';
 
   return (
@@ -241,7 +244,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
               Tape Slices Recorded
             </span>
             <div className="flex items-baseline gap-1.5 mt-1">
-              <span className="font-mono text-xl font-bold text-zinc-900">{entries.length}</span>
+              <span className="font-mono text-xl font-bold text-zinc-900">{safeEntries.length}</span>
               <span className="text-zinc-500 text-xs font-medium">snapshots</span>
             </div>
             <p className="text-[10px] text-zinc-400 mt-1">Append-only audit tape</p>
@@ -336,7 +339,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
               id="btn-open-tape-compare-modal"
               type="button"
               onClick={() => setIsDiffOpen(true)}
-              disabled={entries.length === 0}
+              disabled={safeEntries.length === 0}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-950 text-xs font-semibold shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
               title="Compare metadata, record counts, and SHA-256 checksums between two tape slices"
             >
@@ -353,7 +356,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
               id="btn-export-audit-ledger-csv"
               type="button"
               onClick={handleDownloadLedgerCsv}
-              disabled={entries.length === 0}
+              disabled={safeEntries.length === 0}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 text-zinc-800 text-xs font-semibold shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
               title="Download CSV ledger of all tape entries, events, and SHA-256 hashes"
             >
@@ -365,7 +368,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
               id="btn-export-audit-bundle-json"
               type="button"
               onClick={handleDownloadJsonBundle}
-              disabled={entries.length === 0}
+              disabled={safeEntries.length === 0}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 text-zinc-800 text-xs font-semibold shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
               title="Download full JSON compliance manifest bundle with payload data"
             >
@@ -373,7 +376,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
               <span>Full JSON Bundle</span>
             </button>
 
-            {entries.length > 0 && (
+            {safeEntries.length > 0 && (
               <button
                 id="btn-clear-data-tape"
                 type="button"
@@ -472,7 +475,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
             <div className="flex md:flex-col items-center md:items-end justify-between md:justify-end shrink-0 pt-1 md:pt-4 text-[11px] text-zinc-500">
               <div className="flex items-center gap-1.5">
                 <span>
-                  Showing <strong>{filteredEntries.length}</strong> of {entries.length} slices
+                  Showing <strong>{filteredEntries.length}</strong> of {safeEntries.length} slices
                 </span>
                 {(triggerEventFilter || searchTerm) && (
                   <button
@@ -817,7 +820,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
       <TapeSliceDiffOverlay
         isOpen={isDiffOpen}
         onClose={() => setIsDiffOpen(false)}
-        entries={entries}
+        entries={safeEntries}
         initialSliceAId={selectedForDiffIds[0] || null}
         initialSliceBId={selectedForDiffIds[1] || null}
         onTriggerNewSlice={onTriggerManualSlice}

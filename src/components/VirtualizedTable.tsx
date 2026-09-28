@@ -5,6 +5,7 @@ import {
   OrderStatus,
   ProductCategory
 } from '../types';
+import { calculateRollingZScores } from '../utils/anomalyDetectionService';
 import {
   Search,
   Filter,
@@ -29,7 +30,13 @@ import {
   Eye,
   EyeOff,
   Sliders,
-  Database
+  Database,
+  Flame,
+  Activity,
+  Bell,
+  Mail,
+  AlertTriangle,
+  BarChart2
 } from 'lucide-react';
 import {
   exportRecords,
@@ -43,22 +50,29 @@ import {
 import { deleteRecordsByIds } from '../db/databaseEngine';
 import { CpuPerformanceGlowBadge } from './CpuPerformanceGlowBadge';
 import { DeleteConfirmationOverlay } from './DeleteConfirmationOverlay';
+import { CompareLatencyModal } from './CompareLatencyModal';
+import { LatencyDistributionModal } from './LatencyDistributionModal';
 
 interface VirtualizedTableProps {
   records: TransactionRecord[];
-  totalCount: number;
-  flags: OptimizationFlags;
-  searchTerm: string;
-  onSearchChange: (val: string) => void;
-  statusFilter: OrderStatus | 'all';
-  onStatusChange: (val: OrderStatus | 'all') => void;
-  categoryFilter: ProductCategory | 'all';
-  onCategoryChange: (val: ProductCategory | 'all') => void;
-  pageSize: number;
-  onPageSizeChange: (val: number) => void;
-  onFixNPlusOne: () => void;
-  simulatedError: string | null;
-  warningNotice: string | null;
+  totalCount?: number;
+  flags?: OptimizationFlags;
+  searchTerm?: string;
+  searchQuery?: string;
+  onSearchChange?: (val: string) => void;
+  statusFilter?: OrderStatus | 'all' | 'All';
+  onStatusChange?: (val: any) => void;
+  categoryFilter?: ProductCategory | 'all' | 'All';
+  selectedCategory?: ProductCategory | 'all' | 'All';
+  onCategoryChange?: (val: any) => void;
+  pageSize?: number;
+  onPageSizeChange?: (val: number) => void;
+  page?: number;
+  onPageChange?: (val: number) => void;
+  onFixNPlusOne?: () => void;
+  simulatedError?: string | null;
+  warningNotice?: string | null;
+  virtualizedEnabled?: boolean;
   onOpenBulkImport?: () => void;
   onExportComplete?: (stats: ExportPerformanceResult) => void;
   selectedExportFormat?: ExportFormat;
@@ -71,26 +85,75 @@ interface VirtualizedTableProps {
   onIncludeCsvHeadersChange?: (include: boolean) => void;
   onDeleteRecords?: (recordIds: string[]) => void;
   cacheHit?: boolean;
+  onAutoOptimize?: () => void;
+  showLatencyHeatmapProp?: boolean;
+  onToggleLatencyHeatmap?: (enabled: boolean) => void;
 }
+
+const getRowSparklinePoints = (recordId: string, baseLatency: number, isUnoptimized: boolean) => {
+  const points: number[] = [];
+  let seed = 0;
+  for (let i = 0; i < recordId.length; i++) {
+    seed += recordId.charCodeAt(i);
+  }
+  for (let i = 0; i < 10; i++) {
+    const pseudoRandom = Math.sin(seed + i * 99) * 12;
+    const spike = isUnoptimized && (i === 3 || i === 7) ? baseLatency * 1.6 : 0;
+    const val = Math.max(4, baseLatency + pseudoRandom + spike);
+    points.push(val);
+  }
+  return points;
+};
+
+const renderInlineSparkline = (points: number[], width = 52, height = 18, strokeColor = '#e11d48') => {
+  if (!points || points.length === 0) return null;
+  const min = Math.min(...points);
+  const max = Math.max(...points, min + 1);
+  const range = max - min;
+  
+  const coords = points.map((val, idx) => {
+    const x = (idx / (points.length - 1)) * width;
+    const y = height - ((val - min) / range) * (height - 6) - 3;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  return (
+    <svg width={width} height={height} className="overflow-visible inline-block">
+      <polyline
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={coords}
+      />
+    </svg>
+  );
+};
 
 const ROW_HEIGHT = 56;
 const CONTAINER_HEIGHT = 520;
 
 export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
-  records,
-  totalCount,
+  records = [],
+  totalCount = 50000,
   flags,
   searchTerm,
+  searchQuery,
   onSearchChange,
-  statusFilter,
+  statusFilter = 'all',
   onStatusChange,
   categoryFilter,
+  selectedCategory,
   onCategoryChange,
-  pageSize,
+  pageSize = 100,
   onPageSizeChange,
-  onFixNPlusOne,
-  simulatedError,
-  warningNotice,
+  page,
+  onPageChange,
+  onFixNPlusOne = () => {},
+  simulatedError = null,
+  warningNotice = null,
+  virtualizedEnabled,
   onOpenBulkImport,
   onExportComplete,
   selectedExportFormat = 'csv',
@@ -102,8 +165,24 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   includeCsvHeaders = true,
   onIncludeCsvHeadersChange,
   onDeleteRecords,
-  cacheHit = false
+  cacheHit = false,
+  onAutoOptimize = () => {},
+  showLatencyHeatmapProp,
+  onToggleLatencyHeatmap
 }) => {
+  const safeFlags: OptimizationFlags = {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: virtualizedEnabled !== undefined ? virtualizedEnabled : true,
+    deferredRendering: true,
+    ...(flags || {})
+  };
+
+  const currentSearchTerm = searchTerm ?? searchQuery ?? '';
+  const currentCategory = (categoryFilter ?? selectedCategory ?? 'all') as ProductCategory | 'all';
+  const currentStatus = (statusFilter ?? 'all') as OrderStatus | 'all';
+
   const [scrollTop, setScrollTop] = useState(0);
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
   const [exportStats, setExportStats] = useState<ExportPerformanceResult | null>(null);
@@ -117,6 +196,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
   // Selection & Batch Operations State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [isLatencyDistModalOpen, setIsLatencyDistModalOpen] = useState(false);
   const [batchNotification, setBatchNotification] = useState<{
     type: 'export' | 'delete';
     title: string;
@@ -148,6 +229,21 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   // Batch Delete Confirmation Overlay state
   const [isDeleteConfirmationOpen, setIsDeleteConfirmationOpen] = useState(false);
 
+  // Real-time Latency Heatmap Overlay State (active when batchEagerLoading is disabled)
+  const [internalShowHeatmap, setInternalShowHeatmap] = useState(true);
+  const showLatencyHeatmap = showLatencyHeatmapProp ?? internalShowHeatmap;
+  const setShowLatencyHeatmap = onToggleLatencyHeatmap ?? setInternalShowHeatmap;
+
+  // Minimum Latency Filter Slider State (isolates performance-heavy records)
+  const [minLatencyFilterMs, setMinLatencyFilterMs] = useState<number>(0);
+
+  // Email & Latency Threshold Alert State
+  const [alertThresholdMs, setAlertThresholdMs] = useState<number>(100);
+  const [emailAlertEnabled, setEmailAlertEnabled] = useState<boolean>(true);
+  const [alertEmail, setAlertEmail] = useState<string>('db-admin@enterprise-db.io');
+  const [hasSentAlertEmail, setHasSentAlertEmail] = useState<boolean>(false);
+  const [emailToast, setEmailToast] = useState<string | null>(null);
+
   // 'Show Selected Only' toggle state for reviewing batch selections
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
 
@@ -158,13 +254,95 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     }
   }, [selectedRowIds.size, showSelectedOnly]);
 
-  // Filter records to only selected rows when showSelectedOnly is active
+  // Filter records by selected rows and/or latency threshold filter
   const displayRecords = useMemo(() => {
-    if (!showSelectedOnly) {
-      return records;
+    let list = records;
+    if (showSelectedOnly) {
+      list = list.filter((r) => selectedRowIds.has(r.id));
     }
-    return records.filter((r) => selectedRowIds.has(r.id));
-  }, [records, showSelectedOnly, selectedRowIds]);
+    if (!safeFlags.batchEagerLoading && minLatencyFilterMs > 0) {
+      list = list.filter((r) => {
+        const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
+        const unoptMult = 45.0;
+        const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+        const latencyMs = 20.0 + (itemCnt * unoptMult) + idxPenalty;
+        return latencyMs >= minLatencyFilterMs;
+      });
+    }
+    return list;
+  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+
+  // Rolling Z-scores and anomaly detection service for displayed records
+  const anomalyMap = useMemo(() => {
+    return calculateRollingZScores(displayRecords);
+  }, [displayRecords]);
+
+  // Average table latency across displayed records
+  const averageTableLatencyMs = useMemo(() => {
+    if (displayRecords.length === 0) return 0;
+    let total = 0;
+    for (const r of displayRecords) {
+      const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
+      const unoptMult = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
+      const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+      const latencyMs = safeFlags.batchEagerLoading ? (itemCnt * 4.0 + 10.0) : (20.0 + (itemCnt * unoptMult) + idxPenalty);
+      total += latencyMs;
+    }
+    return total / displayRecords.length;
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+
+  const handleExportHeatmapCsv = () => {
+    const csvRows: string[] = [];
+    csvRows.push('OrderNumber,CreatedAt,CustomerName,CustomerTier,Category,Region,Status,AmountUSD,ItemCount,FetchLatencyMs,SeverityImpact,BatchEagerLoading,BTreeIndexing');
+    
+    for (const r of displayRecords) {
+      const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
+      const unoptMult = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
+      const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+      const latencyMs = safeFlags.batchEagerLoading ? (itemCnt * 4.0 + 10.0) : (20.0 + (itemCnt * unoptMult) + idxPenalty);
+      const severity = latencyMs > 150 ? 'High (>150ms)' : latencyMs >= 50 ? 'Moderate (50-150ms)' : 'Low (<50ms)';
+      
+      const escape = (str: any) => `"${String(str || '').replace(/"/g, '""')}"`;
+      csvRows.push([
+        escape(r.orderNumber),
+        escape(r.createdAt),
+        escape(r.customerName),
+        escape(r.customerTier),
+        escape(r.category),
+        escape(r.region),
+        escape(r.status),
+        r.amount.toFixed(2),
+        itemCnt,
+        latencyMs.toFixed(1),
+        escape(severity),
+        safeFlags.batchEagerLoading ? 'Enabled' : 'Disabled (N+1 Storm)',
+        safeFlags.btreeIndexing ? 'Enabled' : 'Disabled (Seq Scan)'
+      ].join(','));
+    }
+
+    const csvContent = csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `latency_heatmap_analysis_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const isAvgLatencyExceeded = averageTableLatencyMs > alertThresholdMs;
+
+  useEffect(() => {
+    if (isAvgLatencyExceeded && emailAlertEnabled && !hasSentAlertEmail) {
+      setHasSentAlertEmail(true);
+      setEmailToast(`[Email Alert Sent to ${alertEmail}] Average table latency (${averageTableLatencyMs.toFixed(1)}ms) exceeded threshold (${alertThresholdMs}ms)!`);
+      const timer = setTimeout(() => setEmailToast(null), 8000);
+      return () => clearTimeout(timer);
+    } else if (!isAvgLatencyExceeded) {
+      setHasSentAlertEmail(false);
+    }
+  }, [isAvgLatencyExceeded, emailAlertEnabled, averageTableLatencyMs, alertThresholdMs, alertEmail, hasSentAlertEmail]);
 
   // Count selected rows among current filtered records
   const selectedVisibleCount = useMemo(() => {
@@ -447,19 +625,21 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   };
 
   // React 19 useDeferredValue for non-blocking search
-  const deferredSearchTerm = useDeferredValue(searchTerm);
+  const deferredSearchTerm = useDeferredValue(currentSearchTerm);
 
   // If deferred rendering is off, simulate synchronous typing stall
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
-    if (!flags.deferredRendering && val.length > 2) {
+    if (!safeFlags.deferredRendering && val.length > 2) {
       // Simulate heavy synchronous blocking thread work on keypress
       const start = performance.now();
       while (performance.now() - start < 45) {
         // block main thread to emulate heavy unoptimized UI lag
       }
     }
-    onSearchChange(val);
+    if (onSearchChange) {
+      onSearchChange(val);
+    }
   };
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -468,7 +648,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
   // Calculate visible window slice if virtualizedDOM is enabled
   const { visibleRecords, startIndex, offsetY } = useMemo(() => {
-    if (!flags.virtualizedDOM) {
+    if (!safeFlags.virtualizedDOM) {
       // Unoptimized: Render ALL records into the DOM!
       return {
         visibleRecords: displayRecords,
@@ -491,7 +671,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       startIndex: start,
       offsetY: offset
     };
-  }, [displayRecords, scrollTop, flags.virtualizedDOM]);
+  }, [displayRecords, scrollTop, safeFlags.virtualizedDOM]);
 
   const toggleExpand = (id: string) => {
     setExpandedRowId((prev) => (prev === id ? null : id));
@@ -541,6 +721,31 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
   return (
     <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden flex flex-col">
+      {/* Latency Heatmap Threshold Legend Bar */}
+      <div className="bg-zinc-100/90 px-4 py-2 border-b border-zinc-200 flex items-center justify-between text-xs flex-wrap gap-2">
+        <div className="flex items-center gap-1.5 text-zinc-700 font-semibold">
+          <Activity className="w-3.5 h-3.5 text-zinc-500" />
+          <span>Heatmap Threshold Legend:</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block ring-2 ring-emerald-200"></span>
+            <span className="text-zinc-700 font-medium">Green (&lt; 50ms)</span>
+            <span className="text-zinc-400 text-[10px]">Optimal</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-amber-500 inline-block ring-2 ring-amber-200"></span>
+            <span className="text-zinc-700 font-medium">Yellow (50–150ms)</span>
+            <span className="text-zinc-400 text-[10px]">Warning</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-rose-600 inline-block ring-2 ring-rose-200 animate-pulse"></span>
+            <span className="text-zinc-700 font-medium">Red (&gt; 150ms)</span>
+            <span className="text-zinc-400 text-[10px]">Critical Bottleneck</span>
+          </div>
+        </div>
+      </div>
+
       {/* Search & Filter Toolbar */}
       <div className="p-4 border-b border-zinc-200 bg-zinc-50/50 flex flex-col md:flex-row md:items-center justify-between gap-3">
         {/* Search Input */}
@@ -549,12 +754,12 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           <input
             id="search-transactions"
             type="text"
-            value={searchTerm}
+            value={currentSearchTerm}
             onChange={handleInputChange}
             placeholder="Search by order #, customer, or email..."
             className="w-full pl-9 pr-4 py-1.5 text-sm bg-white border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all placeholder:text-zinc-400"
           />
-          {!flags.deferredRendering && (
+          {!safeFlags.deferredRendering && (
             <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded font-medium">
               Sync Blocking
             </span>
@@ -568,8 +773,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             <span className="text-zinc-500 font-medium">Status:</span>
             <select
               id="select-status-filter"
-              value={statusFilter}
-              onChange={(e) => onStatusChange(e.target.value as OrderStatus | 'all')}
+              value={currentStatus}
+              onChange={(e) => onStatusChange?.(e.target.value as OrderStatus | 'all')}
               className="bg-white border border-zinc-300 rounded-md px-2.5 py-1 text-xs text-zinc-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="all">All Statuses</option>
@@ -585,8 +790,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             <span className="text-zinc-500 font-medium">Category:</span>
             <select
               id="select-category-filter"
-              value={categoryFilter}
-              onChange={(e) => onCategoryChange(e.target.value as ProductCategory | 'all')}
+              value={currentCategory}
+              onChange={(e) => onCategoryChange?.(e.target.value as ProductCategory | 'all')}
               className="bg-white border border-zinc-300 rounded-md px-2.5 py-1 text-xs text-zinc-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="all">All Categories</option>
@@ -678,7 +883,82 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </button>
           )}
 
-          {/* Power-User Keyboard Shortcut Helper Callout */}
+          {/* Main Header Toggle Switch for Real-Time Latency Heatmap Overlay */}
+          <label
+            id="main-header-toggle-latency-heatmap"
+            htmlFor="main-header-toggle-heatmap-input"
+            className={`inline-flex items-center gap-2 px-3 py-1 rounded-md text-xs font-semibold cursor-pointer transition-all border shadow-2xs select-none ${
+              showLatencyHeatmap
+                ? 'bg-rose-50 border-rose-300 text-rose-900 ring-1 ring-rose-400/40'
+                : 'bg-zinc-100 hover:bg-zinc-200/70 border-zinc-300 text-zinc-700'
+            }`}
+            title="Enable or disable the real-time latency heatmap overlay across table rows"
+          >
+            <input
+              id="main-header-toggle-heatmap-input"
+              data-testid="main-header-toggle-heatmap-input"
+              type="checkbox"
+              checked={showLatencyHeatmap}
+              onChange={(e) => setShowLatencyHeatmap(e.target.checked)}
+              className="w-3.5 h-3.5 rounded border-rose-300 text-rose-600 focus:ring-rose-500/30 accent-rose-600 cursor-pointer"
+            />
+            <Flame className={`w-3.5 h-3.5 ${showLatencyHeatmap ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+            <span>Heatmap Overlay</span>
+          </label>
+
+          {/* Main Header Latency Filter Slider Control */}
+          <div className="flex items-center gap-2 bg-white px-3 py-1 rounded-md border border-zinc-300 text-zinc-700 shadow-2xs">
+            <span className="font-semibold text-zinc-800 flex items-center gap-1 text-xs">
+              <span>Min Latency:</span>
+              <strong className="font-mono text-rose-700">{minLatencyFilterMs}ms</strong>
+            </span>
+            <input
+              id="main-header-latency-filter-slider"
+              data-testid="main-header-latency-filter-slider"
+              type="range"
+              min="0"
+              max="200"
+              step="10"
+              value={minLatencyFilterMs}
+              onChange={(e) => setMinLatencyFilterMs(Number(e.target.value))}
+              className="w-24 accent-rose-600 cursor-pointer h-1.5 bg-zinc-200 rounded-lg"
+              title="Filter visible rows by minimum database fetch latency value to quickly isolate high-impact records"
+            />
+            {minLatencyFilterMs > 0 && (
+              <button
+                type="button"
+                onClick={() => setMinLatencyFilterMs(0)}
+                className="text-[10px] text-zinc-500 hover:text-zinc-800 font-bold underline cursor-pointer ml-0.5"
+                title="Reset latency filter"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+          {/* Compare Latency Trigger Button */}
+          <button
+            type="button"
+            id="btn-open-compare-latency"
+            onClick={() => setIsCompareModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-emerald-800 rounded-md text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
+            title="Compare two different sets of optimization flags and run benchmark deltas side-by-side"
+          >
+            <Sliders className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Compare Latency</span>
+          </button>
+
+          {/* Latency Distribution Histogram Trigger Button */}
+          <button
+            type="button"
+            id="btn-open-latency-distribution"
+            onClick={() => setIsLatencyDistModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 text-indigo-800 rounded-md text-xs font-semibold transition-colors shadow-2xs cursor-pointer"
+            title="Open Recharts Latency Distribution Histogram to analyze spread and identify systemic outliers"
+          >
+            <BarChart2 className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Latency Distribution</span>
+          </button>
+
           <div
             id="table-keyboard-shortcut-hint"
             className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 bg-zinc-100/90 text-zinc-600 rounded-md text-xs font-medium border border-zinc-200"
@@ -959,7 +1239,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       )}
 
       {/* Warning Notice if Unindexed Full Table Scan */}
-      {!flags.btreeIndexing && warningNotice && !simulatedError && (
+      {!safeFlags.btreeIndexing && warningNotice && !simulatedError && (
         <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-amber-600" />
@@ -1310,6 +1590,199 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         </div>
       )}
 
+      {/* Visual Alert Banner for Exceeded Average Latency Threshold */}
+      {isAvgLatencyExceeded && (
+        <div
+          id="avg-latency-alert-banner"
+          data-testid="avg-latency-alert-banner"
+          className="px-4 py-2.5 bg-rose-600 text-white flex flex-wrap items-center justify-between gap-3 text-xs shadow-md animate-fadeIn"
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white/20 text-white animate-bounce">
+              <AlertTriangle className="w-4 h-4 text-amber-200" />
+            </span>
+            <div>
+              <div className="font-bold flex items-center gap-1.5">
+                <span>Performance Threshold Exceeded!</span>
+                <span className="text-[10px] font-mono bg-white/20 px-1.5 py-0.2 rounded font-bold">
+                  Avg: {averageTableLatencyMs.toFixed(1)}ms (Limit: {alertThresholdMs}ms)
+                </span>
+              </div>
+              <p className="text-[11px] text-rose-100 mt-0.5">
+                Table average latency has exceeded your diagnostic threshold. {emailAlertEnabled ? `Email notification dispatched to ${alertEmail}.` : ''}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (onAutoOptimize) onAutoOptimize();
+                setMinLatencyFilterMs(0);
+              }}
+              className="px-2.5 py-1 bg-white text-rose-700 hover:bg-rose-50 font-bold rounded shadow-xs transition-colors cursor-pointer"
+            >
+              Auto-Resolve via Auto-Optimize
+            </button>
+            {emailToast && (
+              <span className="text-[11px] font-mono bg-rose-800 text-rose-100 px-2 py-0.5 rounded border border-rose-400">
+                {emailToast}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Real-Time Latency Heatmap Overlay Control Banner (Active when batchEagerLoading is disabled) */}
+      {!safeFlags.batchEagerLoading && (
+        <div
+          id="latency-heatmap-overlay-bar"
+          data-testid="latency-heatmap-overlay-bar"
+          className="px-4 py-2.5 bg-gradient-to-r from-amber-500/10 via-rose-500/10 to-amber-500/10 border-b border-rose-200 flex flex-wrap items-center justify-between gap-3 text-xs"
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-rose-100 text-rose-700 border border-rose-300 animate-pulse">
+              <Flame className="w-3.5 h-3.5 text-rose-600" />
+            </span>
+            <div>
+              <div className="font-bold text-rose-950 flex items-center gap-1.5">
+                <span>Real-Time Latency Heatmap Overlay</span>
+                <span className="text-[10px] font-mono bg-rose-100 text-rose-800 px-1.5 py-0.2 rounded border border-rose-300 font-bold">
+                  N+1 Storm Active
+                </span>
+                <span className="text-[10px] font-mono bg-zinc-900 text-amber-300 px-1.5 py-0.2 rounded">
+                  Avg: {averageTableLatencyMs.toFixed(1)}ms
+                </span>
+              </div>
+              <p className="text-[11px] text-rose-700 mt-0.5">
+                Highlighting records &amp; columns contributing most to query latency due to unbatched subqueries.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* Latency Threshold Filter Slider */}
+            <div className="flex items-center gap-2 bg-white/95 px-3 py-1 rounded-md border border-rose-200 text-zinc-700 shadow-2xs">
+              <span className="font-semibold text-rose-950 flex items-center gap-1 text-[11px]">
+                <span>Min Latency:</span>
+                <strong className="font-mono text-rose-700">{minLatencyFilterMs}ms</strong>
+              </span>
+              <input
+                id="latency-filter-slider"
+                data-testid="latency-filter-slider"
+                type="range"
+                min="0"
+                max="200"
+                step="10"
+                value={minLatencyFilterMs}
+                onChange={(e) => setMinLatencyFilterMs(Number(e.target.value))}
+                className="w-20 accent-rose-600 cursor-pointer h-1.5 bg-rose-200 rounded-lg"
+                title="Filter visible rows by minimum latency value to isolate performance-heavy records"
+              />
+              {minLatencyFilterMs > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setMinLatencyFilterMs(0)}
+                  className="text-[10px] text-rose-700 hover:text-rose-900 font-bold underline ml-0.5 cursor-pointer"
+                  title="Reset latency filter"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+
+            {/* Email & Latency Alert Config */}
+            <div className="flex items-center gap-1.5 bg-white/95 px-2.5 py-1 rounded-md border border-rose-200 text-zinc-700 text-[11px]">
+              <Bell className="w-3.5 h-3.5 text-rose-600 animate-pulse shrink-0" />
+              <span className="font-medium text-zinc-800">Alert &gt;</span>
+              <input
+                id="input-alert-threshold"
+                type="number"
+                min="10"
+                max="500"
+                step="10"
+                value={alertThresholdMs}
+                onChange={(e) => setAlertThresholdMs(Math.max(10, Number(e.target.value)))}
+                className="w-12 px-1 py-0.5 text-center font-mono font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded"
+                title="User-defined average latency threshold (ms)"
+              />
+              <span className="text-zinc-500 font-mono">ms</span>
+              <label className="flex items-center gap-1 cursor-pointer ml-1 select-none font-medium text-zinc-700" title="Enable automated email notifications when threshold is exceeded">
+                <input
+                  type="checkbox"
+                  checked={emailAlertEnabled}
+                  onChange={(e) => setEmailAlertEnabled(e.target.checked)}
+                  className="w-3 h-3 text-rose-600 rounded border-rose-300 accent-rose-600 cursor-pointer"
+                />
+                <Mail className="w-3 h-3 text-zinc-600" />
+              </label>
+            </div>
+
+            {/* Heatmap Legend */}
+            <div className="hidden 2xl:flex items-center gap-2 text-[11px] font-medium text-zinc-600 bg-white/80 px-2.5 py-1 rounded-md border border-zinc-200">
+              <span className="text-zinc-500 font-semibold">Thresholds:</span>
+              <span className="inline-flex items-center gap-1 text-emerald-700 font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span> &lt;50ms
+              </span>
+              <span className="text-zinc-300">•</span>
+              <span className="inline-flex items-center gap-1 text-amber-700 font-mono">
+                <span className="w-2 h-2 rounded-full bg-amber-500"></span> 50–150ms
+              </span>
+              <span className="text-zinc-300">•</span>
+              <span className="inline-flex items-center gap-1 text-rose-700 font-mono">
+                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span> &gt;150ms
+              </span>
+            </div>
+
+            {/* Auto-Optimize Button */}
+            <button
+              type="button"
+              id="btn-auto-optimize"
+              data-testid="btn-auto-optimize"
+              onClick={() => {
+                if (onAutoOptimize) onAutoOptimize();
+                setMinLatencyFilterMs(0);
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white rounded-md text-xs font-semibold shadow-sm transition-all cursor-pointer"
+              title="Automatically resolve N+1 latency hotspots by toggling required optimization flags"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-200 animate-bounce" />
+              <span>Auto-Optimize</span>
+            </button>
+
+            {/* Export Heatmap CSV Button */}
+            <button
+              type="button"
+              id="btn-export-heatmap-csv"
+              data-testid="btn-export-heatmap-csv"
+              onClick={handleExportHeatmapCsv}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 rounded-md text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+              title="Download a CSV containing the latency metrics for all records currently displayed in the table"
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Export Latency CSV</span>
+            </button>
+
+            {/* Toggle Heatmap Overlay */}
+            <label
+              id="label-toggle-latency-heatmap"
+              htmlFor="toggle-latency-heatmap"
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white hover:bg-zinc-50 border border-rose-300 text-zinc-800 font-medium cursor-pointer transition-colors shadow-2xs select-none"
+            >
+              <input
+                id="toggle-latency-heatmap"
+                data-testid="toggle-latency-heatmap"
+                type="checkbox"
+                checked={showLatencyHeatmap}
+                onChange={(e) => setShowLatencyHeatmap(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-rose-300 text-rose-600 focus:ring-rose-500/30 accent-rose-600 cursor-pointer shrink-0"
+              />
+              <span className="font-semibold text-rose-950">Heatmap</span>
+            </label>
+          </div>
+        </div>
+      )}
+
       {/* Table Header */}
       <div
         id="table-column-header"
@@ -1423,23 +1896,56 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         ) : (
           <div
             style={{
-              height: flags.virtualizedDOM ? `${displayRecords.length * ROW_HEIGHT}px` : 'auto',
+              height: safeFlags.virtualizedDOM ? `${displayRecords.length * ROW_HEIGHT}px` : 'auto',
               position: 'relative'
             }}
           >
             <div
               style={{
-                transform: flags.virtualizedDOM ? `translateY(${offsetY}px)` : 'none',
-                position: flags.virtualizedDOM ? 'absolute' : 'relative',
+                transform: safeFlags.virtualizedDOM ? `translateY(${offsetY}px)` : 'none',
+                position: safeFlags.virtualizedDOM ? 'absolute' : 'relative',
                 top: 0,
                 left: 0,
                 right: 0
               }}
             >
               {visibleRecords.map((rec, index) => {
-                const actualIndex = flags.virtualizedDOM ? startIndex + index + 1 : index + 1;
+                const actualIndex = safeFlags.virtualizedDOM ? startIndex + index + 1 : index + 1;
                 const isExpanded = expandedRowId === rec.id;
                 const isSelected = selectedRowIds.has(rec.id);
+
+                const anomalyData = anomalyMap.get(rec.id);
+                const isStatisticalOutlier = anomalyData ? anomalyData.isOutlier : false;
+                const zScoreVal = anomalyData ? anomalyData.zScore : 0;
+
+                const recordItemCount = rec.items && rec.items.length > 0 ? rec.items.length : (rec.itemCount || 1);
+                const unoptimizedMultiplier = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
+                const indexPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+                const nPlusOneLatencyMs = safeFlags.batchEagerLoading 
+                  ? (recordItemCount * 4.0 + 10.0) 
+                  : (20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty);
+                
+                let heatmapRowBg = '';
+                let heatmapBadgeClass = '';
+                if (showLatencyHeatmap) {
+                  if (isStatisticalOutlier || nPlusOneLatencyMs > 150) {
+                    heatmapRowBg = isSelected ? 'bg-rose-100/95 border-rose-400 ring-2 ring-rose-500 shadow-md' : 'bg-rose-100/90 hover:bg-rose-100 border-rose-300 ring-1 ring-rose-400/50';
+                    heatmapBadgeClass = 'bg-rose-600 text-white font-bold animate-pulse shadow-xs';
+                  } else if (nPlusOneLatencyMs >= 50) {
+                    heatmapRowBg = isSelected ? 'bg-amber-100/90 border-amber-300' : 'bg-amber-100/70 hover:bg-amber-100 border-amber-200';
+                    heatmapBadgeClass = 'bg-amber-500 text-white font-semibold';
+                  } else {
+                    heatmapRowBg = isSelected ? 'bg-emerald-50/90 border-emerald-200' : 'bg-emerald-50/40 hover:bg-emerald-50/70 border-emerald-100';
+                    heatmapBadgeClass = 'bg-emerald-600 text-white font-medium';
+                  }
+                } else {
+                  heatmapRowBg = isSelected
+                    ? 'bg-emerald-50/90 hover:bg-emerald-100/70 border-emerald-200 shadow-2xs'
+                    : isExpanded
+                    ? 'bg-zinc-50 font-medium border-zinc-100'
+                    : 'hover:bg-zinc-50/80 border-zinc-100';
+                  heatmapBadgeClass = 'bg-zinc-100 text-zinc-700';
+                }
 
                 return (
                   <React.Fragment key={rec.id}>
@@ -1448,15 +1954,27 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       data-selected={isSelected}
                       aria-selected={isSelected}
                       onClick={() => toggleExpand(rec.id)}
-                      className={`grid grid-cols-12 px-4 py-3 items-center text-xs transition-colors cursor-pointer border-b ${
-                        isSelected
-                          ? 'bg-emerald-50/90 hover:bg-emerald-100/70 border-emerald-200 shadow-2xs'
-                          : isExpanded
-                          ? 'bg-zinc-50 font-medium border-zinc-100'
-                          : 'hover:bg-zinc-50/80 border-zinc-100'
-                      }`}
+                      title={
+                        showLatencyHeatmap
+                          ? `Database Fetch Latency: ${nPlusOneLatencyMs.toFixed(1)}ms (Z-score: ${zScoreVal.toFixed(2)}σ)`
+                          : undefined
+                      }
+                      className={`grid grid-cols-12 px-4 py-3 items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
                       style={{ minHeight: `${ROW_HEIGHT}px` }}
                     >
+                      {/* Row Hover Latency & Z-Score Anomaly Tooltip */}
+                      {showLatencyHeatmap && (
+                        <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg shadow-xl text-[11px] font-mono z-30 pointer-events-none border border-zinc-700 animate-fadeIn">
+                          <Activity className="w-3.5 h-3.5 text-rose-400 animate-pulse shrink-0" />
+                          <span>Fetch Latency: <strong className="text-rose-300 font-bold">{nPlusOneLatencyMs.toFixed(1)}ms</strong></span>
+                          {isStatisticalOutlier && (
+                            <span className="bg-rose-950 text-rose-300 border border-rose-500 px-1.5 py-0.5 rounded font-bold text-[10px]">
+                              🚨 Outlier (Z = {zScoreVal > 0 ? `+${zScoreVal.toFixed(2)}` : zScoreVal.toFixed(2)}σ)
+                            </span>
+                          )}
+                          <span className="text-zinc-400 text-[10px]">({recordItemCount} queries)</span>
+                        </div>
+                      )}
                       {/* Checkbox, Index & Expand arrow */}
                       <div
                         className="col-span-1 flex items-center gap-1.5 text-zinc-400"
@@ -1551,11 +2069,26 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                         <div className="text-[10px] text-zinc-400 font-mono">USD</div>
                       </div>
 
-                      {/* Item Count */}
-                      <div className="col-span-1 text-center">
-                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-zinc-100 text-zinc-700 font-semibold text-xs">
-                          {rec.itemCount}
+                      {/* Item Count & Inline Sparkline */}
+                      <div className="col-span-1 text-center flex flex-col items-center justify-center">
+                        <span
+                          className={`inline-flex items-center justify-center px-1.5 py-0.2 rounded text-[10px] font-mono ${heatmapBadgeClass}`}
+                          title={
+                            !safeFlags.batchEagerLoading
+                              ? `N+1 Latency Impact: ~${nPlusOneLatencyMs.toFixed(1)}ms (${recordItemCount} subqueries)`
+                              : `Item Count: ${recordItemCount} (Batched)`
+                          }
+                        >
+                          {recordItemCount} items
                         </span>
+                        <div className="mt-0.5" title="Historical latency fluctuations over last 10 fetch operations">
+                          {renderInlineSparkline(
+                            getRowSparklinePoints(rec.id, nPlusOneLatencyMs, !safeFlags.batchEagerLoading),
+                            48,
+                            16,
+                            !safeFlags.batchEagerLoading && nPlusOneLatencyMs > 150 ? '#e11d48' : !safeFlags.batchEagerLoading ? '#d97706' : '#059669'
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1568,7 +2101,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       >
                         <div className="text-[11px] font-semibold text-zinc-600 mb-2 flex items-center gap-1.5">
                           <Package className="w-3.5 h-3.5 text-zinc-500" />
-                          <span>Order Line Items ({rec.items.length}) — Fetched via {flags.batchEagerLoading ? 'Batch Eager Join (Optimized)' : 'N+1 Subquery (Slow)'}</span>
+                          <span>Order Line Items ({rec.items.length}) — Fetched via {safeFlags.batchEagerLoading ? 'Batch Eager Join (Optimized)' : 'N+1 Subquery (Slow)'}</span>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                           {rec.items.map((item) => (
@@ -1627,10 +2160,10 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           <span className="flex items-center gap-1 text-zinc-600">
             <span
               className={`w-2 h-2 rounded-full ${
-                flags.virtualizedDOM ? 'bg-emerald-500' : 'bg-rose-500 animate-ping'
+                safeFlags.virtualizedDOM ? 'bg-emerald-500' : 'bg-rose-500 animate-ping'
               }`}
             />
-            {flags.virtualizedDOM
+            {safeFlags.virtualizedDOM
               ? 'DOM Windowing Active (15 Nodes)'
               : `Rendering All ${records.length} Nodes in DOM (High Lag)`}
           </span>
@@ -1644,6 +2177,21 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         onConfirm={handleConfirmBatchDelete}
         selectedRecords={records.filter((r) => selectedRowIds.has(r.id))}
         totalDatabaseRecords={totalCount}
+      />
+
+      {/* Compare Latency Modal */}
+      <CompareLatencyModal
+        isOpen={isCompareModalOpen}
+        onClose={() => setIsCompareModalOpen(false)}
+        initialFlags={safeFlags}
+      />
+
+      {/* Latency Distribution Histogram Modal */}
+      <LatencyDistributionModal
+        isOpen={isLatencyDistModalOpen}
+        onClose={() => setIsLatencyDistModalOpen(false)}
+        records={records}
+        flags={safeFlags}
       />
     </div>
   );

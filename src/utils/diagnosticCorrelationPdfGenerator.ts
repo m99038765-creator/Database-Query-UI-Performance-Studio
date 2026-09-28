@@ -157,8 +157,8 @@ export function generateCorrelationSparklinePng(
       const t = pt.timestamp || minTime;
       // Count mutations that overlap with [t - 30s, t + 30s]
       let activeMutationsCount = 0;
-      mutationClusters.forEach((c) => {
-        c.mutations.forEach((m) => {
+      (mutationClusters || []).forEach((c) => {
+        (c.mutations || []).forEach((m) => {
           const mEnd = m.completedAt || m.startedAt + m.durationSeconds * 1000;
           if (m.startedAt <= t + 30000 && mEnd >= t - 30000) {
             activeMutationsCount++;

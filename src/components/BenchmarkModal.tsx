@@ -1,17 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { X, CheckCircle2, Zap, ArrowRight, Layers, Clock, Cpu, BarChart3 } from 'lucide-react';
-import { BenchmarkStep } from '../types';
+import { BenchmarkStep, OptimizationFlags } from '../types';
 
 interface BenchmarkModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onApplyAllOptimizations: () => void;
+  onApplyAllOptimizations?: () => void;
+  currentFlags?: OptimizationFlags;
+  onApplyFlags?: (flags: OptimizationFlags) => void;
 }
 
 export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
   isOpen,
   onClose,
-  onApplyAllOptimizations
+  onApplyAllOptimizations,
+  currentFlags,
+  onApplyFlags
 }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
@@ -265,7 +269,16 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
               id="btn-apply-benchmark-optimizations"
               type="button"
               onClick={() => {
-                onApplyAllOptimizations();
+                if (onApplyAllOptimizations) onApplyAllOptimizations();
+                if (onApplyFlags) {
+                  onApplyFlags({
+                    batchEagerLoading: true,
+                    btreeIndexing: true,
+                    queryCaching: true,
+                    virtualizedDOM: true,
+                    deferredRendering: true
+                  });
+                }
                 onClose();
               }}
               className="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 px-4 py-1.5 rounded-lg shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"

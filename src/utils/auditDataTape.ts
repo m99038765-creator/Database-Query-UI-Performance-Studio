@@ -204,7 +204,7 @@ export function generateAuditLedgerCsv(entries: DataTapeEntry[]): { blob: Blob; 
     return str;
   };
 
-  entries.forEach((e) => {
+  (entries || []).forEach((e) => {
     rows.push([
       escape(e.tapeId),
       escape(e.sequenceNumber),

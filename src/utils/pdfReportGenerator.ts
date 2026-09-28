@@ -56,14 +56,22 @@ export async function captureSvgAsPng(svgEl: SVGSVGElement): Promise<string | nu
  * side-by-side snapshot comparisons, and engineering optimization recommendations.
  */
 export async function generatePerformancePdfReport(params: {
-  trendHistory: LatencyTrendPoint[];
-  currentFlags: OptimizationFlags;
+  trendHistory?: LatencyTrendPoint[];
+  currentFlags?: OptimizationFlags;
   indexA?: number;
   indexB?: number;
   svgElement?: SVGSVGElement | null;
   options?: PdfReportOptions;
 }): Promise<jsPDF> {
-  const { trendHistory, currentFlags, indexA = 0, indexB = Math.max(0, trendHistory.length - 1), svgElement, options } = params;
+  const safeTrendHistory = params.trendHistory || [];
+  const { currentFlags, indexA = 0, indexB = Math.max(0, safeTrendHistory.length - 1), svgElement, options } = params;
+  const safeCurrentFlags = currentFlags || {
+    batchEagerLoading: true,
+    btreeIndexing: true,
+    queryCaching: true,
+    virtualizedDOM: true,
+    deferredRendering: true,
+  };
 
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -89,15 +97,15 @@ export async function generatePerformancePdfReport(params: {
   });
 
   // Calculate summary metrics
-  const count = trendHistory.length;
-  const initialPt = trendHistory[0];
-  const latestPt = trendHistory[count - 1];
+  const count = safeTrendHistory.length;
+  const initialPt = safeTrendHistory[0];
+  const latestPt = safeTrendHistory[count - 1];
   const initialLatency = initialPt ? initialPt.executionTimeMs : 0;
   const latestLatency = latestPt ? latestPt.executionTimeMs : 0;
 
   let peakLatency = 0;
   let lowestLatency = Infinity;
-  trendHistory.forEach((pt) => {
+  safeTrendHistory.forEach((pt) => {
     if (pt.executionTimeMs > peakLatency) peakLatency = pt.executionTimeMs;
     if (pt.executionTimeMs < lowestLatency) lowestLatency = pt.executionTimeMs;
   });
@@ -106,8 +114,8 @@ export async function generatePerformancePdfReport(params: {
   const totalReductionMs = Math.max(0, peakLatency - lowestLatency);
   const totalReductionPercent = peakLatency > 0 ? ((totalReductionMs / peakLatency) * 100).toFixed(1) : '0.0';
 
-  const snapshotA = trendHistory[indexA] || initialPt;
-  const snapshotB = trendHistory[indexB] || latestPt;
+  const snapshotA = safeTrendHistory[indexA] || initialPt || { id: 'snap-a', executionTimeMs: 0.15, rowsScanned: 35, activeQueriesCount: 1, flags: safeCurrentFlags, triggerEvent: 'Initial Snapshot', cacheHit: true };
+  const snapshotB = safeTrendHistory[indexB] || latestPt || { id: 'snap-b', executionTimeMs: 0.15, rowsScanned: 35, activeQueriesCount: 1, flags: safeCurrentFlags, triggerEvent: 'Latest Snapshot', cacheHit: true };
 
   // Helper for drawing header bar
   const drawPageHeader = (pageNum: number) => {
@@ -206,7 +214,7 @@ export async function generatePerformancePdfReport(params: {
   doc.setTextColor(51, 65, 85);
   doc.text('ACTIVE PROFILE:', margin + 95, currentY + 10.5);
   doc.setFont('helvetica', 'normal');
-  const activeFlagsCount = Object.values(currentFlags).filter(Boolean).length;
+  const activeFlagsCount = Object.values(safeCurrentFlags || {}).filter(Boolean).length;
   doc.text(`${activeFlagsCount}/5 Optimization Flags Enabled`, margin + 121, currentY + 10.5);
 
   currentY += 19;
@@ -380,20 +388,20 @@ export async function generatePerformancePdfReport(params: {
           'Access Method',
           snapshotA.cacheHit
             ? 'LRU In-Memory Hash Lookup'
-            : snapshotA.flags.btreeIndexing
+            : snapshotA?.flags?.btreeIndexing
             ? 'B-Tree Index Scan'
             : 'Full Sequential Scan (50k rows)',
           snapshotB.cacheHit
             ? 'LRU In-Memory Hash Lookup'
-            : snapshotB.flags.btreeIndexing
+            : snapshotB?.flags?.btreeIndexing
             ? 'B-Tree Index Scan'
             : 'Full Sequential Scan (50k rows)',
-          snapshotB.flags.btreeIndexing && !snapshotA.flags.btreeIndexing ? 'Index Accelerated' : 'Equivalent'
+          snapshotB?.flags?.btreeIndexing && !snapshotA?.flags?.btreeIndexing ? 'Index Accelerated' : 'Equivalent'
         ],
         [
           'Active DB Roundtrips',
-          `${snapshotA.activeQueriesCount} queries (${snapshotA.flags.batchEagerLoading ? 'Batch Join' : 'N+1 Loop'})`,
-          `${snapshotB.activeQueriesCount} queries (${snapshotB.flags.batchEagerLoading ? 'Batch Join' : 'N+1 Loop'})`,
+          `${snapshotA.activeQueriesCount} queries (${snapshotA?.flags?.batchEagerLoading ? 'Batch Join' : 'N+1 Loop'})`,
+          `${snapshotB.activeQueriesCount} queries (${snapshotB?.flags?.batchEagerLoading ? 'Batch Join' : 'N+1 Loop'})`,
           snapshotA.activeQueriesCount > snapshotB.activeQueriesCount
             ? `Eliminated ${snapshotA.activeQueriesCount - snapshotB.activeQueriesCount} N+1 queries`
             : 'Parity'
@@ -476,7 +484,7 @@ export async function generatePerformancePdfReport(params: {
       f.name,
       snapshotA?.flags[f.key] ? 'ENABLED' : 'DISABLED',
       snapshotB?.flags[f.key] ? 'ENABLED' : 'DISABLED',
-      currentFlags[f.key] ? 'ENABLED' : 'DISABLED',
+      safeCurrentFlags[f.key] ? 'ENABLED' : 'DISABLED',
       f.purpose
     ])
   });
@@ -496,7 +504,7 @@ export async function generatePerformancePdfReport(params: {
 
   currentY += 3;
 
-  const eventTableBody = trendHistory.map((pt, idx) => {
+  const eventTableBody = safeTrendHistory.map((pt, idx) => {
     const deltaStr =
       pt.deltaMs !== undefined
         ? pt.deltaMs < 0
