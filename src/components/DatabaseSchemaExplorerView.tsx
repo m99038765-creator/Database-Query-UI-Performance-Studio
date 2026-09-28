@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -15,12 +15,41 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 }) => {
   const [selectedTable, setSelectedTable] = useState<string>('transactions');
   const [createdCustomIndexes, setCreatedCustomIndexes] = useState<string[]>([]);
+  const [createdCompositeIndexes, setCreatedCompositeIndexes] = useState<string[]>([]);
+  const [consolidatedIndexes, setConsolidatedIndexes] = useState<string[]>([]);
+  const [isAnalyzingWorkload, setIsAnalyzingWorkload] = useState<boolean>(false);
+  const [hasAnalyzedWorkload, setHasAnalyzedWorkload] = useState<boolean>(true);
   const [showQueryComplexityInfo, setShowQueryComplexityInfo] = useState<boolean>(false);
   const [compareWithBaseline, setCompareWithBaseline] = useState<boolean>(false);
   const [showSuggestIndexesModal, setShowSuggestIndexesModal] = useState<boolean>(false);
   const [showDetailedStats, setShowDetailedStats] = useState<boolean>(false);
   const [quickIndexChecked, setQuickIndexChecked] = useState<boolean>(false);
   const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
+
+  const isIndexRedundant = (idxName: string, columns: string[]) => {
+    if (consolidatedIndexes.includes(idxName)) return false;
+    if (idxName.includes('email_missing') && createdCompositeIndexes.includes('email_status')) return true;
+    if (idxName.includes('amount_missing') && createdCompositeIndexes.includes('category_amount')) return true;
+    return false;
+  };
+
+  const handleConsolidateIndex = (idxName: string) => {
+    setConsolidatedIndexes([...consolidatedIndexes, idxName]);
+    if (idxName.includes('email_missing')) {
+      setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
+    }
+    if (idxName.includes('amount_missing')) {
+      setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+    }
+  };
+
+  const handleAnalyzeWorkload = () => {
+    setIsAnalyzingWorkload(true);
+    setTimeout(() => {
+      setIsAnalyzingWorkload(false);
+      setHasAnalyzedWorkload(true);
+    }, 900);
+  };
 
   interface SchemaSnapshot {
     id: string;
@@ -69,6 +98,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     if (missing.length > 0) {
       setCreatedCustomIndexes([...createdCustomIndexes, ...missing]);
     }
+    if (!createdCompositeIndexes.includes('email_status')) {
+      setCreatedCompositeIndexes(['email_status', 'category_amount']);
+    }
   };
 
   const tables = [
@@ -91,6 +123,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], active: true },
         { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], active: createdCustomIndexes.includes('customer_email') },
         { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], active: createdCustomIndexes.includes('amount') },
+        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], active: createdCompositeIndexes.includes('email_status') },
+        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], active: createdCompositeIndexes.includes('category_amount') },
       ],
       relationships: [
         { targetTable: 'line_items', type: 'One-to-Many', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -239,7 +273,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
 
   return (
-    <div className="bg-white rounded-xl border border-zinc-200 shadow-xl overflow-hidden flex flex-col">
+    <div className="DatabaseSchemaExplorerView bg-white rounded-xl border border-zinc-200 shadow-xl overflow-hidden flex flex-col">
       {/* Header Bar */}
       <div className="p-5 border-b border-zinc-200 bg-gradient-to-r from-indigo-50/80 via-white to-zinc-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -585,6 +619,116 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   </button>
                 </div>
               </div>
+
+              {/* AI-Driven Composite Index Suggestions & Analyze Workload */}
+              <div className="p-4 bg-gradient-to-r from-indigo-50/90 via-indigo-50/50 to-white border border-indigo-200 rounded-xl text-indigo-950 space-y-3 mt-4 shadow-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-xs text-indigo-950 flex items-center gap-2">
+                        <span>AI-Driven Composite Index &amp; Workload Analyzer</span>
+                        <span className="bg-indigo-200 text-indigo-900 text-[10px] font-mono px-1.5 py-0.2 rounded font-bold">
+                          Query History Scanner
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-indigo-900 mt-0.5">
+                        Scans recent execution traces for multi-column filtering patterns and generates optimal composite B-Tree index recommendations.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-analyze-workload"
+                    data-testid="btn-analyze-workload"
+                    onClick={handleAnalyzeWorkload}
+                    disabled={isAnalyzingWorkload}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-400 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer shadow-xs shrink-0"
+                  >
+                    {isAnalyzingWorkload ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Analyzing Workload...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-3.5 h-3.5 fill-white" />
+                        <span>Analyze Workload</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {hasAnalyzedWorkload && (
+                  <div className="pt-2 border-t border-indigo-200/60 flex items-center justify-between text-[11px] text-indigo-900">
+                    <span className="flex items-center gap-1 font-medium">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Workload scan complete: 14,200 queries analyzed. 2 high-impact multi-column filtering bottlenecks identified.
+                    </span>
+                    <span className="font-mono text-[10px] text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded">
+                      Confidence: 99.4%
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-zinc-900 flex items-center gap-1.5">
+                    <span>idx_transactions_email_status</span>
+                    <span className="text-[10px] font-sans bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-bold">Composite (Email + Status)</span>
+                  </span>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px]">99.8% Speedup</span>
+                </div>
+                <p className="text-zinc-600">
+                  <strong className="text-zinc-900">Multi-Column Query Pattern:</strong> <code className="font-mono">WHERE customer_email = ? AND status = ?</code> (5,120/hr)<br />
+                  <strong className="text-zinc-900">Impact:</strong> Co-locates multi-attribute leaf nodes for O(log n) composite seek.
+                </p>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!createdCompositeIndexes.includes('email_status')) {
+                        setCreatedCompositeIndexes([...createdCompositeIndexes, 'email_status']);
+                      }
+                    }}
+                    disabled={createdCompositeIndexes.includes('email_status')}
+                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-300 text-white font-semibold rounded text-[11px] cursor-pointer transition-colors"
+                  >
+                    {createdCompositeIndexes.includes('email_status') ? 'Composite Index Active' : 'Apply Composite Index'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-zinc-900 flex items-center gap-1.5">
+                    <span>idx_transactions_category_amount</span>
+                    <span className="text-[10px] font-sans bg-purple-100 text-purple-800 px-1.5 py-0.2 rounded font-bold">Composite (Category + Amount)</span>
+                  </span>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px]">99.2% Speedup</span>
+                </div>
+                <p className="text-zinc-600">
+                  <strong className="text-zinc-900">Multi-Column Query Pattern:</strong> <code className="font-mono">WHERE category = ? AND amount &gt; ?</code> (8,900/hr)<br />
+                  <strong className="text-zinc-900">Impact:</strong> Eliminates sorting and secondary table scans for range aggregations.
+                </p>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!createdCompositeIndexes.includes('category_amount')) {
+                        setCreatedCompositeIndexes([...createdCompositeIndexes, 'category_amount']);
+                      }
+                    }}
+                    disabled={createdCompositeIndexes.includes('category_amount')}
+                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-300 text-white font-semibold rounded text-[11px] cursor-pointer transition-colors"
+                  >
+                    {createdCompositeIndexes.includes('category_amount') ? 'Composite Index Active' : 'Apply Composite Index'}
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="pt-2 flex justify-end">
@@ -905,6 +1049,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     </div>
                   )}
                   <div>
+                    {(() => {
+                      const redundant = isIndexRedundant(idx.name, idx.columns);
+                      return redundant ? (
+                        <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
+                          <div className="flex items-center gap-2 font-semibold">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
+                            <span>Redundant Coverage (Covered by Composite Index)</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleConsolidateIndex(idx.name);
+                            }}
+                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
+                          >
+                            Consolidate
+                          </button>
+                        </div>
+                      ) : null;
+                    })()}
                     <div className="flex items-center justify-between text-xs font-bold text-zinc-900 mb-1">
                       <span className="font-mono">{idx.name}</span>
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${idx.active ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-600'}`}>
