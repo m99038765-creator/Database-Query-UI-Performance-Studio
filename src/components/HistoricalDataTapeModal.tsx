@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { DataTapeEntry } from '../types';
 import {
   generateAuditLedgerCsv,
@@ -38,6 +38,7 @@ interface HistoricalDataTapeModalProps {
   onClose: () => void;
   entries?: DataTapeEntry[];
   initialEntries?: DataTapeEntry[];
+  initialSelectedEntry?: DataTapeEntry | null;
   isAutoSaveEnabled?: boolean;
   onToggleAutoSave?: () => void;
   onClearTape?: () => void;
@@ -50,6 +51,7 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   onClose,
   entries,
   initialEntries,
+  initialSelectedEntry = null,
   isAutoSaveEnabled = true,
   onToggleAutoSave = () => {},
   onClearTape = () => {},
@@ -58,7 +60,13 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
 }) => {
   const safeEntries = entries || initialEntries || [];
   const [copiedHash, setCopiedHash] = useState<string | null>(null);
-  const [inspectedEntry, setInspectedEntry] = useState<DataTapeEntry | null>(null);
+  const [inspectedEntry, setInspectedEntry] = useState<DataTapeEntry | null>(initialSelectedEntry);
+
+  useEffect(() => {
+    if (initialSelectedEntry) {
+      setInspectedEntry(initialSelectedEntry);
+    }
+  }, [initialSelectedEntry]);
   const [searchTerm, setSearchTerm] = useState('');
   const [triggerEventFilter, setTriggerEventFilter] = useState('');
   const [isMutating, setIsMutating] = useState(false);
@@ -75,8 +83,6 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
     });
     return Array.from(set);
   }, [safeEntries]);
-
-  if (!isOpen) return null;
 
   const handleToggleSelectForDiff = (tapeId: string) => {
     setSelectedForDiffIds((prev) => {
@@ -163,6 +169,8 @@ export const HistoricalDataTapeModal: React.FC<HistoricalDataTapeModalProps> = (
   const avgLatencyMs = safeEntries.length > 0
     ? (safeEntries.reduce((acc, curr) => acc + curr.durationMs, 0) / safeEntries.length).toFixed(2)
     : '0.00';
+
+  if (!isOpen) return null;
 
   return (
     <div

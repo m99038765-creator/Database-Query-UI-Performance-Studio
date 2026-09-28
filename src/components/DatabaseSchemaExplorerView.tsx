@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -19,6 +19,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [compareWithBaseline, setCompareWithBaseline] = useState<boolean>(false);
   const [showSuggestIndexesModal, setShowSuggestIndexesModal] = useState<boolean>(false);
   const [showDetailedStats, setShowDetailedStats] = useState<boolean>(false);
+  const [quickIndexChecked, setQuickIndexChecked] = useState<boolean>(false);
+  const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
 
   interface SchemaSnapshot {
     id: string;
@@ -157,6 +159,55 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     return { topQuery: 'Top Queries #1-#5', reduction: 'O(n) → O(log n) Read Optimization' };
   };
 
+  const getWhatIfTop5Queries = (indexName: string) => {
+    const isEmail = indexName.toLowerCase().includes('email') || indexName.toLowerCase().includes('customer');
+    const isStatus = indexName.toLowerCase().includes('status') || indexName.toLowerCase().includes('cat');
+    const isAmount = indexName.toLowerCase().includes('amount') || indexName.toLowerCase().includes('price');
+    const isDate = indexName.toLowerCase().includes('date') || indexName.toLowerCase().includes('time') || indexName.toLowerCase().includes('timestamp');
+
+    if (isEmail) {
+      return [
+        { query: 'SELECT * FROM transactions WHERE customer_email = ?', freq: '14,250/hr', before: '72.4ms', after: '0.3ms', improvement: '-99.6%' },
+        { query: 'SELECT id, customer_email FROM transactions WHERE customer_email LIKE ?', freq: '8,400/hr', before: '65.0ms', after: '0.4ms', improvement: '-99.4%' },
+        { query: 'SELECT * FROM transactions WHERE customer_email = ? AND status = ?', freq: '5,120/hr', before: '84.2ms', after: '0.6ms', improvement: '-99.3%' },
+        { query: 'SELECT COUNT(*) FROM transactions WHERE customer_email = ?', freq: '3,900/hr', before: '58.0ms', after: '0.2ms', improvement: '-99.6%' },
+        { query: 'SELECT * FROM transactions WHERE customer_email = ? ORDER BY date DESC', freq: '2,100/hr', before: '91.5ms', after: '0.9ms', improvement: '-99.0%' }
+      ];
+    } else if (isStatus) {
+      return [
+        { query: 'SELECT * FROM transactions WHERE status = ? AND amount > ?', freq: '18,400/hr', before: '64.1ms', after: '0.5ms', improvement: '-99.2%' },
+        { query: 'SELECT * FROM transactions GROUP BY status, category', freq: '9,200/hr', before: '98.5ms', after: '1.1ms', improvement: '-98.8%' },
+        { query: 'SELECT * FROM transactions WHERE status = "pending" LIMIT 100', freq: '7,650/hr', before: '52.0ms', after: '0.3ms', improvement: '-99.4%' },
+        { query: 'SELECT AVG(amount) FROM transactions WHERE status = ?', freq: '4,100/hr', before: '78.0ms', after: '0.7ms', improvement: '-99.1%' },
+        { query: 'SELECT * FROM transactions WHERE status = ? ORDER BY amount DESC', freq: '3,200/hr', before: '88.0ms', after: '0.8ms', improvement: '-99.1%' }
+      ];
+    } else if (isAmount) {
+      return [
+        { query: 'SELECT * FROM transactions WHERE amount >= 1000 ORDER BY amount DESC', freq: '11,100/hr', before: '82.0ms', after: '0.4ms', improvement: '-99.5%' },
+        { query: 'SELECT SUM(amount) FROM transactions WHERE category = ? AND amount > ?', freq: '8,900/hr', before: '95.4ms', after: '0.8ms', improvement: '-99.2%' },
+        { query: 'SELECT * FROM transactions WHERE amount BETWEEN 100 AND 500', freq: '6,400/hr', before: '68.2ms', after: '0.5ms', improvement: '-99.3%' },
+        { query: 'SELECT MIN(amount), MAX(amount) FROM transactions', freq: '3,100/hr', before: '55.0ms', after: '0.2ms', improvement: '-99.6%' },
+        { query: 'SELECT * FROM transactions WHERE customer_id = ? AND amount > ?', freq: '2,800/hr', before: '74.0ms', after: '0.6ms', improvement: '-99.2%' }
+      ];
+    } else if (isDate) {
+      return [
+        { query: 'SELECT * FROM transactions WHERE date >= NOW() - INTERVAL 30 DAY', freq: '16,500/hr', before: '88.5ms', after: '0.8ms', improvement: '-99.1%' },
+        { query: 'SELECT * FROM transactions ORDER BY date DESC LIMIT 50', freq: '12,300/hr', before: '76.0ms', after: '0.4ms', improvement: '-99.5%' },
+        { query: 'SELECT * FROM transactions WHERE date BETWEEN ? AND ?', freq: '9,100/hr', before: '92.0ms', after: '0.9ms', improvement: '-99.0%' },
+        { query: 'SELECT COUNT(*) FROM transactions WHERE date < ?', freq: '4,500/hr', before: '61.0ms', after: '0.3ms', improvement: '-99.5%' },
+        { query: 'SELECT * FROM transactions WHERE status = ? AND date > ?', freq: '3,800/hr', before: '84.0ms', after: '0.7ms', improvement: '-99.2%' }
+      ];
+    } else {
+      return [
+        { query: 'SELECT * FROM transactions WHERE id = ?', freq: '22,000/hr', before: '45.0ms', after: '0.2ms', improvement: '-99.5%' },
+        { query: 'SELECT * FROM transactions JOIN items ON ...', freq: '11,400/hr', before: '145.8ms', after: '1.2ms', improvement: '-99.1%' },
+        { query: 'SELECT * FROM transactions WHERE reference_code = ?', freq: '8,200/hr', before: '68.0ms', after: '0.4ms', improvement: '-99.4%' },
+        { query: 'SELECT * FROM transactions WHERE priority = "high"', freq: '5,100/hr', before: '59.0ms', after: '0.5ms', improvement: '-99.1%' },
+        { query: 'SELECT * FROM transactions ORDER BY created_at DESC', freq: '3,900/hr', before: '90.0ms', after: '0.8ms', improvement: '-99.1%' }
+      ];
+    }
+  };
+
   const handleCreateIndex = (colName: string) => {
     if (!createdCustomIndexes.includes(colName)) {
       setCreatedCustomIndexes([...createdCustomIndexes, colName]);
@@ -242,6 +293,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           </button>
 
           <button
+            id="btn-quick-index-check"
+            type="button"
+            onClick={() => {
+              setSelectedTable('transactions');
+              setQuickIndexChecked(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs animate-pulse"
+            title="Instantly highlight the most impactful missing indexes for currently active query search results"
+          >
+            <Target className="w-3.5 h-3.5" />
+            <span>Quick Index Check</span>
+          </button>
+
+          <button
             type="button"
             onClick={() => setShowSuggestIndexesModal(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
@@ -303,6 +368,34 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           <span className="font-mono font-bold bg-amber-200/80 text-amber-950 px-2.5 py-0.5 rounded text-[11px]">
             Δ: +{flags.btreeIndexing ? '2 Indexes' : '0 Indexes'} (O(log n) vs O(n))
           </span>
+        </div>
+      )}
+
+      {/* Quick Index Check Analysis Banner */}
+      {quickIndexChecked && (
+        <div className="bg-orange-50 border-b border-orange-200 px-6 py-3 text-xs text-orange-950 flex items-center justify-between animate-fadeIn shadow-inner">
+          <div className="flex items-center gap-2.5 font-medium">
+            <span className="w-3 h-3 rounded-full bg-orange-500 animate-ping shrink-0" />
+            <span>
+              <strong>Quick Index Check Analysis:</strong> Identified 2 high-impact missing indexes (<code className="font-mono bg-orange-200/80 px-1.5 py-0.5 rounded font-bold text-orange-900">customer_email</code>, <code className="font-mono bg-orange-200/80 px-1.5 py-0.5 rounded font-bold text-orange-900">amount</code>) affecting active query search results. Estimated latency reduction: <strong className="text-emerald-700">72ms → 0.4ms (O(n) → O(log n))</strong>.
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleBulkApplyAllIndexes}
+              className="px-2.5 py-1 bg-orange-600 hover:bg-orange-500 text-white rounded text-[11px] font-bold shadow-xs transition-colors cursor-pointer"
+            >
+              Fix All Now
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuickIndexChecked(false)}
+              className="text-orange-700 hover:text-orange-900 px-1.5 py-1 text-[11px] font-semibold cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -685,12 +778,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 <tbody className="divide-y divide-zinc-200 font-mono text-zinc-700">
                   {currentTableData.columns.map((col) => {
                     const isIndexed = col.indexed || createdCustomIndexes.includes(col.name);
+                    const isImpactfulMissing = quickIndexChecked && !isIndexed && (col.name === 'customer_email' || col.name === 'amount');
                     return (
-                      <tr key={col.name} className="hover:bg-zinc-50">
+                      <tr key={col.name} className={`hover:bg-zinc-50 transition-all ${isImpactfulMissing ? 'bg-orange-50/95 ring-2 ring-orange-400 font-semibold shadow-inner' : ''}`}>
                         <td className="py-2.5 px-4 font-bold text-zinc-900 flex items-center gap-1.5">
                           {col.isPk && <Key className="w-3.5 h-3.5 text-amber-500" title="Primary Key" />}
                           {col.isFk && <Link className="w-3.5 h-3.5 text-blue-500" title="Foreign Key" />}
                           <span>{col.name}</span>
+                          {isImpactfulMissing && (
+                            <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-orange-100 text-orange-950 border border-orange-300 animate-pulse">
+                              ⚡ Missing Impactful Index for Active Query
+                            </span>
+                          )}
                         </td>
                         <td className="py-2.5 px-4 text-zinc-600">{col.type}</td>
                         <td className="py-2.5 px-4">
@@ -762,12 +861,49 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               {currentTableData.indexes.map((idx, i) => (
                 <div
                   key={`idx-${i}`}
-                  className={`p-3.5 rounded-xl border flex flex-col justify-between ${
+                  onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
+                  onMouseLeave={() => setHoveredIndexWhatIf(null)}
+                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all ${
                     idx.active
                       ? 'bg-emerald-50/50 border-emerald-300'
-                      : 'bg-zinc-50 border-zinc-200 opacity-60'
+                      : 'bg-zinc-50 border-zinc-200 opacity-80 hover:opacity-100'
                   }`}
                 >
+                  {/* Interactive What-If Hover Tooltip */}
+                  {hoveredIndexWhatIf === idx.name && (
+                    <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-zinc-900 text-white p-4 rounded-xl shadow-2xl border border-indigo-500/60 animate-fadeIn text-xs">
+                      <div className="flex items-center justify-between mb-2 pb-2 border-b border-zinc-800">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-indigo-400" />
+                          <strong className="text-indigo-300">What-If Analysis: {idx.name}</strong>
+                        </div>
+                        <span className="font-mono text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded border border-indigo-800">
+                          Top 5 Frequent Slow Queries
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {getWhatIfTop5Queries(idx.name).map((q, qi) => (
+                          <div key={qi} className="p-2 rounded bg-zinc-800/95 border border-zinc-700/80 flex flex-col gap-1">
+                            <div className="font-mono text-[11px] text-zinc-200 truncate" title={q.query}>
+                              {qi + 1}. {q.query}
+                            </div>
+                            <div className="flex items-center justify-between text-[10px] font-mono">
+                              <span className="text-zinc-400">Freq: {q.freq}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="line-through text-zinc-500">{q.before}</span>
+                                <span className="text-zinc-300">→</span>
+                                <span className="text-emerald-400 font-bold">{q.after}</span>
+                                <span className="bg-emerald-950 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-800">{q.improvement}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-[10px] text-zinc-400 italic text-center">
+                        💡 Hovering index structures dynamically estimates B-Tree execution time improvements.
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <div className="flex items-center justify-between text-xs font-bold text-zinc-900 mb-1">
                       <span className="font-mono">{idx.name}</span>

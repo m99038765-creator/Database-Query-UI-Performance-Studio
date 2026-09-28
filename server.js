@@ -6,7 +6,7 @@ import { fileURLToPath } from "url";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var app = express();
-var port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3e3;
+var port = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
 app.use(express.json());
 app.get(["/healthz", "/_health", "/health", "/_ready"], (_req, res) => {
   res.status(200).send("OK");

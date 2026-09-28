@@ -9,6 +9,7 @@ import {
 } from '../types';
 import { ExportHistoryPoint } from '../utils/csvExporter';
 import { ExportFrequencyCpuCorrelationChart } from './ExportFrequencyCpuCorrelationChart';
+import { LatencyHistogramCard } from './LatencyHistogramCard';
 import { SnapshotCompareModal } from './SnapshotCompareModal';
 import { DatabaseStatePopover } from './DatabaseStatePopover';
 import { PdfReportModal } from './PdfReportModal';
@@ -3232,6 +3233,9 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
         exportHistory={exportHistory}
         onTriggerAuditBurst={onTriggerAuditBurst}
       />
+
+      {/* 4b. Fetch Latency Distribution Histogram */}
+      <LatencyHistogramCard flags={currentFlags} />
 
       {/* 5. Event History Chronology Table */}
       <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden">

@@ -6,12 +6,14 @@ interface SystemResourceMonitorProps {
   flags: OptimizationFlags;
   recordCount: number;
   cacheHit?: boolean;
+  onAutoCaptureSnapshot?: (triggerEvent: string, details: { memoryMb: number; cpuUsage: number; slope: number }) => void;
 }
 
 export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
   flags,
   recordCount,
-  cacheHit = false
+  cacheHit = false,
+  onAutoCaptureSnapshot
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
   const [cpuUsage, setCpuUsage] = useState<number>(14);
@@ -19,6 +21,7 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
   const [activeThreads, setActiveThreads] = useState<number>(2);
   const [simulateLeak, setSimulateLeak] = useState<boolean>(false);
   const [accumulatedSurge, setAccumulatedSurge] = useState<number>(0);
+  const [hasAutoCaptured, setHasAutoCaptured] = useState<boolean>(false);
 
   // 60-second historical history buffers (sampled every 3 seconds -> 20 points)
   const [cpuHistory, setCpuHistory] = useState<number[]>([14, 15, 14, 16, 18, 14, 15, 15, 14, 16, 15, 14, 15, 14, 16, 15, 14, 15, 14, 14]);
@@ -152,6 +155,25 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
   };
 
   const timeToCritical = calculateLinearRegressionTimeToCritical(memoryHistory, memoryMb);
+
+  // Auto-capture performance snapshot when Time to Critical exceeds critical threshold
+  useEffect(() => {
+    if (timeToCritical.status === 'critical') {
+      if (!hasAutoCaptured) {
+        setHasAutoCaptured(true);
+        if (onAutoCaptureSnapshot) {
+          onAutoCaptureSnapshot(
+            `Memory Critical Surge Reached (${memoryMb}MB / 90% Threshold)`,
+            { memoryMb, cpuUsage, slope: timeToCritical.slopeMbPerMin }
+          );
+        }
+      }
+    } else if (timeToCritical.status === 'stable') {
+      if (hasAutoCaptured) {
+        setHasAutoCaptured(false);
+      }
+    }
+  }, [timeToCritical.status, memoryMb, cpuUsage, timeToCritical.slopeMbPerMin, hasAutoCaptured, onAutoCaptureSnapshot]);
 
   const renderMiniSparkline = (points: number[], color = '#34d399', height = 22, width = 110) => {
     if (!points || points.length < 2) return null;

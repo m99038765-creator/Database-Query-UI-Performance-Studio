@@ -1783,6 +1783,33 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         </div>
       )}
 
+      {/* Heatmap Legend Display */}
+      {showLatencyHeatmap && (
+        <div className="bg-gradient-to-r from-zinc-50 via-zinc-100 to-rose-50/40 border-b border-zinc-200 px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-700 animate-fadeIn">
+          <div className="flex items-center gap-2 font-semibold">
+            <Flame className="w-4 h-4 text-rose-600 animate-pulse" />
+            <span>Heatmap Intensity Legend:</span>
+          </div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-emerald-500/60 border border-emerald-600"></span>
+              <span>Fast (&lt;50ms)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-amber-500/70 border border-amber-600"></span>
+              <span>Moderate (50-150ms)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-rose-600/80 border border-rose-700 animate-pulse"></span>
+              <span>High Latency / Outlier (&gt;150ms)</span>
+            </div>
+            <div className="bg-white px-2 py-0.5 rounded border border-zinc-300 text-[11px] font-mono text-zinc-600">
+              Intensity Gradient: <span className="text-rose-700 font-bold">Dynamic Scale (0ms - 250ms+)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Table Header */}
       <div
         id="table-column-header"
@@ -1926,16 +1953,28 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                   : (20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty);
                 
                 let heatmapRowBg = '';
+                let heatmapRowStyle: React.CSSProperties = { minHeight: `${ROW_HEIGHT}px` };
                 let heatmapBadgeClass = '';
                 if (showLatencyHeatmap) {
+                  const clampedLatency = Math.min(Math.max(nPlusOneLatencyMs, 0), 250);
+                  const intensityRatio = clampedLatency / 250.0;
                   if (isStatisticalOutlier || nPlusOneLatencyMs > 150) {
-                    heatmapRowBg = isSelected ? 'bg-rose-100/95 border-rose-400 ring-2 ring-rose-500 shadow-md' : 'bg-rose-100/90 hover:bg-rose-100 border-rose-300 ring-1 ring-rose-400/50';
+                    heatmapRowStyle.backgroundColor = isSelected
+                      ? `rgba(225, 29, 72, ${0.22 + intensityRatio * 0.38})`
+                      : `rgba(225, 29, 72, ${0.1 + intensityRatio * 0.35})`;
+                    heatmapRowBg = isSelected ? 'border-rose-400 ring-2 ring-rose-500 shadow-md' : 'border-rose-300 ring-1 ring-rose-400/50 hover:bg-rose-100/40';
                     heatmapBadgeClass = 'bg-rose-600 text-white font-bold animate-pulse shadow-xs';
                   } else if (nPlusOneLatencyMs >= 50) {
-                    heatmapRowBg = isSelected ? 'bg-amber-100/90 border-amber-300' : 'bg-amber-100/70 hover:bg-amber-100 border-amber-200';
+                    heatmapRowStyle.backgroundColor = isSelected
+                      ? `rgba(217, 119, 6, ${0.18 + intensityRatio * 0.28})`
+                      : `rgba(217, 119, 6, ${0.06 + intensityRatio * 0.26})`;
+                    heatmapRowBg = isSelected ? 'border-amber-300' : 'border-amber-200 hover:bg-amber-100/40';
                     heatmapBadgeClass = 'bg-amber-500 text-white font-semibold';
                   } else {
-                    heatmapRowBg = isSelected ? 'bg-emerald-50/90 border-emerald-200' : 'bg-emerald-50/40 hover:bg-emerald-50/70 border-emerald-100';
+                    heatmapRowStyle.backgroundColor = isSelected
+                      ? `rgba(16, 185, 129, ${0.15 + (1 - intensityRatio) * 0.25})`
+                      : `rgba(16, 185, 129, ${0.03 + (1 - intensityRatio) * 0.22})`;
+                    heatmapRowBg = isSelected ? 'border-emerald-200' : 'border-emerald-100 hover:bg-emerald-50/40';
                     heatmapBadgeClass = 'bg-emerald-600 text-white font-medium';
                   }
                 } else {
@@ -1960,7 +1999,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                           : undefined
                       }
                       className={`grid grid-cols-12 px-4 py-3 items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
-                      style={{ minHeight: `${ROW_HEIGHT}px` }}
+                      style={heatmapRowStyle}
                     >
                       {/* Row Hover Latency & Z-Score Anomaly Tooltip */}
                       {showLatencyHeatmap && (

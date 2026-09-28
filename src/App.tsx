@@ -41,7 +41,8 @@ import {
   getDatabaseMutationHistory
 } from './db/databaseEngine';
 import {
-  getInitialDataTapeEntries
+  getInitialDataTapeEntries,
+  createDataTapeEntry
 } from './utils/auditDataTape';
 import {
   getInitialSerializationLogs
@@ -281,6 +282,38 @@ export default function App() {
   const [activeView, setActiveView] = useState<'grid' | 'trends' | 'comparison' | 'schema'>('grid');
   const [serializationLogs, setSerializationLogs] = useState<SerializationLogEntry[]>(() => getInitialSerializationLogs());
   const [dataTapeEntries, setDataTapeEntries] = useState<DataTapeEntry[]>(() => getInitialDataTapeEntries());
+  const [selectedTapeEntry, setSelectedTapeEntry] = useState<DataTapeEntry | null>(null);
+
+  const handleAutoCaptureSnapshot = async (
+    triggerEvent: string,
+    details: { memoryMb: number; cpuUsage: number; slope: number }
+  ) => {
+    try {
+      const records = queryResult.records || [];
+      const { entry } = await createDataTapeEntry({
+        records,
+        format: 'json',
+        triggerEvent: `[AUTO-CAPTURE] ${triggerEvent} (RAM: ${details.memoryMb}MB, CPU: ${details.cpuUsage}%, Trend: +${details.slope.toFixed(1)} MB/min)`,
+        databaseTotalRecords: queryResult.totalCount,
+        filterSummary: {
+          searchTerm: searchQuery,
+          status: statusFilter,
+          category: selectedCategory,
+          pageSize: queryResult.records.length
+        },
+        sequenceNumber: dataTapeEntries.length + 1,
+        includeHeaders: true
+      });
+
+      setDataTapeEntries((prev) => [entry, ...prev]);
+      setProactiveToast({
+        title: 'Auto-Capture: Critical Threshold',
+        message: `Performance snapshot auto-captured to Historical Data Tape (${entry.tapeId}): ${triggerEvent}`
+      });
+    } catch (err) {
+      console.error('Failed to auto-capture performance snapshot:', err);
+    }
+  };
 
   const [proactiveToast, setProactiveToast] = useState<{
     title: string;
@@ -360,6 +393,11 @@ export default function App() {
         onExportCsv={handleExportCsv}
         onOpenPdfPreview={() => setShowPdfPreviewModal(true)}
         onOpenWizard={() => setIsOptimizationWizardOpen(true)}
+        dataTapeEntries={dataTapeEntries}
+        onSelectTapeEntry={(entry) => {
+          setSelectedTapeEntry(entry);
+          setIsHistoricalDataTapeOpen(true);
+        }}
       />
 
       <OptimizationControls
@@ -527,6 +565,7 @@ export default function App() {
         onClose={() => setIsHistoricalDataTapeOpen(false)}
         entries={dataTapeEntries}
         initialEntries={dataTapeEntries}
+        initialSelectedEntry={selectedTapeEntry}
         onClearTape={() => setDataTapeEntries([])}
       />
 
@@ -550,6 +589,7 @@ export default function App() {
         flags={flags}
         recordCount={queryResult.totalCount}
         cacheHit={queryResult.cacheHit}
+        onAutoCaptureSnapshot={handleAutoCaptureSnapshot}
       />
 
       {/* Optimization Wizard Modal */}
