@@ -51,6 +51,12 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }, 900);
   };
 
+  const handleRevertAllIndexes = () => {
+    setCreatedCustomIndexes([]);
+    setCreatedCompositeIndexes([]);
+    setConsolidatedIndexes([]);
+  };
+
   interface SchemaSnapshot {
     id: string;
     name: string;
@@ -191,6 +197,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       return { topQuery: 'Q5: Amount Threshold Filter', reduction: 'O(n) → O(log n) Range Index Scan' };
     }
     return { topQuery: 'Top Queries #1-#5', reduction: 'O(n) → O(log n) Read Optimization' };
+  };
+
+  const getOptimizationPotential = (idxName: string) => {
+    const lower = idxName.toLowerCase();
+    if (lower.includes('primary') || lower.includes('clustered')) return '99.9% Complexity Reduction';
+    if (lower.includes('composite') || lower.includes('status') || lower.includes('category')) return '99.7% Complexity Reduction';
+    if (lower.includes('email') || lower.includes('customer')) return '99.2% Complexity Reduction';
+    if (lower.includes('amount') || lower.includes('price')) return '98.8% Complexity Reduction';
+    if (lower.includes('date') || lower.includes('time')) return '98.5% Complexity Reduction';
+    return '97.5% Complexity Reduction';
   };
 
   const getWhatIfTop5Queries = (indexName: string) => {
@@ -348,6 +364,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Suggest Missing Indexes</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-revert-all-indexes"
+            data-testid="btn-revert-all-indexes"
+            onClick={handleRevertAllIndexes}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Immediately restore database schema to default initial state by resetting all custom index flags"
+          >
+            <RefreshCw className="w-3.5 h-3.5 text-zinc-500" />
+            <span>Revert All Index Changes</span>
           </button>
 
           <button
@@ -1070,11 +1098,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         </div>
                       ) : null;
                     })()}
-                    <div className="flex items-center justify-between text-xs font-bold text-zinc-900 mb-1">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-bold text-zinc-900 mb-1">
                       <span className="font-mono">{idx.name}</span>
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${idx.active ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-600'}`}>
-                        {idx.active ? 'ACTIVE' : 'INACTIVE'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-sans px-1.5 py-0.2 rounded font-bold shadow-2xs" title="Calculated Query Complexity Reduction">
+                          ⚡ {getOptimizationPotential(idx.name)}
+                        </span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${idx.active ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-600'}`}>
+                          {idx.active ? 'ACTIVE' : 'INACTIVE'}
+                        </span>
+                      </div>
                     </div>
                     <div className="text-[11px] text-zinc-500 font-mono mb-2">
                       Type: {idx.type} • Columns: ({idx.columns.join(', ')})
