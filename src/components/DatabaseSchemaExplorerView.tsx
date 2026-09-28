@@ -390,6 +390,38 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     return '97.5% Complexity Reduction';
   };
 
+  const getBaselineComparisonForIndex = (idxName: string, active: boolean) => {
+    if (idxName.includes('PRIMARY KEY')) {
+      return {
+        baselineStatus: 'Active in Baseline',
+        baselineScan: 'Clustered Seek O(1)',
+        currentStatus: 'Retained Baseline Anchor',
+        isNewOptimization: false,
+        speedup: 'Baseline Anchor',
+        badgeClass: 'bg-zinc-100 text-zinc-700 border-zinc-200'
+      };
+    }
+    if (idxName === 'idx_transactions_date') {
+      const isRemoved = removedIndexes.includes(idxName);
+      return {
+        baselineStatus: 'Lingering in Baseline (0 Hits)',
+        baselineScan: 'Unused B-Tree Overhead (+14% Write I/O)',
+        currentStatus: isRemoved ? 'Pruned in Optimization (+2.4MB Saved)' : 'Unpruned Overhead',
+        isNewOptimization: isRemoved,
+        speedup: isRemoved ? '+14% Write Latency Saved' : '0 Hits Recorded',
+        badgeClass: isRemoved ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-rose-100 text-rose-800 border-rose-300'
+      };
+    }
+    return {
+      baselineStatus: 'Missing in Baseline (Full Table Scan)',
+      baselineScan: 'Sequential Scan O(n) on 50,000 rows',
+      currentStatus: active ? 'Optimized B-Tree Active' : 'Missing Index Bottleneck',
+      isNewOptimization: active,
+      speedup: active ? '+99.6% Speedup (O(log n))' : 'Bottleneck Active',
+      badgeClass: active ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-amber-100 text-amber-800 border-amber-300'
+    };
+  };
+
   const getWhatIfTop5Queries = (indexName: string) => {
     const isEmail = indexName.toLowerCase().includes('email') || indexName.toLowerCase().includes('customer');
     const isStatus = indexName.toLowerCase().includes('status') || indexName.toLowerCase().includes('cat');
@@ -639,6 +671,112 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             </div>
           </div>
 
+          {/* Table Columns & Index Coverage (Baseline vs Current Overlay) */}
+          <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Table className="w-4 h-4 text-indigo-600" />
+                <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-wider">
+                  Table Columns &amp; Index Coverage
+                </h4>
+                {compareWithBaseline && (
+                  <span className="text-amber-800 font-sans font-bold text-[10px] bg-amber-100 px-2 py-0.5 rounded border border-amber-200 flex items-center gap-1">
+                    <Layers className="w-3 h-3 text-amber-600" />
+                    <span>Baseline Comparison Active</span>
+                  </span>
+                )}
+              </div>
+              <span className="text-[11px] font-mono text-zinc-500">
+                {currentTableData.name} ({currentTableData.columns.length} columns)
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-zinc-200 text-zinc-400 text-[10px] uppercase font-bold">
+                    <th className="pb-2 font-semibold">Column</th>
+                    <th className="pb-2 font-semibold">Type</th>
+                    {compareWithBaseline && <th className="pb-2 font-semibold text-rose-700">Default Baseline Coverage</th>}
+                    <th className="pb-2 font-semibold text-indigo-700">Current Schema Coverage</th>
+                    <th className="pb-2 font-semibold text-emerald-700 text-right">Performance Impact</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100">
+                  {currentTableData.columns.map((col) => {
+                    const isColIndexedInBaseline = col.isPk;
+                    let coverageLabel = 'Unindexed (Seq Scan O(n))';
+                    let coverageBadge = 'bg-zinc-100 text-zinc-600';
+                    let impactText = 'O(n) Sequential Scan';
+                    let impactClass = 'text-zinc-500';
+
+                    if (col.isPk) {
+                      coverageLabel = 'Primary Key (Clustered B-Tree)';
+                      coverageBadge = 'bg-indigo-100 text-indigo-800 font-bold';
+                      impactText = 'O(1) Constant Base';
+                      impactClass = 'text-indigo-700 font-bold';
+                    } else if (col.name === 'created_at') {
+                      const isPruned = removedIndexes.includes('idx_transactions_date');
+                      coverageLabel = isPruned ? 'Pruned (0 Hits, Saved 2.4MB)' : 'B-Tree (idx_transactions_date)';
+                      coverageBadge = isPruned ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-100 text-zinc-700';
+                      impactText = isPruned ? '+14% Write Latency Saved' : 'Unutilized (0 Hits)';
+                      impactClass = isPruned ? 'text-emerald-700 font-bold' : 'text-zinc-500';
+                    } else if (col.name === 'customer_email' && (createdCompositeIndexes.includes('email_status') || createdCustomIndexes.includes('customer_email'))) {
+                      coverageLabel = createdCompositeIndexes.includes('email_status') ? 'Composite B-Tree (Email + Status)' : 'Single-Column B-Tree';
+                      coverageBadge = 'bg-emerald-100 text-emerald-800 font-bold';
+                      impactText = '99.6% Speedup (O(log n))';
+                      impactClass = 'text-emerald-700 font-bold';
+                    } else if (col.name === 'amount' && (createdCompositeIndexes.includes('category_amount') || createdCustomIndexes.includes('amount'))) {
+                      coverageLabel = createdCompositeIndexes.includes('category_amount') ? 'Composite B-Tree (Category + Amount)' : 'Single-Column B-Tree';
+                      coverageBadge = 'bg-emerald-100 text-emerald-800 font-bold';
+                      impactText = '99.2% Speedup (O(log n))';
+                      impactClass = 'text-emerald-700 font-bold';
+                    } else if ((col.name === 'status' || col.name === 'category') && flags.btreeIndexing) {
+                      coverageLabel = 'Composite B-Tree (Status + Category)';
+                      coverageBadge = 'bg-emerald-100 text-emerald-800 font-bold';
+                      impactText = '99.5% Speedup (O(log n))';
+                      impactClass = 'text-emerald-700 font-bold';
+                    } else if (col.name === 'transaction_id' && flags.batchEagerLoading) {
+                      coverageLabel = 'Foreign Key B-Tree (idx_line_items_tx)';
+                      coverageBadge = 'bg-emerald-100 text-emerald-800 font-bold';
+                      impactText = '99.6% Speedup (Batched Join)';
+                      impactClass = 'text-emerald-700 font-bold';
+                    }
+
+                    return (
+                      <tr key={col.name} className="hover:bg-zinc-100/50 transition-colors">
+                        <td className="py-2 font-bold text-zinc-900 flex items-center gap-1.5">
+                          {col.isPk && <Key className="w-3.5 h-3.5 text-amber-500" />}
+                          <span>{col.name}</span>
+                        </td>
+                        <td className="py-2 text-zinc-500 text-[11px]">{col.type}</td>
+                        {compareWithBaseline && (
+                          <td className="py-2 text-[11px]">
+                            {isColIndexedInBaseline ? (
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-200 text-zinc-700">Clustered PK</span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-semibold line-through">
+                                Unindexed (Seq Scan)
+                              </span>
+                            )}
+                          </td>
+                        )}
+                        <td className="py-2 text-[11px]">
+                          <span className={`px-2 py-0.5 rounded ${coverageBadge}`}>
+                            {coverageLabel}
+                          </span>
+                        </td>
+                        <td className={`py-2 text-[11px] text-right ${impactClass}`}>
+                          {impactText}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {/* Current B-Tree Indexes */}
           <div>
             <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
@@ -691,6 +829,30 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       </div>
                     </div>
                   )}
+
+                  {/* Baseline Comparison Ribbon */}
+                  {compareWithBaseline && (() => {
+                    const cmp = getBaselineComparisonForIndex(idx.name, idx.active);
+                    return (
+                      <div className={`mb-2.5 p-2 rounded-lg border text-[11px] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 ${
+                        cmp.isNewOptimization
+                          ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950 shadow-2xs'
+                          : 'bg-zinc-100/90 border-zinc-200 text-zinc-800'
+                      }`}>
+                        <div className="flex items-center gap-1.5">
+                          <Layers className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span className="font-medium text-[11px]">
+                            <span className="line-through text-zinc-500 mr-1">Baseline: {cmp.baselineStatus}</span>
+                            <span className="text-zinc-400">➔</span>
+                            <span className="font-bold ml-1 text-emerald-800">Current: {cmp.currentStatus}</span>
+                          </span>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${cmp.badgeClass}`}>
+                          {cmp.speedup}
+                        </span>
+                      </div>
+                    );
+                  })()}
                   <div>
                     {(() => {
                       if (removedIndexes.includes(idx.name)) {
@@ -835,19 +997,38 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 <div className="text-xs text-zinc-500 italic">No foreign key relations mapped for this table.</div>
               ) : (
                 currentTableData.relationships.map((rel, i) => (
-                  <div key={`rel-${i}`} className="flex items-center justify-between bg-white p-3 rounded-lg border border-zinc-200 text-xs font-mono">
-                    <div className="flex items-center gap-2">
-                      <Link className="w-4 h-4 text-indigo-600" />
-                      <span className="font-bold text-zinc-900">{currentTableData.name}</span>
-                      <ArrowRight className="w-3.5 h-3.5 text-zinc-400" />
-                      <span className="font-bold text-indigo-700">{rel.targetTable}</span>
+                  <div key={`rel-${i}`} className="bg-white p-3 rounded-lg border border-zinc-200 text-xs font-mono space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Link className="w-4 h-4 text-indigo-600" />
+                        <span className="font-bold text-zinc-900">{currentTableData.name}</span>
+                        <ArrowRight className="w-3.5 h-3.5 text-zinc-400" />
+                        <span className="font-bold text-indigo-700">{rel.targetTable}</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-zinc-500 text-[11px]">{rel.foreignKey}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${rel.optimized ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                          {rel.optimized ? 'Batched Join' : 'N+1 Unbatched'}
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-zinc-500 text-[11px]">{rel.foreignKey}</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${rel.optimized ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {rel.optimized ? 'Batched Join' : 'N+1 Unbatched'}
-                      </span>
-                    </div>
+                    {compareWithBaseline && (
+                      <div className="pt-2 border-t border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-[11px]">
+                        <div className="flex items-center gap-1.5">
+                          <Layers className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span className="line-through text-rose-700 font-mono text-[10px] bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200">
+                            Baseline: N+1 Unbatched (100+ DB queries, ~840ms)
+                          </span>
+                          <span className="text-zinc-400">➔</span>
+                          <span className={`font-bold font-mono text-[10px] px-1.5 py-0.2 rounded border ${rel.optimized ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-200'}`}>
+                            Current: {rel.optimized ? 'Batched Join (1 query, 3.2ms, +99.6% Speedup)' : 'N+1 Unbatched'}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold text-emerald-700">
+                          {rel.optimized ? '99 Queries Saved' : '0 Saved'}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ))
               )}
@@ -880,15 +1061,38 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <label className="flex items-center gap-2 px-3 py-1.5 bg-indigo-50/60 border border-indigo-200 rounded-lg text-xs font-semibold text-indigo-900 cursor-pointer select-none">
-            <span>Compare with Baseline</span>
-            <input
-              type="checkbox"
-              id="toggle-compare-baseline"
-              checked={compareWithBaseline}
-              onChange={(e) => setCompareWithBaseline(e.target.checked)}
-              className="w-4 h-4 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
-            />
+          <label
+            htmlFor="toggle-compare-baseline"
+            id="lbl-compare-baseline"
+            className={`flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer select-none transition-all shadow-xs ${
+              compareWithBaseline
+                ? 'bg-amber-500 text-white border border-amber-600 ring-2 ring-amber-300'
+                : 'bg-indigo-50/80 hover:bg-indigo-100/80 border border-indigo-200 text-indigo-900'
+            }`}
+            title="Overlay current index configuration against default unoptimized schema to visually highlight performance gains"
+          >
+            <span className="flex items-center gap-1.5">
+              <Layers className={`w-3.5 h-3.5 ${compareWithBaseline ? 'text-white' : 'text-indigo-600'}`} />
+              <span>Compare with Baseline</span>
+            </span>
+            <div className="relative inline-flex items-center">
+              <input
+                type="checkbox"
+                id="toggle-compare-baseline"
+                data-testid="toggle-compare-baseline"
+                checked={compareWithBaseline}
+                onChange={(e) => setCompareWithBaseline(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className={`w-8 h-4 rounded-full transition-colors relative ${compareWithBaseline ? 'bg-amber-900' : 'bg-zinc-300'}`}>
+                <div className={`w-3 h-3 bg-white rounded-full absolute top-[2px] transition-transform ${compareWithBaseline ? 'left-[18px]' : 'left-[2px]'}`} />
+              </div>
+            </div>
+            {compareWithBaseline && (
+              <span className="px-1.5 py-0.2 bg-amber-700 text-white rounded text-[10px] font-bold">
+                ON
+              </span>
+            )}
           </label>
 
           <label className="flex items-center gap-2 px-3 py-1.5 bg-zinc-50 border border-zinc-200 rounded-lg text-xs font-semibold text-zinc-800 cursor-pointer select-none">
@@ -1133,16 +1337,196 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
       )}
 
-      {/* Baseline Comparison Overlay Banner */}
+      {/* Baseline Comparison Overlay Comprehensive Dashboard */}
       {compareWithBaseline && (
-        <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 text-xs text-amber-900 flex items-center justify-between animate-fadeIn">
-          <div className="flex items-center gap-2.5 font-medium">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
-            <span>Baseline Comparison Overlay Active: Comparing current optimized schema against unoptimized default (Baseline: 0 composite B-Tree indexes, unindexed foreign keys).</span>
+        <div id="baseline-comparison-overlay-dashboard" className="bg-gradient-to-b from-amber-50/90 via-orange-50/50 to-white border-b border-amber-200 px-6 py-4 space-y-4 animate-fadeIn shadow-inner">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-amber-200/80">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-amber-500 text-white rounded-xl shadow-xs">
+                <Layers className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-sm font-bold text-amber-950 flex items-center gap-2">
+                  <span>Baseline Comparison Overlay Active</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-extrabold bg-amber-200 text-amber-900 border border-amber-300">
+                    Default vs. Current Schema Delta
+                  </span>
+                </div>
+                <p className="text-xs text-amber-900 mt-0.5">
+                  Overlays current index structures against the default unoptimized schema to visually measure empirical performance gains.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                id="btn-apply-full-optimization-compare"
+                data-testid="btn-apply-full-optimization-compare"
+                onClick={handleAutoOptimizeWorkload}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+              >
+                <Zap className="w-3.5 h-3.5 fill-white" />
+                <span>Apply Full Optimization</span>
+              </button>
+              <button
+                type="button"
+                id="btn-reset-baseline-compare"
+                data-testid="btn-reset-baseline-compare"
+                onClick={handleRevertAllIndexes}
+                className="px-3 py-1.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset to Baseline Default</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompareWithBaseline(false)}
+                className="p-1.5 text-amber-800 hover:text-amber-950 rounded-lg hover:bg-amber-100 cursor-pointer"
+                title="Exit Comparison Overlay"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
-          <span className="font-mono font-bold bg-amber-200/80 text-amber-950 px-2.5 py-0.5 rounded text-[11px]">
-            Δ: {flags.btreeIndexing ? '+2 Indexes' : '+0 Indexes'} (O(log n) vs O(n))
-          </span>
+
+          {/* 3-Column Comparison Matrix */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {/* Column 1: Default Baseline Schema */}
+            <div className="p-4 bg-white/95 rounded-xl border border-rose-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between border-b border-rose-100 pb-2">
+                <span className="font-bold text-xs text-rose-950 flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                  <span>Default Baseline Schema</span>
+                </span>
+                <span className="text-[10px] font-mono font-bold bg-rose-100 text-rose-800 px-2 py-0.5 rounded">
+                  Unoptimized
+                </span>
+              </div>
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Active Indexes:</span>
+                  <strong className="font-mono text-zinc-900">1 (Primary Key Only)</strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Execution Strategy:</span>
+                  <strong className="font-mono text-rose-700">Seq Scan (O(n))</strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Avg Query Latency:</span>
+                  <strong className="font-mono text-rose-700 font-bold">482 ms</strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Read Throughput:</span>
+                  <strong className="font-mono text-zinc-800">120 QPS</strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Relational Joins:</span>
+                  <strong className="font-mono text-rose-700">N+1 (100+ Trips)</strong>
+                </div>
+              </div>
+              <div className="p-2 bg-rose-50 rounded-lg text-[11px] text-rose-900 border border-rose-100">
+                ⚠️ Severe lock contention &amp; CPU spikes. Sequential scans on 50,000 records.
+              </div>
+            </div>
+
+            {/* Column 2: Current Configuration */}
+            <div className="p-4 bg-white/95 rounded-xl border border-indigo-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between border-b border-indigo-100 pb-2">
+                <span className="font-bold text-xs text-indigo-950 flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+                  <span>Current Schema State</span>
+                </span>
+                <span className="text-[10px] font-mono font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">
+                  {speedUpPercent > 50 ? 'Optimized' : 'Partially Configured'}
+                </span>
+              </div>
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Active Indexes:</span>
+                  <strong className="font-mono text-indigo-900">
+                    {currentTableData.indexes.filter(idx => idx.active && !removedIndexes.includes(idx.name)).length} Active
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Execution Strategy:</span>
+                  <strong className="font-mono text-emerald-700">
+                    {speedUpPercent > 50 ? 'B-Tree Seek (O(log n))' : 'Mixed Seek / Scan'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Avg Query Latency:</span>
+                  <strong className="font-mono text-emerald-700 font-bold">
+                    {speedUpPercent > 80 ? '1.8 ms' : speedUpPercent > 50 ? '42 ms' : '482 ms'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Read Throughput:</span>
+                  <strong className="font-mono text-emerald-700">
+                    {speedUpPercent > 80 ? '18,600 QPS' : speedUpPercent > 50 ? '3,200 QPS' : '120 QPS'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-600">
+                  <span>Relational Joins:</span>
+                  <strong className="font-mono text-indigo-900">
+                    {flags.batchEagerLoading ? 'Batched Hash Join (1 Trip)' : 'N+1 Unbatched'}
+                  </strong>
+                </div>
+              </div>
+              <div className="p-2 bg-indigo-50 rounded-lg text-[11px] text-indigo-900 border border-indigo-100">
+                {speedUpPercent > 80
+                  ? '⚡ Optimal B-Tree leaf node clustering enabled across all hot paths.'
+                  : '🔧 Configure composite indexes and batch eager loading to unlock peak throughput.'}
+              </div>
+            </div>
+
+            {/* Column 3: Performance Gains Achieved */}
+            <div className="p-4 bg-gradient-to-br from-emerald-50/90 via-teal-50/80 to-white rounded-xl border border-emerald-300 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
+                <span className="font-bold text-xs text-emerald-950 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 fill-emerald-600 text-emerald-600" />
+                  <span>Performance Gains Achieved</span>
+                </span>
+                <span className="text-[10px] font-mono font-bold bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded">
+                  Delta Δ
+                </span>
+              </div>
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between text-zinc-700">
+                  <span>⚡ Latency Reduction:</span>
+                  <strong className="font-mono text-emerald-700 font-extrabold">
+                    {speedUpPercent > 80 ? '-99.6% (482ms → 1.8ms)' : speedUpPercent > 50 ? '-91.2% (482ms → 42ms)' : '0% (Baseline)'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-700">
+                  <span>🚀 Throughput Multiplier:</span>
+                  <strong className="font-mono text-emerald-700 font-extrabold">
+                    {speedUpPercent > 80 ? '+15,400% (154x Gain)' : speedUpPercent > 50 ? '+2,566% (26x Gain)' : 'Baseline'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-700">
+                  <span>🛡️ Full Scans Avoided:</span>
+                  <strong className="font-mono text-emerald-700">
+                    {speedUpPercent > 50 ? '50,000 Rows Skipped' : '0'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-700">
+                  <span>🔄 Join Trips Saved:</span>
+                  <strong className="font-mono text-emerald-700">
+                    {flags.batchEagerLoading ? '99+ Queries / Request' : '0'}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between text-zinc-700">
+                  <span>💾 Write Contention:</span>
+                  <strong className="font-mono text-emerald-700">
+                    {removedIndexes.includes('idx_transactions_date') ? '-14% Lock Overhead' : '0%'}
+                  </strong>
+                </div>
+              </div>
+              <div className="p-2 bg-emerald-100/80 rounded-lg text-[11px] text-emerald-950 font-medium border border-emerald-200">
+                🎉 Realized empirical gains: Zero full-table scans on search, category grouping, and relational joins.
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
