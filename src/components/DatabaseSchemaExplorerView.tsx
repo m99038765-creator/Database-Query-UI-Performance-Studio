@@ -709,6 +709,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            id="btn-suggest-composite-indexes"
+            data-testid="btn-suggest-composite-indexes"
+            onClick={() => {
+              setShowSuggestIndexesModal(true);
+              handleAnalyzeWorkload();
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Analyze query history to identify multi-column filtering patterns and propose composite index structures"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Suggest Composite Indexes</span>
+          </button>
+
+          <button
+            type="button"
             id="btn-cluster-analysis"
             data-testid="btn-cluster-analysis"
             onClick={() => setShowClusterAnalysisModal(true)}
