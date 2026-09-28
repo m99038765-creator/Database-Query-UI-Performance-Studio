@@ -80,6 +80,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
   const currentTableData = tables.find((t) => t.name === selectedTable) || tables[0];
 
+  const speedUpPercent = React.useMemo(() => {
+    let score = 0;
+    if (flags.btreeIndexing) score += 35;
+    if (flags.batchEagerLoading) score += 30;
+    if (flags.queryCaching) score += 15;
+    if (flags.virtualizedDOM) score += 15;
+    if (flags.deferredRendering) score += 5;
+    if (createdCustomIndexes.length > 0) score += createdCustomIndexes.length * 5;
+    return Math.min(100, score);
+  }, [flags, createdCustomIndexes]);
+
   const handleCreateIndex = (colName: string) => {
     if (!createdCustomIndexes.includes(colName)) {
       setCreatedCustomIndexes([...createdCustomIndexes, colName]);
@@ -308,6 +319,44 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
         {/* Right Main Area: Table Schema & Index Audit */}
         <div className="lg:col-span-3 p-6 space-y-6 overflow-y-auto">
+          {/* Estimated Speed-Up Visual Gauge */}
+          <div className="p-4 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 rounded-2xl border border-indigo-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs">
+                <Zap className="w-5 h-5 fill-white" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-zinc-900">
+                  Estimated Query Execution Speed-Up Gauge
+                </h4>
+                <p className="text-xs text-zinc-500">
+                  Dynamic performance acceleration derived from active B-Tree indexes, caching, and batch eager loading.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 w-full sm:w-auto">
+              <div className="flex-1 sm:w-48 bg-zinc-200 h-3 rounded-full overflow-hidden shadow-inner">
+                <div
+                  className={`h-full transition-all duration-500 rounded-full ${
+                    speedUpPercent > 80
+                      ? 'bg-emerald-600'
+                      : speedUpPercent > 40
+                      ? 'bg-indigo-600'
+                      : 'bg-amber-500'
+                  }`}
+                  style={{ width: `${speedUpPercent}%` }}
+                />
+              </div>
+              <div className="text-right whitespace-nowrap font-mono">
+                <span className="text-xl font-bold text-zinc-900">+{speedUpPercent}%</span>
+                <span className="text-[10px] block text-emerald-700 font-semibold">
+                  {speedUpPercent > 80 ? '⚡ Maximum Throughput' : speedUpPercent > 40 ? '🚀 Accelerated' : '⚠️ Unoptimized'}
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* Table Header Details */}
           <div>
             <div className="flex items-center justify-between">
@@ -371,7 +420,24 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                           )}
                         </td>
                         <td className="py-2.5 px-4 text-right">
-                          {!isIndexed && (
+                          {isIndexed ? (
+                            !col.isPk && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (col.name === 'status' || col.name === 'category') {
+                                    if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
+                                  } else {
+                                    setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== col.name));
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs"
+                                title={`Undo optimization on column ${col.name}`}
+                              >
+                                <span>Undo Optimization</span>
+                              </button>
+                            )
+                          ) : (
                             <button
                               type="button"
                               onClick={() => handleCreateIndex(col.name)}
@@ -417,8 +483,28 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       Type: {idx.type} • Columns: ({idx.columns.join(', ')})
                     </div>
                   </div>
-                  <div className="text-[11px] font-medium text-emerald-700 pt-2 border-t border-zinc-200/60">
-                    {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
+                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
+                    <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
+                      {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
+                    </span>
+                    {idx.active && !idx.name.includes('PRIMARY KEY') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (idx.name.includes('status') || idx.name.includes('cat')) {
+                            if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
+                          } else if (idx.columns.includes('customer_email')) {
+                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
+                          } else if (idx.columns.includes('amount')) {
+                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+                          }
+                        }}
+                        className="px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
+                        title="Revert / Undo optimization on this index"
+                      >
+                        Undo Optimization
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
