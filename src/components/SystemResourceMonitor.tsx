@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Cpu, HardDrive, Activity, Zap, Database, Layers, ChevronUp, ChevronDown } from 'lucide-react';
+import { Cpu, HardDrive, Activity, Zap, Database, ChevronUp, ChevronDown, TrendingUp, Clock, AlertTriangle } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface SystemResourceMonitorProps {
@@ -17,6 +17,8 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
   const [cpuUsage, setCpuUsage] = useState<number>(14);
   const [memoryMb, setMemoryMb] = useState<number>(128);
   const [activeThreads, setActiveThreads] = useState<number>(2);
+  const [simulateLeak, setSimulateLeak] = useState<boolean>(false);
+  const [accumulatedSurge, setAccumulatedSurge] = useState<number>(0);
 
   // 60-second historical history buffers (sampled every 3 seconds -> 20 points)
   const [cpuHistory, setCpuHistory] = useState<number[]>([14, 15, 14, 16, 18, 14, 15, 15, 14, 16, 15, 14, 15, 14, 16, 15, 14, 15, 14, 14]);
@@ -32,20 +34,124 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
       setCpuUsage(nextCpu);
       setCpuHistory((h) => [...h.slice(-19), nextCpu]);
 
-      const baseMem = 120 + (recordCount / 1000) * 12;
-      const memJitter = Math.floor(Math.random() * 10) - 5;
-      const nextMem = Math.min(512, Math.max(95, Math.round(baseMem + memJitter)));
-      setMemoryMb(nextMem);
-      setMemoryHistory((h) => [...h.slice(-19), nextMem]);
+      setAccumulatedSurge((prevSurge) => {
+        let newSurge = prevSurge;
+        if (simulateLeak) {
+          newSurge += 14; // Intentional memory surge to demonstrate linear regression prediction
+        } else if (!flags.queryCaching && !flags.batchEagerLoading) {
+          newSurge += 3; // Unoptimized query accumulation
+        } else if (newSurge > 0) {
+          newSurge = Math.max(0, newSurge - 6); // Memory relief when optimized
+        }
+
+        const baseMem = 120 + (recordCount / 1000) * 12 + newSurge;
+        const memJitter = Math.floor(Math.random() * 8) - 4;
+        const nextMem = Math.min(512, Math.max(95, Math.round(baseMem + memJitter)));
+        setMemoryMb(nextMem);
+        setMemoryHistory((h) => [...h.slice(-19), nextMem]);
+        return newSurge;
+      });
 
       const threads = !flags.batchEagerLoading ? 101 : cacheHit ? 1 : 4;
       setActiveThreads(threads);
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [flags, recordCount, cacheHit]);
+  }, [flags, recordCount, cacheHit, simulateLeak]);
 
   const memPercent = Math.round((memoryMb / 512) * 100);
+
+  // Linear regression to predict time until memory usage reaches 90% (460.8MB of 512MB capacity)
+  const calculateLinearRegressionTimeToCritical = (
+    history: number[],
+    currentMem: number
+  ) => {
+    const CRITICAL_THRESHOLD_MB = 512 * 0.9; // 460.8 MB (90% capacity)
+
+    if (currentMem >= CRITICAL_THRESHOLD_MB) {
+      return {
+        estimateText: 'Critical (≥90%)',
+        slopeMbPerSec: 0,
+        slopeMbPerMin: 0,
+        status: 'critical' as const,
+      };
+    }
+
+    if (!history || history.length < 3) {
+      return {
+        estimateText: 'Calibrating...',
+        slopeMbPerSec: 0,
+        slopeMbPerMin: 0,
+        status: 'stable' as const,
+      };
+    }
+
+    const n = history.length;
+    const STEP_SECONDS = 3; // 3 seconds per interval
+
+    let sumX = 0;
+    let sumY = 0;
+    let sumXY = 0;
+    let sumXX = 0;
+
+    for (let i = 0; i < n; i++) {
+      const x = i * STEP_SECONDS;
+      const y = history[i];
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumXX += x * x;
+    }
+
+    const meanX = sumX / n;
+    const meanY = sumY / n;
+    const denominator = sumXX - sumX * meanX;
+    const slope = denominator !== 0 ? (sumXY - sumX * meanY) / denominator : 0; // MB/sec
+
+    const slopeMbPerMin = slope * 60;
+
+    // If slope is near zero or negative, consumption is not trending to critical threshold
+    if (slope <= 0.02) {
+      return {
+        estimateText: 'Stable (Slope ≤ 0)',
+        slopeMbPerSec: slope,
+        slopeMbPerMin: Math.max(0, slopeMbPerMin),
+        status: 'stable' as const,
+      };
+    }
+
+    const mbRemaining = CRITICAL_THRESHOLD_MB - currentMem;
+    const secondsRemaining = Math.max(1, Math.round(mbRemaining / slope));
+
+    let estimateText = '';
+    let status: 'critical' | 'warning' | 'stable' = 'stable';
+
+    if (secondsRemaining <= 15) {
+      estimateText = '<15s (Imminent)';
+      status = 'critical';
+    } else if (secondsRemaining < 60) {
+      estimateText = `~${secondsRemaining}s`;
+      status = 'warning';
+    } else if (secondsRemaining < 3600) {
+      const mins = Math.floor(secondsRemaining / 60);
+      const secs = secondsRemaining % 60;
+      estimateText = `~${mins}m ${secs}s`;
+      status = mins < 5 ? 'warning' : 'stable';
+    } else {
+      const hours = (secondsRemaining / 3600).toFixed(1);
+      estimateText = `~${hours} hrs`;
+      status = 'stable';
+    }
+
+    return {
+      estimateText,
+      slopeMbPerSec: slope,
+      slopeMbPerMin,
+      status,
+    };
+  };
+
+  const timeToCritical = calculateLinearRegressionTimeToCritical(memoryHistory, memoryMb);
 
   const renderMiniSparkline = (points: number[], color = '#34d399', height = 22, width = 110) => {
     if (!points || points.length < 2) return null;
@@ -97,6 +203,18 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
           <span className="text-[10px] text-zinc-400">
             {cpuUsage}% CPU • {memoryMb}MB
           </span>
+          <span
+            className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
+              timeToCritical.status === 'critical'
+                ? 'bg-rose-900/80 text-rose-300 border border-rose-700'
+                : timeToCritical.status === 'warning'
+                ? 'bg-amber-900/80 text-amber-300 border border-amber-700'
+                : 'bg-emerald-950/70 text-emerald-300 border border-emerald-800'
+            }`}
+            title="Time until memory usage reaches 90% critical limit (Linear Regression Estimate)"
+          >
+            {timeToCritical.estimateText}
+          </span>
           <button
             type="button"
             className="text-zinc-400 hover:text-white p-0.5 rounded cursor-pointer"
@@ -109,7 +227,7 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
 
       {/* Expanded Metrics Body */}
       {isExpanded && (
-        <div className="p-3 space-y-3 w-72">
+        <div className="p-3 space-y-3 w-80">
           {/* CPU Usage Meter & Sparkline */}
           <div className="space-y-1">
             <div className="flex items-center justify-between text-[11px]">
@@ -164,6 +282,68 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
             </div>
           </div>
 
+          {/* Linear Regression: Time to Critical (90% Threshold) */}
+          <div className="bg-zinc-800/80 p-2.5 rounded-lg border border-zinc-700/80 space-y-1.5">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="flex items-center gap-1.5 text-zinc-200">
+                <TrendingUp
+                  className={`w-3.5 h-3.5 ${
+                    timeToCritical.status === 'warning'
+                      ? 'text-amber-400'
+                      : timeToCritical.status === 'critical'
+                      ? 'text-rose-400'
+                      : 'text-emerald-400'
+                  }`}
+                />
+                <span className="font-semibold">Time to Critical (90% RAM)</span>
+              </span>
+              <span
+                id="time-to-critical-estimate"
+                className={`font-bold px-2 py-0.5 rounded text-[10px] tracking-wide ${
+                  timeToCritical.status === 'critical'
+                    ? 'bg-rose-950/80 text-rose-300 border border-rose-600 animate-pulse'
+                    : timeToCritical.status === 'warning'
+                    ? 'bg-amber-950/80 text-amber-300 border border-amber-600'
+                    : 'bg-emerald-950/80 text-emerald-300 border border-emerald-700'
+                }`}
+              >
+                {timeToCritical.estimateText}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-0.5">
+              <span className="flex items-center gap-1">
+                <Clock className="w-3 h-3 text-zinc-500" />
+                <span>Consumption Trend:</span>
+              </span>
+              <span
+                className={`font-mono font-semibold ${
+                  timeToCritical.slopeMbPerMin > 0 ? 'text-amber-300' : 'text-emerald-400'
+                }`}
+              >
+                {timeToCritical.slopeMbPerMin > 0
+                  ? `+${timeToCritical.slopeMbPerMin.toFixed(1)} MB/min`
+                  : '≤ 0.0 MB/min (Stable)'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-[9px] text-zinc-500 pt-1 border-t border-zinc-700/50">
+              <span>Target: 460.8 MB (90% of 512MB)</span>
+              <button
+                type="button"
+                onClick={() => setSimulateLeak(!simulateLeak)}
+                className={`px-1.5 py-0.5 rounded text-[9px] font-semibold cursor-pointer transition-colors ${
+                  simulateLeak
+                    ? 'bg-rose-900/60 text-rose-200 border border-rose-700 hover:bg-rose-800/80'
+                    : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
+                }`}
+                title="Toggle simulated memory consumption surge to observe real-time linear regression projection"
+              >
+                {simulateLeak ? 'Stop Surge' : 'Test Surge'}
+              </button>
+            </div>
+          </div>
+
           {/* Active Query Threads & Cache Status */}
           <div className="grid grid-cols-2 gap-2 pt-1 border-t border-zinc-800 text-[10px] text-zinc-400">
             <div className="bg-zinc-800/60 p-2 rounded-lg border border-zinc-700/60">
@@ -191,3 +371,4 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
     </div>
   );
 };
+

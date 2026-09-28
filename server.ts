@@ -16,10 +16,12 @@ app.get(['/healthz', '/_health', '/health', '/_ready'], (_req, res) => {
   res.status(200).send('OK');
 });
 
-const distDir = path.join(__dirname, 'dist');
+const distDir = fs.existsSync(path.join(__dirname, 'dist'))
+  ? path.join(__dirname, 'dist')
+  : path.join(__dirname, 'build');
 const indexHtmlPath = path.join(distDir, 'index.html');
 
-// Serve static files from the dist directory if it exists
+// Serve static files from the dist or build directory if it exists
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
 }

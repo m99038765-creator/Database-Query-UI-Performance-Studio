@@ -11,7 +11,7 @@ app.use(express.json());
 app.get(["/healthz", "/_health", "/health", "/_ready"], (_req, res) => {
   res.status(200).send("OK");
 });
-var distDir = path.join(__dirname, "dist");
+var distDir = fs.existsSync(path.join(__dirname, "dist")) ? path.join(__dirname, "dist") : path.join(__dirname, "build");
 var indexHtmlPath = path.join(distDir, "index.html");
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
