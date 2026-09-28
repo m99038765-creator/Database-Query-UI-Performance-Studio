@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -18,6 +18,56 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showQueryComplexityInfo, setShowQueryComplexityInfo] = useState<boolean>(false);
   const [compareWithBaseline, setCompareWithBaseline] = useState<boolean>(false);
   const [showSuggestIndexesModal, setShowSuggestIndexesModal] = useState<boolean>(false);
+  const [showDetailedStats, setShowDetailedStats] = useState<boolean>(false);
+
+  interface SchemaSnapshot {
+    id: string;
+    name: string;
+    timestamp: string;
+    flags: OptimizationFlags;
+    customIndexes: string[];
+  }
+
+  const [snapshots, setSnapshots] = useState<SchemaSnapshot[]>([
+    {
+      id: 'snapshot-default',
+      name: 'Default Baseline State',
+      timestamp: new Date().toLocaleTimeString(),
+      flags: { batchEagerLoading: false, btreeIndexing: false, queryCaching: false, virtualizedDOM: false, deferredRendering: false },
+      customIndexes: []
+    }
+  ]);
+  const [showSnapshotsModal, setShowSnapshotsModal] = useState<boolean>(false);
+
+  const handleTakeSnapshot = () => {
+    const newSnapshot: SchemaSnapshot = {
+      id: `snapshot-${Date.now()}`,
+      name: `Schema Snapshot #${snapshots.length + 1}`,
+      timestamp: new Date().toLocaleTimeString(),
+      flags: { ...flags },
+      customIndexes: [...createdCustomIndexes]
+    };
+    setSnapshots([...snapshots, newSnapshot]);
+    setShowSnapshotsModal(true);
+  };
+
+  const handleRestoreSnapshot = (snap: SchemaSnapshot) => {
+    setCreatedCustomIndexes([...snap.customIndexes]);
+    setShowSnapshotsModal(false);
+  };
+
+  const handleBulkApplyAllIndexes = () => {
+    if (!flags.btreeIndexing) {
+      onToggleFlag('btreeIndexing');
+    }
+    if (!flags.batchEagerLoading) {
+      onToggleFlag('batchEagerLoading');
+    }
+    const missing = ['customer_email', 'amount'].filter((col) => !createdCustomIndexes.includes(col));
+    if (missing.length > 0) {
+      setCreatedCustomIndexes([...createdCustomIndexes, ...missing]);
+    }
+  };
 
   const tables = [
     {
@@ -92,6 +142,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     return Math.min(100, score);
   }, [flags, createdCustomIndexes]);
 
+  const getIndexImpactSummary = (indexName: string) => {
+    if (indexName.includes('PRIMARY KEY')) {
+      return { topQuery: 'Q1: ID Lookup', reduction: 'O(n) → O(1) Constant Seek' };
+    } else if (indexName.includes('status_cat')) {
+      return { topQuery: 'Q2: Status & Category Filter', reduction: 'O(n) → O(log n) Composite B-Tree' };
+    } else if (indexName.includes('date')) {
+      return { topQuery: 'Q3: Date Range Scan', reduction: 'O(n) → O(log n) Ordered B-Tree' };
+    } else if (indexName.includes('email')) {
+      return { topQuery: 'Q4: Customer Email Search', reduction: 'O(n) → O(log n) Leaf Node Seek' };
+    } else if (indexName.includes('amount')) {
+      return { topQuery: 'Q5: Amount Threshold Filter', reduction: 'O(n) → O(log n) Range Index Scan' };
+    }
+    return { topQuery: 'Top Queries #1-#5', reduction: 'O(n) → O(log n) Read Optimization' };
+  };
+
   const handleCreateIndex = (colName: string) => {
     if (!createdCustomIndexes.includes(colName)) {
       setCreatedCustomIndexes([...createdCustomIndexes, colName]);
@@ -155,6 +220,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             />
           </label>
 
+          <label className="flex items-center gap-2 px-3 py-1.5 bg-zinc-50 border border-zinc-200 rounded-lg text-xs font-semibold text-zinc-800 cursor-pointer select-none">
+            <span>Show Index Stats (Size &amp; Hit Rate)</span>
+            <input
+              type="checkbox"
+              id="toggle-detailed-stats"
+              checked={showDetailedStats}
+              onChange={(e) => setShowDetailedStats(e.target.checked)}
+              className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+            />
+          </label>
+
+          <button
+            type="button"
+            onClick={handleTakeSnapshot}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Snapshot current index configurations and switch between states"
+          >
+            <History className="w-3.5 h-3.5" />
+            <span>Snapshot Schema ({snapshots.length})</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setShowSuggestIndexesModal(true)}
@@ -163,6 +249,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Suggest Missing Indexes</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleBulkApplyAllIndexes}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Enable all high-priority missing indexes simultaneously to see cumulative performance impact"
+          >
+            <Zap className="w-3.5 h-3.5 fill-white" />
+            <span>Bulk Apply All</span>
           </button>
 
           <button
@@ -411,6 +507,66 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
       )}
 
+      {/* Schema Snapshots Manager Modal */}
+      {showSnapshotsModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-lg w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                  <History className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">
+                    Schema Snapshots Manager
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    Switch between saved index configuration states to compare performance.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSnapshotsModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-64 overflow-y-auto text-xs">
+              {snapshots.map((snap) => (
+                <div key={snap.id} className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 flex items-center justify-between">
+                  <div>
+                    <div className="font-bold text-zinc-900">{snap.name}</div>
+                    <div className="text-[11px] text-zinc-500">
+                      Saved at {snap.timestamp} • Custom Indexes: {snap.customIndexes.length}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRestoreSnapshot(snap)}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg text-xs cursor-pointer transition-colors shadow-2xs"
+                  >
+                    Restore State
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowSnapshotsModal(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 min-h-[500px]">
         {/* Left Sidebar: Table List */}
@@ -623,6 +779,26 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       Type: {idx.type} • Columns: ({idx.columns.join(', ')})
                     </div>
                   </div>
+
+                  {(() => {
+                    const impact = getIndexImpactSummary(idx.name);
+                    return (
+                      <div className="my-2 p-2 bg-white/90 rounded-lg border border-zinc-200/80 text-[11px] space-y-0.5 shadow-2xs">
+                        <div className="font-bold text-zinc-900 flex items-center justify-between">
+                          <span>📊 {impact.topQuery}</span>
+                          <span className="font-mono text-[10px] text-indigo-700 font-semibold">{impact.reduction}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {showDetailedStats && (
+                    <div className="my-1.5 p-2 bg-indigo-50/70 rounded-lg border border-indigo-200 text-[11px] font-mono flex items-center justify-between text-indigo-950">
+                      <span>Storage Size: <strong className="text-indigo-900">{idx.active ? (idx.name.includes('PRIMARY') ? '4.8 MB' : '2.1 MB') : '0 KB'}</strong></span>
+                      <span>Hit Rate: <strong className="text-emerald-700">{idx.active ? '99.4%' : '0.0%'}</strong></span>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
                     <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
                       {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
