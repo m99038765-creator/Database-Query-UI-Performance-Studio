@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -85,6 +85,30 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }
   };
 
+  const handleDownloadSchemaReport = () => {
+    const reportData = {
+      timestamp: new Date().toISOString(),
+      activeOptimizationFlags: flags,
+      tables,
+      customCreatedIndexes: createdCustomIndexes,
+      diagnosticSummary: {
+        totalTables: tables.length,
+        missingIndexesIdentified: ['customer_email', 'amount'],
+        recommendation: 'Enable B-Tree Indexing and Batch Eager Loading to resolve query complexity bottlenecks.'
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `schema-diagnostic-report-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="bg-white rounded-xl border border-zinc-200 shadow-xl overflow-hidden flex flex-col">
       {/* Header Bar */}
@@ -107,6 +131,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDownloadSchemaReport}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
+            title="Download JSON report of current schema diagnostic findings"
+          >
+            <Download className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Download Schema Report</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setShowQueryComplexityInfo(true)}
