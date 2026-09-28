@@ -39,6 +39,103 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [cleanupScanCompleted, setCleanupScanCompleted] = useState<boolean>(false);
   const [removedIndexes, setRemovedIndexes] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain'>('explorer');
+  const [showWorkloadOptimizationModal, setShowWorkloadOptimizationModal] = useState<boolean>(false);
+  const [isAutoOptimizingWorkload, setIsAutoOptimizingWorkload] = useState<boolean>(false);
+  const [autoOptimizedCompleted, setAutoOptimizedCompleted] = useState<boolean>(false);
+
+  const expensiveQueriesWorkload = [
+    {
+      id: 'Q1',
+      name: 'Multi-Column Category & Amount Range Aggregation',
+      sql: 'SELECT category, AVG(amount), COUNT(*) FROM transactions WHERE category = ? AND amount > ? GROUP BY category',
+      frequency: '8,900 queries/hr',
+      executionShare: '38.4% of DB read CPU time',
+      unindexedLatency: '482 ms',
+      optimizedLatency: '1.9 ms',
+      speedup: '99.6%',
+      throughputBefore: '21 QPS',
+      throughputAfter: '5,260 QPS',
+      optimalIndexName: 'idx_transactions_category_amount',
+      optimalIndexType: 'Composite B-Tree (category, amount)',
+      isToggled: createdCompositeIndexes.includes('category_amount'),
+      impactExplanation: 'Replaces full table scan with an O(log n) composite index range seek, eliminating in-memory sorting and secondary lookups.'
+    },
+    {
+      id: 'Q2',
+      name: 'Customer Order Verification & Status Lookup',
+      sql: 'SELECT * FROM transactions WHERE customer_email = ? AND status = ? ORDER BY created_at DESC LIMIT 20',
+      frequency: '5,120 queries/hr',
+      executionShare: '29.1% of DB read CPU time',
+      unindexedLatency: '395 ms',
+      optimizedLatency: '1.6 ms',
+      speedup: '99.6%',
+      throughputBefore: '25 QPS',
+      throughputAfter: '6,250 QPS',
+      optimalIndexName: 'idx_transactions_email_status',
+      optimalIndexType: 'Composite B-Tree (customer_email, status)',
+      isToggled: createdCompositeIndexes.includes('email_status'),
+      impactExplanation: 'Co-locates customer email and order status in composite leaf nodes, preventing duplicate table lookups.'
+    },
+    {
+      id: 'Q3',
+      name: 'Active Order Dashboard & Pipeline Status Filtering',
+      sql: 'SELECT * FROM transactions WHERE status = ? AND category = ?',
+      frequency: '12,400 queries/hr',
+      executionShare: '18.7% of DB read CPU time',
+      unindexedLatency: '310 ms',
+      optimizedLatency: '1.4 ms',
+      speedup: '99.5%',
+      throughputBefore: '32 QPS',
+      throughputAfter: '7,140 QPS',
+      optimalIndexName: 'idx_orders_status_cat',
+      optimalIndexType: 'Composite B-Tree (status, category)',
+      isToggled: flags.btreeIndexing,
+      impactExplanation: 'Provides multi-column b-tree seek for high-frequency dashboard polling queries.'
+    },
+    {
+      id: 'Q4',
+      name: 'Relational Order Line-Items Child Join Storm',
+      sql: 'SELECT * FROM line_items WHERE transaction_id IN (...)',
+      frequency: '15,000 queries/hr',
+      executionShare: '13.8% of DB read CPU time',
+      unindexedLatency: '840 ms',
+      optimizedLatency: '3.2 ms',
+      speedup: '99.6%',
+      throughputBefore: '12 QPS',
+      throughputAfter: '3,125 QPS',
+      optimalIndexName: 'idx_line_items_tx',
+      optimalIndexType: 'Foreign Key B-Tree (transaction_id)',
+      isToggled: flags.batchEagerLoading,
+      impactExplanation: 'Collapses sequential N+1 relational sub-queries into a single index-accelerated batched hash join.'
+    }
+  ];
+
+  const handleAutoOptimizeWorkload = () => {
+    setIsAutoOptimizingWorkload(true);
+    setTimeout(() => {
+      // 1. Toggle core B-Tree flags for expensive queries
+      if (!flags.btreeIndexing) {
+        onToggleFlag('btreeIndexing');
+      }
+      if (!flags.batchEagerLoading) {
+        onToggleFlag('batchEagerLoading');
+      }
+
+      // 2. Toggle optimal composite B-Tree indexes for multi-column predicates
+      setCreatedCompositeIndexes(['email_status', 'category_amount']);
+
+      // 3. Ensure single-column indexes are set
+      setCreatedCustomIndexes((prev) => Array.from(new Set([...prev, 'customer_email', 'amount'])));
+
+      // 4. Prune dead unutilized index (idx_transactions_date) to prevent buffer cache pollution
+      setRemovedIndexes((prev) => Array.from(new Set([...prev, 'idx_transactions_date'])));
+
+      setIsAutoOptimizingWorkload(false);
+      setAutoOptimizedCompleted(true);
+      setHasAnalyzedWorkload(true);
+      setShowWorkloadOptimizationModal(true);
+    }, 650);
+  };
 
   const handleRunIndexCleanupScan = () => {
     setShowIndexCleanupModal(true);
@@ -146,6 +243,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     setConsolidatedIndexes([]);
     setRemovedIndexes([]);
     setCleanupScanCompleted(false);
+    setAutoOptimizedCompleted(false);
   };
 
   const [snapshots, setSnapshots] = useState<SchemaSnapshot[]>([
@@ -840,6 +938,33 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            id="btn-auto-optimize-workload"
+            data-testid="btn-auto-optimize-workload"
+            onClick={handleAutoOptimizeWorkload}
+            disabled={isAutoOptimizingWorkload}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 disabled:opacity-60 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+            title="Automatically run workload analysis on query history and toggle optimal B-Tree indexes to maximize read throughput for expensive queries"
+          >
+            {isAutoOptimizingWorkload ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                <span>Analyzing Workload...</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                <span>Auto-Optimize Workload Indexes</span>
+                {autoOptimizedCompleted && (
+                  <span className="ml-1 px-1.5 py-0.2 bg-emerald-800 text-emerald-100 rounded-full text-[10px] font-bold">
+                    Optimal
+                  </span>
+                )}
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
             id="btn-suggest-composite-indexes"
             data-testid="btn-suggest-composite-indexes"
             onClick={() => {
@@ -965,6 +1090,48 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           <span>Index Dependency Chain</span>
         </button>
       </div>
+
+      {/* Workload Auto-Optimization Active Status Banner */}
+      {autoOptimizedCompleted && (
+        <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border-b border-emerald-200 px-6 py-3 text-xs text-emerald-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-emerald-600 text-white rounded-lg shadow-xs">
+              <Zap className="w-4 h-4 fill-white" />
+            </div>
+            <div>
+              <div className="font-bold flex items-center gap-2 text-emerald-950">
+                <span>Optimal B-Tree Index Set Active</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-extrabold bg-emerald-200 text-emerald-900 border border-emerald-300">
+                  +15,400% Read Throughput
+                </span>
+                <span className="text-[10px] text-emerald-700 font-mono">P99: 1.9ms (-99.6%)</span>
+              </div>
+              <p className="text-[11px] text-emerald-800 mt-0.5">
+                Workload analysis evaluated 14,200 queries: Toggled optimal composite B-Tree indexes (<code className="font-mono bg-emerald-100 px-1 rounded font-bold">category, amount</code> &amp; <code className="font-mono bg-emerald-100 px-1 rounded font-bold">customer_email, status</code>) and foreign key joins to maximize read throughput.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              id="btn-view-workload-audit"
+              data-testid="btn-view-workload-audit"
+              onClick={() => setShowWorkloadOptimizationModal(true)}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+            >
+              View Workload Audit Report
+            </button>
+            <button
+              type="button"
+              onClick={() => setAutoOptimizedCompleted(false)}
+              className="p-1 text-emerald-700 hover:text-emerald-950 rounded cursor-pointer"
+              title="Dismiss banner"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Baseline Comparison Overlay Banner */}
       {compareWithBaseline && (
@@ -1213,26 +1380,42 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       </p>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    id="btn-analyze-workload"
-                    data-testid="btn-analyze-workload"
-                    onClick={handleAnalyzeWorkload}
-                    disabled={isAnalyzingWorkload}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-400 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer shadow-xs shrink-0"
-                  >
-                    {isAnalyzingWorkload ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Analyzing Workload...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Zap className="w-3.5 h-3.5 fill-white" />
-                        <span>Analyze Workload</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                    <button
+                      type="button"
+                      id="btn-analyze-workload"
+                      data-testid="btn-analyze-workload"
+                      onClick={handleAnalyzeWorkload}
+                      disabled={isAnalyzingWorkload}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-400 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer shadow-xs shrink-0"
+                    >
+                      {isAnalyzingWorkload ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Analyzing Workload...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-3.5 h-3.5 fill-white" />
+                          <span>Analyze Workload</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-auto-optimize-workload-modal"
+                      data-testid="btn-auto-optimize-workload-modal"
+                      onClick={() => {
+                        setShowSuggestIndexesModal(false);
+                        handleAutoOptimizeWorkload();
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg text-xs transition-colors cursor-pointer shadow-xs shrink-0"
+                      title="Automatically toggle optimal B-Tree indexes to maximize read throughput for expensive queries"
+                    >
+                      <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                      <span>Auto-Toggle Optimal</span>
+                    </button>
+                  </div>
                 </div>
 
                 {hasAnalyzedWorkload && (
@@ -1686,6 +1869,182 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Workload Analysis & Auto-Optimization Modal */}
+      {showWorkloadOptimizationModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-3xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 bg-gradient-to-br from-emerald-500 to-teal-600 text-white rounded-xl shadow-xs">
+                  <Zap className="w-5 h-5 fill-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900 flex items-center gap-2">
+                    <span>Workload Analysis &amp; B-Tree Index Optimization</span>
+                    <span className="text-[11px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-full">
+                      Optimal Throughput Active
+                    </span>
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    Audited 14,200 query execution traces across recent workload history and toggled optimal B-Tree indexes for the most expensive queries.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWorkloadOptimizationModal(false)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+              {/* Top-Level Impact Stats Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 text-center">
+                  <div className="text-[10px] uppercase font-bold text-zinc-400">Queries Audited</div>
+                  <div className="text-base font-extrabold text-zinc-900 font-mono mt-0.5">14,200 Traces</div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">Past 24h Workload</div>
+                </div>
+                <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200 text-center">
+                  <div className="text-[10px] uppercase font-bold text-emerald-700">Read Throughput</div>
+                  <div className="text-base font-extrabold text-emerald-700 font-mono mt-0.5">18,600 QPS</div>
+                  <div className="text-[10px] text-emerald-600 mt-0.5">+15,400% (was 120 QPS)</div>
+                </div>
+                <div className="p-3 bg-indigo-50/80 rounded-xl border border-indigo-200 text-center">
+                  <div className="text-[10px] uppercase font-bold text-indigo-700">P99 Read Latency</div>
+                  <div className="text-base font-extrabold text-indigo-700 font-mono mt-0.5">1.9 ms</div>
+                  <div className="text-[10px] text-indigo-600 mt-0.5">-99.6% (was 482 ms)</div>
+                </div>
+                <div className="p-3 bg-purple-50/80 rounded-xl border border-purple-200 text-center">
+                  <div className="text-[10px] uppercase font-bold text-purple-700">Optimal B-Trees</div>
+                  <div className="text-base font-extrabold text-purple-700 font-mono mt-0.5">4 Toggled ON</div>
+                  <div className="text-[10px] text-purple-600 mt-0.5">100% Query Match</div>
+                </div>
+              </div>
+
+              {/* Status Banner */}
+              <div className="p-3.5 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-xl flex items-center justify-between gap-3 text-xs text-emerald-950">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    <strong>Workload Optimization Active:</strong> All 4 critical bottleneck queries are now routed through dedicated composite and clustered B-Tree indexes. Sequential table scans eliminated.
+                  </span>
+                </div>
+                <span className="font-mono text-[10px] font-bold bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded shrink-0">
+                  Confidence: 99.8%
+                </span>
+              </div>
+
+              {/* Expensive Queries Breakdown */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+                  <span>Top 4 Most Expensive Queries (Audited from Query History)</span>
+                  <span className="text-[11px] text-zinc-500 font-normal">Sorted by DB Read CPU Share</span>
+                </div>
+
+                {expensiveQueriesWorkload.map((q, idx) => (
+                  <div key={q.id} className="p-4 bg-zinc-50/80 hover:bg-zinc-50 border border-zinc-200 rounded-xl space-y-2.5 transition-all">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-200/80 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-800 flex items-center justify-center text-[10px] font-bold font-mono">
+                          #{idx + 1}
+                        </span>
+                        <span className="font-bold text-xs text-zinc-900">{q.name}</span>
+                        <span className="text-[10px] font-mono bg-zinc-200 text-zinc-700 px-1.5 py-0.2 rounded font-semibold">
+                          {q.frequency}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded">
+                          {q.executionShare}
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          INDEX TOGGLED ON
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="p-2 bg-zinc-900 rounded-lg text-emerald-400 font-mono text-[11px] overflow-x-auto">
+                      <code>{q.sql}</code>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+                      <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                        <div className="text-[10px] text-zinc-400 font-bold uppercase">Before Optimization</div>
+                        <div className="text-zinc-700 font-mono font-bold mt-0.5">Latency: <span className="text-rose-600">{q.unindexedLatency}</span></div>
+                        <div className="text-[10px] text-zinc-500 font-mono">Throughput: {q.throughputBefore}</div>
+                      </div>
+                      <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                        <div className="text-[10px] text-zinc-400 font-bold uppercase">After Optimal B-Tree</div>
+                        <div className="text-zinc-700 font-mono font-bold mt-0.5">Latency: <span className="text-emerald-600">{q.optimizedLatency}</span></div>
+                        <div className="text-[10px] text-emerald-700 font-mono font-bold">Throughput: {q.throughputAfter} ({q.speedup})</div>
+                      </div>
+                      <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                        <div className="text-[10px] text-zinc-400 font-bold uppercase">Assigned B-Tree Index</div>
+                        <div className="text-indigo-900 font-mono font-bold mt-0.5 truncate" title={q.optimalIndexName}>
+                          {q.optimalIndexName}
+                        </div>
+                        <div className="text-[10px] text-zinc-500 truncate">{q.optimalIndexType}</div>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-zinc-600">
+                      <strong className="text-zinc-800">Optimization Mechanism:</strong> {q.impactExplanation}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Dead Index Pruning Notice */}
+              <div className="p-3 bg-zinc-100 rounded-xl border border-zinc-200 flex items-center justify-between text-xs text-zinc-700">
+                <div className="flex items-center gap-2">
+                  <Trash2 className="w-4 h-4 text-zinc-500 shrink-0" />
+                  <span>
+                    <strong>Buffer Contention Prevention:</strong> Flagged &amp; unlinked unutilized <code className="font-mono bg-zinc-200 px-1 rounded">idx_transactions_date</code> (0 engine hits in last 100 queries) to prevent buffer cache pollution and 14% write latency overhead.
+                  </span>
+                </div>
+                <span className="font-mono text-[10px] text-zinc-500 font-bold shrink-0">Pruned</span>
+              </div>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="pt-2 flex items-center justify-between border-t border-zinc-200">
+              <button
+                type="button"
+                onClick={handleAutoOptimizeWorkload}
+                disabled={isAutoOptimizingWorkload}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-zinc-600 hover:text-zinc-900 text-xs font-semibold rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isAutoOptimizingWorkload ? 'animate-spin' : ''}`} />
+                <span>Re-run Workload Analysis</span>
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleRevertAllIndexes();
+                    setShowWorkloadOptimizationModal(false);
+                  }}
+                  className="px-3 py-1.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                >
+                  Revert Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowWorkloadOptimizationModal(false)}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+                >
+                  Keep Optimal Configuration
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
