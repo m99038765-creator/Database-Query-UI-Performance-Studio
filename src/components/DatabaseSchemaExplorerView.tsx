@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -15,6 +15,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 }) => {
   const [selectedTable, setSelectedTable] = useState<string>('transactions');
   const [createdCustomIndexes, setCreatedCustomIndexes] = useState<string[]>([]);
+  const [showQueryComplexityInfo, setShowQueryComplexityInfo] = useState<boolean>(false);
 
   const tables = [
     {
@@ -105,16 +106,100 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           </div>
         </div>
 
-        {onClose && (
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={onClose}
-            className="px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+            onClick={() => setShowQueryComplexityInfo(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+            title="Explain how missing indexes affect query complexity for top 3 slowest queries"
           >
-            Close Explorer
+            <Info className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Query Complexity Guide</span>
           </button>
-        )}
+
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer"
+            >
+              Close Explorer
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Query Complexity Modal Popup */}
+      {showQueryComplexityInfo && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                  <Info className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">
+                    Missing Indexes &amp; Query Complexity Reduction
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    How indexing transforms O(n) linear scans into O(log n) lookups for the top 3 slowest queries.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowQueryComplexityInfo(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-xs">
+              <div className="p-3.5 bg-zinc-50 rounded-xl border border-zinc-200 space-y-1">
+                <div className="font-bold text-zinc-900 flex items-center justify-between">
+                  <span>1. Customer Email Wildcard/Exact Lookup</span>
+                  <span className="font-mono text-rose-700 bg-rose-100 px-2 py-0.5 rounded text-[10px]">O(n) → O(log n)</span>
+                </div>
+                <p className="text-zinc-600">
+                  Searching by customer email without an index forces a full sequential table scan across all 50,000 transaction rows. Adding <code className="font-mono text-indigo-700">idx_transactions_email</code> builds a B-Tree structure, reducing row evaluation from 50,000 to ~12 operations.
+                </p>
+              </div>
+
+              <div className="p-3.5 bg-zinc-50 rounded-xl border border-zinc-200 space-y-1">
+                <div className="font-bold text-zinc-900 flex items-center justify-between">
+                  <span>2. Transaction Amount Range Filters</span>
+                  <span className="font-mono text-amber-700 bg-amber-100 px-2 py-0.5 rounded text-[10px]">O(n) Range Scan → O(log n) Seek</span>
+                </div>
+                <p className="text-zinc-600">
+                  Range filters (<code className="font-mono">amount &gt; 500</code>) require inspecting unindexed decimal values row by row. Adding <code className="font-mono text-indigo-700">idx_transactions_amount</code> allows the query planner to instantly seek the B-Tree leaf node pointer.
+                </p>
+              </div>
+
+              <div className="p-3.5 bg-zinc-50 rounded-xl border border-zinc-200 space-y-1">
+                <div className="font-bold text-zinc-900 flex items-center justify-between">
+                  <span>3. N+1 Line Items Foreign Key Cascades</span>
+                  <span className="font-mono text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded text-[10px]">100+ Roundtrips → Batched IN Join</span>
+                </div>
+                <p className="text-zinc-600">
+                  Unindexed foreign keys (<code className="font-mono">line_items.transaction_id</code>) trigger a separate database subquery for every order record (N+1 storm). Indexing the foreign key and batching joins reduces roundtrips from 100+ to just 2.
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowQueryComplexityInfo(false)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-4 min-h-[500px]">

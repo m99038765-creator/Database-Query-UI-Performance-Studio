@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle2, Zap, ArrowRight, Layers, Clock, Cpu, BarChart3 } from 'lucide-react';
+import { X, CheckCircle2, Zap, ArrowRight, Layers, Clock, Cpu, BarChart3, TrendingUp, ShieldCheck, Database, HardDrive } from 'lucide-react';
 import { BenchmarkStep, OptimizationFlags } from '../types';
 
 interface BenchmarkModalProps {
@@ -17,6 +17,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
   currentFlags,
   onApplyFlags
 }) => {
+  const [activeTab, setActiveTab] = useState<'suite' | 'delta'>('suite');
   const [isRunning, setIsRunning] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [steps, setSteps] = useState<BenchmarkStep[]>([
@@ -122,9 +123,17 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
     100
   ).toFixed(1);
 
+  // Delta calculation against baseline
+  const activeOptimizationsCount = currentFlags ? Object.values(currentFlags).filter(Boolean).length : 5;
+  const currentLatency = activeOptimizationsCount === 5 ? totalOptimizedTime : activeOptimizationsCount === 0 ? totalUnoptimizedTime : 312.4;
+  const latencyDeltaPercent = (((totalUnoptimizedTime - currentLatency) / totalUnoptimizedTime) * 100).toFixed(1);
+  const baselineMemoryMb = 485;
+  const currentMemoryMb = activeOptimizationsCount === 5 ? 128 : activeOptimizationsCount === 0 ? 485 : 240;
+  const memoryReductionPercent = (((baselineMemoryMb - currentMemoryMb) / baselineMemoryMb) * 100).toFixed(1);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-xs">
-      <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-900/60 backdrop-blur-xs animate-fadeIn">
+      <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full overflow-hidden">
         {/* Modal Header */}
         <div className="p-5 border-b border-zinc-200 flex items-center justify-between bg-zinc-50/70">
           <div className="flex items-center gap-2.5">
@@ -136,7 +145,7 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
                 Performance Benchmark Suite
               </h3>
               <p className="text-xs text-zinc-500">
-                Comparing unoptimized bottlenecks against optimized database indexing &amp; UI windowing
+                Compare unoptimized legacy bottlenecks against live optimization configuration delta
               </p>
             </div>
           </div>
@@ -149,101 +158,227 @@ export const BenchmarkModal: React.FC<BenchmarkModalProps> = ({
           </button>
         </div>
 
+        {/* Tab Switcher */}
+        <div className="px-5 pt-4 bg-zinc-50/50 border-b border-zinc-200 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab('suite')}
+            className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors cursor-pointer border-t border-x ${
+              activeTab === 'suite'
+                ? 'bg-white text-emerald-800 border-zinc-200 border-b-white -mb-px'
+                : 'bg-zinc-100 text-zinc-600 border-transparent hover:bg-zinc-200'
+            }`}
+          >
+            Test Suite Breakdown
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('delta')}
+            className={`px-4 py-2 text-xs font-bold rounded-t-lg transition-colors cursor-pointer border-t border-x flex items-center gap-1.5 ${
+              activeTab === 'delta'
+                ? 'bg-white text-indigo-800 border-zinc-200 border-b-white -mb-px'
+                : 'bg-zinc-100 text-zinc-600 border-transparent hover:bg-zinc-200'
+            }`}
+          >
+            <TrendingUp className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Performance Delta Analysis</span>
+          </button>
+        </div>
+
         {/* Modal Content */}
         <div className="p-5 space-y-5">
-          {/* Executive Summary Cards */}
-          <div className="grid grid-cols-3 gap-3">
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl">
-              <div className="text-[11px] font-medium text-rose-700">
-                Unoptimized Latency
-              </div>
-              <div className="text-xl font-bold text-rose-900 mt-0.5">
-                {(totalUnoptimizedTime / 1000).toFixed(2)}s
-              </div>
-              <div className="text-[10px] text-rose-600 mt-0.5">
-                Full scans &amp; DOM freezes
-              </div>
-            </div>
+          {activeTab === 'suite' ? (
+            <>
+              {/* Executive Summary Cards */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl">
+                  <div className="text-[11px] font-medium text-rose-700">
+                    Unoptimized Latency
+                  </div>
+                  <div className="text-xl font-bold text-rose-900 mt-0.5">
+                    {(totalUnoptimizedTime / 1000).toFixed(2)}s
+                  </div>
+                  <div className="text-[10px] text-rose-600 mt-0.5">
+                    Full scans &amp; DOM freezes
+                  </div>
+                </div>
 
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
-              <div className="text-[11px] font-medium text-emerald-700">
-                Optimized Latency
-              </div>
-              <div className="text-xl font-bold text-emerald-900 mt-0.5">
-                {totalOptimizedTime.toFixed(1)}ms
-              </div>
-              <div className="text-[10px] text-emerald-600 mt-0.5">
-                B-Tree + Virtual Window
-              </div>
-            </div>
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <div className="text-[11px] font-medium text-emerald-700">
+                    Optimized Latency
+                  </div>
+                  <div className="text-xl font-bold text-emerald-900 mt-0.5">
+                    {totalOptimizedTime.toFixed(1)}ms
+                  </div>
+                  <div className="text-[10px] text-emerald-600 mt-0.5">
+                    B-Tree + Virtual Window
+                  </div>
+                </div>
 
-            <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
-              <div className="text-[11px] font-medium text-purple-700">
-                Overall Speedup
+                <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl">
+                  <div className="text-[11px] font-medium text-purple-700">
+                    Overall Speedup
+                  </div>
+                  <div className="text-xl font-bold text-purple-900 mt-0.5">
+                    +{overallSpeedup}%
+                  </div>
+                  <div className="text-[10px] text-purple-600 mt-0.5">
+                    Buttery smooth 60 FPS
+                  </div>
+                </div>
               </div>
-              <div className="text-xl font-bold text-purple-900 mt-0.5">
-                +{overallSpeedup}%
-              </div>
-              <div className="text-[10px] text-purple-600 mt-0.5">
-                Buttery smooth 60 FPS
-              </div>
-            </div>
-          </div>
 
-          {/* Test Steps Progress */}
-          <div className="border border-zinc-200 rounded-xl divide-y divide-zinc-100 overflow-hidden text-xs">
-            {steps.map((step, idx) => {
-              const isDone = currentStepIndex > idx || (!isRunning && currentStepIndex >= steps.length);
-              const isCurrent = currentStepIndex === idx && isRunning;
+              {/* Test Steps Progress */}
+              <div className="border border-zinc-200 rounded-xl divide-y divide-zinc-100 overflow-hidden text-xs">
+                {steps.map((step, idx) => {
+                  const isDone = currentStepIndex > idx || (!isRunning && currentStepIndex >= steps.length);
+                  const isCurrent = currentStepIndex === idx && isRunning;
 
-              return (
-                <div
-                  key={idx}
-                  className={`p-3 flex items-center justify-between transition-colors ${
-                    isCurrent
-                      ? 'bg-amber-50/50'
-                      : isDone
-                      ? 'bg-white'
-                      : 'bg-zinc-50/50 opacity-60'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0">
-                      {isDone ? (
-                        <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                      ) : isCurrent ? (
-                        <div className="w-4 h-4 rounded-full border-2 border-amber-600 border-t-transparent animate-spin" />
-                      ) : (
-                        <div className="w-4 h-4 rounded-full border border-zinc-300" />
-                      )}
+                  return (
+                    <div
+                      key={idx}
+                      className={`p-3 flex items-center justify-between transition-colors ${
+                        isCurrent
+                          ? 'bg-amber-50/50'
+                          : isDone
+                          ? 'bg-white'
+                          : 'bg-zinc-50/50 opacity-60'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0">
+                          {isDone ? (
+                            <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                          ) : isCurrent ? (
+                            <div className="w-4 h-4 rounded-full border-2 border-amber-600 border-t-transparent animate-spin" />
+                          ) : (
+                            <div className="w-4 h-4 rounded-full border border-zinc-300" />
+                          )}
+                        </div>
+                        <div>
+                          <div className="font-semibold text-zinc-900">{step.name}</div>
+                          <div className="text-[11px] text-zinc-500">
+                            {step.unoptimizedRowsScanned > 0
+                              ? `Scanned: ${step.unoptimizedRowsScanned.toLocaleString()} rows → ${step.optimizedRowsScanned} rows`
+                              : `Frame rate: ${step.fpsBefore} FPS → ${step.fpsAfter} FPS`}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 font-mono text-right">
+                        <div>
+                          <span className="text-rose-600 line-through text-[11px]">
+                            {step.unoptimizedTime.toFixed(1)}ms
+                          </span>
+                          <div className="font-bold text-emerald-700">
+                            {step.optimizedTime.toFixed(1)}ms
+                          </div>
+                        </div>
+                        <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[11px]">
+                          +{step.improvementPercent.toFixed(1)}%
+                        </span>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            /* Performance Delta View */
+            <div className="space-y-4">
+              <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-xl text-xs space-y-1">
+                <div className="font-bold text-indigo-900 flex items-center gap-1.5">
+                  <TrendingUp className="w-4 h-4 text-indigo-600" />
+                  <span>Configuration vs Baseline Delta Report</span>
+                </div>
+                <p className="text-indigo-800 text-[11px]">
+                  Comparing current active optimizations ({activeOptimizationsCount}/5 enabled) against the unoptimized legacy baseline run.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-4 bg-white border border-zinc-200 rounded-xl space-y-2">
+                  <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider">
+                    Execution Latency Delta
+                  </div>
+                  <div className="flex items-baseline justify-between">
                     <div>
-                      <div className="font-semibold text-zinc-900">{step.name}</div>
-                      <div className="text-[11px] text-zinc-500">
-                        {step.unoptimizedRowsScanned > 0
-                          ? `Scanned: ${step.unoptimizedRowsScanned.toLocaleString()} rows → ${step.optimizedRowsScanned} rows`
-                          : `Frame rate: ${step.fpsBefore} FPS → ${step.fpsAfter} FPS`}
+                      <div className="text-2xl font-mono font-bold text-zinc-900">
+                        {currentLatency.toFixed(1)}ms
+                      </div>
+                      <div className="text-[11px] text-zinc-500 line-through mt-0.5">
+                        Baseline: {(totalUnoptimizedTime / 1000).toFixed(2)}s
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="bg-emerald-100 text-emerald-800 font-bold font-mono px-2.5 py-1 rounded-lg text-sm">
+                        +{latencyDeltaPercent}%
+                      </span>
+                      <div className="text-[10px] text-emerald-700 font-semibold mt-1">
+                        Latency Improvement
                       </div>
                     </div>
                   </div>
+                </div>
 
-                  <div className="flex items-center gap-4 font-mono text-right">
+                <div className="p-4 bg-white border border-zinc-200 rounded-xl space-y-2">
+                  <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider">
+                    Memory Consumption Delta
+                  </div>
+                  <div className="flex items-baseline justify-between">
                     <div>
-                      <span className="text-rose-600 line-through text-[11px]">
-                        {step.unoptimizedTime.toFixed(1)}ms
-                      </span>
-                      <div className="font-bold text-emerald-700">
-                        {step.optimizedTime.toFixed(1)}ms
+                      <div className="text-2xl font-mono font-bold text-zinc-900">
+                        {currentMemoryMb} MB
+                      </div>
+                      <div className="text-[11px] text-zinc-500 line-through mt-0.5">
+                        Baseline: {baselineMemoryMb} MB
                       </div>
                     </div>
-                    <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[11px]">
-                      +{step.improvementPercent.toFixed(1)}%
+                    <div className="text-right">
+                      <span className="bg-blue-100 text-blue-800 font-bold font-mono px-2.5 py-1 rounded-lg text-sm">
+                        {memoryReductionPercent}%
+                      </span>
+                      <div className="text-[10px] text-blue-700 font-semibold mt-1">
+                        RAM Reduction
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl space-y-3">
+                <h4 className="text-xs font-bold text-zinc-700 uppercase tracking-wider">
+                  Active Flags Contributing to Delta
+                </h4>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-zinc-200">
+                    <span>Batch Eager Loading</span>
+                    <span className={currentFlags?.batchEagerLoading ? 'text-emerald-700 font-bold' : 'text-rose-600'}>
+                      {currentFlags?.batchEagerLoading ? 'ACTIVE' : 'INACTIVE'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-zinc-200">
+                    <span>B-Tree Indexing</span>
+                    <span className={currentFlags?.btreeIndexing ? 'text-emerald-700 font-bold' : 'text-rose-600'}>
+                      {currentFlags?.btreeIndexing ? 'ACTIVE' : 'INACTIVE'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-zinc-200">
+                    <span>LRU Query Cache</span>
+                    <span className={currentFlags?.queryCaching ? 'text-emerald-700 font-bold' : 'text-rose-600'}>
+                      {currentFlags?.queryCaching ? 'ACTIVE' : 'INACTIVE'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-white rounded-lg border border-zinc-200">
+                    <span>DOM Virtualization</span>
+                    <span className={currentFlags?.virtualizedDOM ? 'text-emerald-700 font-bold' : 'text-rose-600'}>
+                      {currentFlags?.virtualizedDOM ? 'ACTIVE' : 'INACTIVE'}
                     </span>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Modal Footer */}
