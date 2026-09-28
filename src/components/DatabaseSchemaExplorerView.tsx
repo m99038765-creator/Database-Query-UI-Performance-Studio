@@ -8,6 +8,14 @@ interface DatabaseSchemaExplorerViewProps {
   onClose?: () => void;
 }
 
+export interface SchemaSnapshot {
+  id: string;
+  name: string;
+  timestamp: string;
+  flags: OptimizationFlags;
+  customIndexes: string[];
+}
+
 export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProps> = ({
   flags,
   onToggleFlag,
@@ -26,6 +34,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [quickIndexChecked, setQuickIndexChecked] = useState<boolean>(false);
   const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
   const [showClusterAnalysisModal, setShowClusterAnalysisModal] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain'>('explorer');
 
   const isIndexRedundant = (idxName: string, columns: string[]) => {
     if (consolidatedIndexes.includes(idxName)) return false;
@@ -57,14 +66,6 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     setCreatedCompositeIndexes([]);
     setConsolidatedIndexes([]);
   };
-
-  interface SchemaSnapshot {
-    id: string;
-    name: string;
-    timestamp: string;
-    flags: OptimizationFlags;
-    customIndexes: string[];
-  }
 
   const [snapshots, setSnapshots] = useState<SchemaSnapshot[]>([
     {
@@ -289,6 +290,345 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     URL.revokeObjectURL(url);
   };
 
+  const renderContent = () => {
+    if (activeTab === 'dependency-chain') {
+      return (
+        <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto bg-white">
+          <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-2">
+            <h3 className="font-bold text-sm text-indigo-950 flex items-center gap-2">
+              <Link className="w-4 h-4 text-indigo-700" />
+              <span>Relational Index Dependency &amp; Complement Chain</span>
+            </h3>
+            <p className="text-xs text-indigo-900">
+              Visualizes how B-Tree indexes depend on parent primary keys and complement secondary filters to avoid redundant duplicate index allocations.
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            {/* Chain Node 1 */}
+            <div className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-900">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                  <span>Entity Root: transactions.id (Clustered Primary Key)</span>
+                </div>
+                <span className="text-[10px] font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">O(1) Base Anchor</span>
+              </div>
+              <p className="text-xs text-zinc-600">
+                Foundational root entity. All foreign key references and child tables (<code className="font-mono">line_items.transaction_id</code>) depend on this primary key to establish relational integrity.
+              </p>
+              <div className="pl-4 border-l-2 border-indigo-200 space-y-2 mt-2">
+                <div className="p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs flex items-center justify-between">
+                  <div>
+                    <strong className="text-indigo-950 font-mono">└─ Complemented by: idx_transactions_email_status</strong>
+                    <p className="text-[11px] text-zinc-600 mt-0.5">Composite B-Tree index supersedes and covers single-column lookups on <code className="font-mono">customer_email</code>, avoiding redundant index storage.</p>
+                  </div>
+                  <span className="font-mono text-[10px] text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded shrink-0">Redundancy Prevented</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Chain Node 2 */}
+            <div className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-900">
+                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+                  <span>Entity Root: transactions.category &amp; amount</span>
+                </div>
+                <span className="text-[10px] font-mono bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-bold">Range Partition Anchor</span>
+              </div>
+              <p className="text-xs text-zinc-600">
+                Multi-attribute filtering root. Serves range aggregations and category grouping queries.
+              </p>
+              <div className="pl-4 border-l-2 border-indigo-200 space-y-2 mt-2">
+                <div className="p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs flex items-center justify-between">
+                  <div>
+                    <strong className="text-indigo-950 font-mono">└─ Complemented by: idx_transactions_category_amount</strong>
+                    <p className="text-[11px] text-zinc-600 mt-0.5">Co-locates category sorting buckets with amount b-tree ranges, completely replacing unindexed table scans.</p>
+                  </div>
+                  <span className="font-mono text-[10px] text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded shrink-0">Optimized Join Path</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Chain Node 3 */}
+            <div className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-900">
+                  <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
+                  <span>Foreign Key Dependency: line_items.transaction_id</span>
+                </div>
+                <span className="text-[10px] font-mono bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">Join Cascade Protection</span>
+              </div>
+              <p className="text-xs text-zinc-600">
+                Child relation foreign key. Depends on parent <code className="font-mono">transactions.id</code> to prevent N+1 query storms.
+              </p>
+              <div className="pl-4 border-l-2 border-purple-200 space-y-2 mt-2">
+                <div className="p-2.5 bg-purple-50/50 rounded-lg border border-purple-100 text-xs flex items-center justify-between">
+                  <div>
+                    <strong className="text-purple-950 font-mono">└─ Dependent Index: idx_line_items_tx</strong>
+                    <p className="text-[11px] text-zinc-600 mt-0.5">Batches child record loading into single indexed lookups when expanding transaction details.</p>
+                  </div>
+                  <span className="font-mono text-[10px] text-purple-700 bg-purple-100 px-2 py-0.5 rounded shrink-0">N+1 Eliminated</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-4 min-h-[500px]">
+        {/* Left Sidebar: Table List */}
+        <div className="p-4 bg-zinc-50/80 border-r border-zinc-200 space-y-2">
+          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3 px-2">
+            Database Tables ({tables.length})
+          </h3>
+          {tables.map((tbl) => {
+            const isSelected = tbl.name === selectedTable;
+            return (
+              <button
+                key={tbl.name}
+                type="button"
+                onClick={() => setSelectedTable(tbl.name)}
+                className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
+                  isSelected
+                    ? 'bg-indigo-600 border-indigo-700 text-white shadow-md'
+                    : 'bg-white hover:bg-zinc-100 border-zinc-200 text-zinc-800'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <Table className={`w-4 h-4 ${isSelected ? 'text-indigo-200' : 'text-indigo-600'}`} />
+                  <div>
+                    <div className="font-mono font-bold text-xs">{tbl.name}</div>
+                    <div className={`text-[10px] ${isSelected ? 'text-indigo-200' : 'text-zinc-500'}`}>
+                      {tbl.columns.length} columns • {tbl.indexes.length} indexes
+                    </div>
+                  </div>
+                </div>
+                <ArrowRight className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-zinc-400'}`} />
+              </button>
+            );
+          })}
+
+          {/* Bottleneck Recommendation Box */}
+          <div className="mt-6 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-2">
+            <div className="flex items-center gap-1.5 font-bold text-amber-900">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>Query Bottleneck Detected</span>
+            </div>
+            <p className="text-amber-800 text-[11px] leading-relaxed">
+              Searching by <code className="font-mono bg-amber-100 px-1 rounded">customer_email</code> or <code className="font-mono bg-amber-100 px-1 rounded">amount</code> currently performs full table scans on 50,000 records.
+            </p>
+          </div>
+        </div>
+
+        {/* Right Main Area: Table Schema & Index Audit */}
+        <div className="lg:col-span-3 p-6 space-y-6 overflow-y-auto">
+          {/* Estimated Speed-Up Visual Gauge */}
+          <div className="p-4 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 rounded-2xl border border-indigo-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs">
+                <Zap className="w-5 h-5 fill-white" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-zinc-900">
+                  Estimated Query Execution Speed-Up Gauge
+                </h4>
+                <p className="text-xs text-zinc-500">
+                  Dynamic performance acceleration derived from active B-Tree indexes, caching, and batch eager loading.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 w-full sm:w-auto">
+              <div className="flex-1 sm:w-48 bg-zinc-200 h-3 rounded-full overflow-hidden shadow-inner">
+                <div
+                  className={`h-full transition-all duration-500 rounded-full ${
+                    speedUpPercent > 80
+                      ? 'bg-emerald-600'
+                      : speedUpPercent > 50
+                      ? 'bg-indigo-600'
+                      : 'bg-amber-500'
+                  }`}
+                  style={{ width: `${speedUpPercent}%` }}
+                />
+              </div>
+              <span className="font-mono font-bold text-sm text-zinc-900 min-w-[48px] text-right">
+                {speedUpPercent}%
+              </span>
+            </div>
+          </div>
+
+          {/* Current B-Tree Indexes */}
+          <div>
+            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
+              Active Index Structures &amp; Performance Impact
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {currentTableData.indexes.map((idx, i) => (
+                <div
+                  key={`idx-${i}`}
+                  onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
+                  onMouseLeave={() => setHoveredIndexWhatIf(null)}
+                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all ${
+                    idx.active
+                      ? 'bg-emerald-50/50 border-emerald-300'
+                      : 'bg-zinc-50 border-zinc-200 opacity-80 hover:opacity-100'
+                  }`}
+                >
+                  {/* Interactive What-If Hover Tooltip */}
+                  {hoveredIndexWhatIf === idx.name && (
+                    <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-zinc-900 text-white p-4 rounded-xl shadow-2xl border border-indigo-500/60 animate-fadeIn text-xs">
+                      <div className="flex items-center justify-between mb-2 pb-2 border-b border-zinc-800">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-indigo-400" />
+                          <strong className="text-indigo-300">What-If Analysis: {idx.name}</strong>
+                        </div>
+                        <span className="font-mono text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded border border-indigo-800">
+                          Top 5 Frequent Slow Queries
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {getWhatIfTop5Queries(idx.name).map((q, qi) => (
+                          <div key={qi} className="p-2 rounded bg-zinc-800/95 border border-zinc-700/80 flex flex-col gap-1">
+                            <div className="font-mono text-[11px] text-zinc-200 truncate" title={q.query}>
+                              {qi + 1}. {q.query}
+                            </div>
+                            <div className="flex items-center justify-between text-[10px] font-mono">
+                              <span className="text-zinc-400">Freq: {q.freq}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="line-through text-zinc-500">{q.before}</span>
+                                <span className="text-zinc-300">→</span>
+                                <span className="text-emerald-400 font-bold">{q.after}</span>
+                                <span className="bg-emerald-950 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-800">{q.improvement}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 text-[10px] text-zinc-400 italic text-center">
+                        💡 Hovering index structures dynamically estimates B-Tree execution time improvements.
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    {(() => {
+                      const redundant = isIndexRedundant(idx.name, idx.columns);
+                      return redundant ? (
+                        <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
+                          <div className="flex items-center gap-2 font-semibold">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
+                            <span>Redundant Coverage (Covered by Composite Index)</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleConsolidateIndex(idx.name);
+                            }}
+                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
+                          >
+                            Consolidate
+                          </button>
+                        </div>
+                      ) : null;
+                    })()}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-bold text-zinc-900 mb-1">
+                      <span className="font-mono">{idx.name}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-sans px-1.5 py-0.2 rounded font-bold shadow-2xs" title="Calculated Query Complexity Reduction">
+                          ⚡ {getOptimizationPotential(idx.name)}
+                        </span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${idx.active ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-600'}`}>
+                          {idx.active ? 'ACTIVE' : 'INACTIVE'}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-zinc-500 font-mono mb-2">
+                      Type: {idx.type} • Columns: ({idx.columns.join(', ')})
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const impact = getIndexImpactSummary(idx.name);
+                    return (
+                      <div className="my-2 p-2 bg-white/90 rounded-lg border border-zinc-200/80 text-[11px] space-y-0.5 shadow-2xs">
+                        <div className="font-bold text-zinc-900 flex items-center justify-between">
+                          <span>📊 {impact.topQuery}</span>
+                          <span className="font-mono text-[10px] text-indigo-700 font-semibold">{impact.reduction}</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {showDetailedStats && (
+                    <div className="my-1.5 p-2 bg-indigo-50/70 rounded-lg border border-indigo-200 text-[11px] font-mono flex items-center justify-between text-indigo-950">
+                      <span>Storage Size: <strong className="text-indigo-900">{idx.active ? (idx.name.includes('PRIMARY') ? '4.8 MB' : '2.1 MB') : '0 KB'}</strong></span>
+                      <span>Hit Rate: <strong className="text-emerald-700">{idx.active ? '99.4%' : '0.0%'}</strong></span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
+                    <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
+                      {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
+                    </span>
+                    {idx.active && !idx.name.includes('PRIMARY KEY') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (idx.name.includes('status') || idx.name.includes('cat')) {
+                            if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
+                          } else if (idx.columns.includes('customer_email')) {
+                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
+                          } else if (idx.columns.includes('amount')) {
+                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+                          }
+                        }}
+                        className="px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
+                        title="Revert / Undo optimization on this index"
+                      >
+                        Undo Optimization
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Relational Foreign Key Graph */}
+          <div>
+            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
+              Relational Foreign Key Graph &amp; Join Paths
+            </h4>
+            <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-3">
+              {currentTableData.relationships.length === 0 ? (
+                <div className="text-xs text-zinc-500 italic">No foreign key relations mapped for this table.</div>
+              ) : (
+                currentTableData.relationships.map((rel, i) => (
+                  <div key={`rel-${i}`} className="flex items-center justify-between bg-white p-3 rounded-lg border border-zinc-200 text-xs font-mono">
+                    <div className="flex items-center gap-2">
+                      <Link className="w-4 h-4 text-indigo-600" />
+                      <span className="font-bold text-zinc-900">{currentTableData.name}</span>
+                      <ArrowRight className="w-3.5 h-3.5 text-zinc-400" />
+                      <span className="font-bold text-indigo-700">{rel.targetTable}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-zinc-500 text-[11px]">{rel.foreignKey}</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${rel.optimized ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                        {rel.optimized ? 'Batched Join' : 'N+1 Unbatched'}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+
   return (
     <div className="DatabaseSchemaExplorerView bg-white rounded-xl border border-zinc-200 shadow-xl overflow-hidden flex flex-col">
       {/* Header Bar */}
@@ -433,6 +773,36 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
       </div>
 
+      {/* View Mode Tabs: Schema Explorer vs Dependency Chain */}
+      <div className="px-6 py-2.5 bg-zinc-100/90 border-b border-zinc-200 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveTab('explorer')}
+          className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'explorer'
+              ? 'bg-white text-indigo-700 shadow-xs border border-indigo-200'
+              : 'text-zinc-600 hover:text-zinc-900'
+          }`}
+        >
+          <Database className="w-3.5 h-3.5" />
+          <span>Schema Explorer &amp; Indexes</span>
+        </button>
+        <button
+          type="button"
+          id="btn-dependency-chain-tab"
+          data-testid="btn-dependency-chain-tab"
+          onClick={() => setActiveTab('dependency-chain')}
+          className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'dependency-chain'
+              ? 'bg-white text-indigo-700 shadow-xs border border-indigo-200'
+              : 'text-zinc-600 hover:text-zinc-900'
+          }`}
+        >
+          <Link className="w-3.5 h-3.5" />
+          <span>Index Dependency Chain</span>
+        </button>
+      </div>
+
       {/* Baseline Comparison Overlay Banner */}
       {compareWithBaseline && (
         <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 text-xs text-amber-900 flex items-center justify-between animate-fadeIn">
@@ -441,7 +811,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             <span>Baseline Comparison Overlay Active: Comparing current optimized schema against unoptimized default (Baseline: 0 composite B-Tree indexes, unindexed foreign keys).</span>
           </div>
           <span className="font-mono font-bold bg-amber-200/80 text-amber-950 px-2.5 py-0.5 rounded text-[11px]">
-            Δ: +{flags.btreeIndexing ? '2 Indexes' : '0 Indexes'} (O(log n) vs O(n))
+            Δ: {flags.btreeIndexing ? '+2 Indexes' : '+0 Indexes'} (O(log n) vs O(n))
           </span>
         </div>
       )}
@@ -873,365 +1243,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
       )}
 
-      {/* Main Content Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 min-h-[500px]">
-        {/* Left Sidebar: Table List */}
-        <div className="p-4 bg-zinc-50/80 border-r border-zinc-200 space-y-2">
-          <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3 px-2">
-            Database Tables ({tables.length})
-          </h3>
-          {tables.map((tbl) => {
-            const isSelected = tbl.name === selectedTable;
-            return (
-              <button
-                key={tbl.name}
-                type="button"
-                onClick={() => setSelectedTable(tbl.name)}
-                className={`w-full text-left p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
-                  isSelected
-                    ? 'bg-indigo-600 border-indigo-700 text-white shadow-md'
-                    : 'bg-white hover:bg-zinc-100 border-zinc-200 text-zinc-800'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <Table className={`w-4 h-4 ${isSelected ? 'text-indigo-200' : 'text-indigo-600'}`} />
-                  <div>
-                    <div className="font-mono font-bold text-xs">{tbl.name}</div>
-                    <div className={`text-[10px] ${isSelected ? 'text-indigo-200' : 'text-zinc-500'}`}>
-                      {tbl.columns.length} columns • {tbl.indexes.length} indexes
-                    </div>
-                  </div>
-                </div>
-                <ArrowRight className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-zinc-400'}`} />
-              </button>
-            );
-          })}
-
-          {/* Bottleneck Recommendation Box */}
-          <div className="mt-6 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs space-y-2">
-            <div className="flex items-center gap-1.5 font-bold text-amber-900">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>Query Bottleneck Detected</span>
-            </div>
-            <p className="text-amber-800 text-[11px] leading-relaxed">
-              Searching by <code className="font-mono bg-amber-100 px-1 rounded">customer_email</code> or <code className="font-mono bg-amber-100 px-1 rounded">amount</code> currently performs full table scans on 50,000 records.
-            </p>
-          </div>
-        </div>
-
-        {/* Right Main Area: Table Schema & Index Audit */}
-        <div className="lg:col-span-3 p-6 space-y-6 overflow-y-auto">
-          {/* Estimated Speed-Up Visual Gauge */}
-          <div className="p-4 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 rounded-2xl border border-indigo-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs">
-                <Zap className="w-5 h-5 fill-white" />
-              </div>
-              <div>
-                <h4 className="text-sm font-bold text-zinc-900">
-                  Estimated Query Execution Speed-Up Gauge
-                </h4>
-                <p className="text-xs text-zinc-500">
-                  Dynamic performance acceleration derived from active B-Tree indexes, caching, and batch eager loading.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4 w-full sm:w-auto">
-              <div className="flex-1 sm:w-48 bg-zinc-200 h-3 rounded-full overflow-hidden shadow-inner">
-                <div
-                  className={`h-full transition-all duration-500 rounded-full ${
-                    speedUpPercent > 80
-                      ? 'bg-emerald-600'
-                      : speedUpPercent > 40
-                      ? 'bg-indigo-600'
-                      : 'bg-amber-500'
-                  }`}
-                  style={{ width: `${speedUpPercent}%` }}
-                />
-              </div>
-              <div className="text-right whitespace-nowrap font-mono">
-                <span className="text-xl font-bold text-zinc-900">+{speedUpPercent}%</span>
-                <span className="text-[10px] block text-emerald-700 font-semibold">
-                  {speedUpPercent > 80 ? '⚡ Maximum Throughput' : speedUpPercent > 40 ? '🚀 Accelerated' : '⚠️ Unoptimized'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Table Header Details */}
-          <div>
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-zinc-900 font-mono flex items-center gap-2">
-                <Table className="w-5 h-5 text-indigo-600" />
-                <span>Table: {currentTableData.name}</span>
-              </h3>
-              <span className="text-xs font-semibold text-zinc-500 bg-zinc-100 px-2.5 py-1 rounded-lg border border-zinc-200">
-                {currentTableData.description}
-              </span>
-            </div>
-          </div>
-
-          {/* Columns Schema Table */}
-          <div>
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
-              Columns &amp; Data Types
-            </h4>
-            <div className="overflow-x-auto rounded-xl border border-zinc-200">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-zinc-100 text-zinc-700 uppercase font-mono text-[10px] tracking-wider border-b border-zinc-200">
-                    <th className="py-2.5 px-4 font-semibold">Column Name</th>
-                    <th className="py-2.5 px-4 font-semibold">Data Type</th>
-                    <th className="py-2.5 px-4 font-semibold">Constraints</th>
-                    <th className="py-2.5 px-4 font-semibold">Index Status</th>
-                    <th className="py-2.5 px-4 font-semibold text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-200 font-mono text-zinc-700">
-                  {currentTableData.columns.map((col) => {
-                    const isIndexed = col.indexed || createdCustomIndexes.includes(col.name);
-                    const isImpactfulMissing = quickIndexChecked && !isIndexed && (col.name === 'customer_email' || col.name === 'amount');
-                    return (
-                      <tr key={col.name} className={`hover:bg-zinc-50 transition-all ${isImpactfulMissing ? 'bg-orange-50/95 ring-2 ring-orange-400 font-semibold shadow-inner' : ''}`}>
-                        <td className="py-2.5 px-4 font-bold text-zinc-900 flex items-center gap-1.5">
-                          {col.isPk && <Key className="w-3.5 h-3.5 text-amber-500" title="Primary Key" />}
-                          {col.isFk && <Link className="w-3.5 h-3.5 text-blue-500" title="Foreign Key" />}
-                          <span>{col.name}</span>
-                          {isImpactfulMissing && (
-                            <span className="ml-2 inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-orange-100 text-orange-950 border border-orange-300 animate-pulse">
-                              ⚡ Missing Impactful Index for Active Query
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-4 text-zinc-600">{col.type}</td>
-                        <td className="py-2.5 px-4">
-                          {col.isPk ? (
-                            <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-1.5 py-0.5 rounded">PK</span>
-                          ) : col.isFk ? (
-                            <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-1.5 py-0.5 rounded">FK</span>
-                          ) : (
-                            <span className="text-zinc-400">NULLable</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-4">
-                          {isIndexed ? (
-                            <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded text-[10px] font-bold border border-emerald-200">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              Indexed (B-Tree)
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-rose-700 bg-rose-50 px-2 py-0.5 rounded text-[10px] font-bold border border-rose-200">
-                              <AlertTriangle className="w-3 h-3 text-rose-600" />
-                              Unindexed (Full Scan)
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-4 text-right">
-                          {isIndexed ? (
-                            !col.isPk && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (col.name === 'status' || col.name === 'category') {
-                                    if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
-                                  } else {
-                                    setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== col.name));
-                                  }
-                                }}
-                                className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs"
-                                title={`Undo optimization on column ${col.name}`}
-                              >
-                                <span>Undo Optimization</span>
-                              </button>
-                            )
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleCreateIndex(col.name)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 text-indigo-700 rounded text-[11px] font-semibold transition-colors cursor-pointer"
-                              title={`Create B-Tree index on ${col.name}`}
-                            >
-                              <Plus className="w-3 h-3" />
-                              <span>Create Index</span>
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Current B-Tree Indexes */}
-          <div>
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
-              Active Index Structures &amp; Performance Impact
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {currentTableData.indexes.map((idx, i) => (
-                <div
-                  key={`idx-${i}`}
-                  onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
-                  onMouseLeave={() => setHoveredIndexWhatIf(null)}
-                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all ${
-                    idx.active
-                      ? 'bg-emerald-50/50 border-emerald-300'
-                      : 'bg-zinc-50 border-zinc-200 opacity-80 hover:opacity-100'
-                  }`}
-                >
-                  {/* Interactive What-If Hover Tooltip */}
-                  {hoveredIndexWhatIf === idx.name && (
-                    <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-zinc-900 text-white p-4 rounded-xl shadow-2xl border border-indigo-500/60 animate-fadeIn text-xs">
-                      <div className="flex items-center justify-between mb-2 pb-2 border-b border-zinc-800">
-                        <div className="flex items-center gap-2">
-                          <Sparkles className="w-4 h-4 text-indigo-400" />
-                          <strong className="text-indigo-300">What-If Analysis: {idx.name}</strong>
-                        </div>
-                        <span className="font-mono text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded border border-indigo-800">
-                          Top 5 Frequent Slow Queries
-                        </span>
-                      </div>
-                      <div className="space-y-2">
-                        {getWhatIfTop5Queries(idx.name).map((q, qi) => (
-                          <div key={qi} className="p-2 rounded bg-zinc-800/95 border border-zinc-700/80 flex flex-col gap-1">
-                            <div className="font-mono text-[11px] text-zinc-200 truncate" title={q.query}>
-                              {qi + 1}. {q.query}
-                            </div>
-                            <div className="flex items-center justify-between text-[10px] font-mono">
-                              <span className="text-zinc-400">Freq: {q.freq}</span>
-                              <div className="flex items-center gap-2">
-                                <span className="line-through text-zinc-500">{q.before}</span>
-                                <span className="text-zinc-300">→</span>
-                                <span className="text-emerald-400 font-bold">{q.after}</span>
-                                <span className="bg-emerald-950 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-800">{q.improvement}</span>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 text-[10px] text-zinc-400 italic text-center">
-                        💡 Hovering index structures dynamically estimates B-Tree execution time improvements.
-                      </div>
-                    </div>
-                  )}
-                  <div>
-                    {(() => {
-                      const redundant = isIndexRedundant(idx.name, idx.columns);
-                      return redundant ? (
-                        <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
-                          <div className="flex items-center gap-2 font-semibold">
-                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
-                            <span>Redundant Coverage (Covered by Composite Index)</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleConsolidateIndex(idx.name);
-                            }}
-                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
-                          >
-                            Consolidate
-                          </button>
-                        </div>
-                      ) : null;
-                    })()}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-bold text-zinc-900 mb-1">
-                      <span className="font-mono">{idx.name}</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-sans px-1.5 py-0.2 rounded font-bold shadow-2xs" title="Calculated Query Complexity Reduction">
-                          ⚡ {getOptimizationPotential(idx.name)}
-                        </span>
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${idx.active ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-600'}`}>
-                          {idx.active ? 'ACTIVE' : 'INACTIVE'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="text-[11px] text-zinc-500 font-mono mb-2">
-                      Type: {idx.type} • Columns: ({idx.columns.join(', ')})
-                    </div>
-                  </div>
-
-                  {(() => {
-                    const impact = getIndexImpactSummary(idx.name);
-                    return (
-                      <div className="my-2 p-2 bg-white/90 rounded-lg border border-zinc-200/80 text-[11px] space-y-0.5 shadow-2xs">
-                        <div className="font-bold text-zinc-900 flex items-center justify-between">
-                          <span>📊 {impact.topQuery}</span>
-                          <span className="font-mono text-[10px] text-indigo-700 font-semibold">{impact.reduction}</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {showDetailedStats && (
-                    <div className="my-1.5 p-2 bg-indigo-50/70 rounded-lg border border-indigo-200 text-[11px] font-mono flex items-center justify-between text-indigo-950">
-                      <span>Storage Size: <strong className="text-indigo-900">{idx.active ? (idx.name.includes('PRIMARY') ? '4.8 MB' : '2.1 MB') : '0 KB'}</strong></span>
-                      <span>Hit Rate: <strong className="text-emerald-700">{idx.active ? '99.4%' : '0.0%'}</strong></span>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
-                    <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
-                      {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
-                    </span>
-                    {idx.active && !idx.name.includes('PRIMARY KEY') && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (idx.name.includes('status') || idx.name.includes('cat')) {
-                            if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
-                          } else if (idx.columns.includes('customer_email')) {
-                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
-                          } else if (idx.columns.includes('amount')) {
-                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
-                          }
-                        }}
-                        className="px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
-                        title="Revert / Undo optimization on this index"
-                      >
-                        Undo Optimization
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Relational Foreign Key Graph */}
-          <div>
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
-              Relational Foreign Key Graph &amp; Join Paths
-            </h4>
-            <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-3">
-              {currentTableData.relationships.length === 0 ? (
-                <div className="text-xs text-zinc-500 italic">No foreign key relations mapped for this table.</div>
-              ) : (
-                currentTableData.relationships.map((rel, i) => (
-                  <div key={`rel-${i}`} className="flex items-center justify-between bg-white p-3 rounded-lg border border-zinc-200 text-xs font-mono">
-                    <div className="flex items-center gap-2">
-                      <Link className="w-4 h-4 text-indigo-600" />
-                      <span className="font-bold text-zinc-900">{currentTableData.name}</span>
-                      <ArrowRight className="w-3.5 h-3.5 text-zinc-400" />
-                      <span className="font-bold text-indigo-700">{rel.targetTable}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-zinc-500 text-[11px]">{rel.foreignKey}</span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${rel.optimized ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                        {rel.optimized ? 'Batched Join' : 'N+1 Unbatched'}
-                      </span>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* Main Content Grid or Dependency Chain View */}
+      {renderContent()}
 
       {/* Cluster Analysis Modal */}
       {showClusterAnalysisModal && (
@@ -1325,3 +1338,4 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     </div>
   );
 };
+}
