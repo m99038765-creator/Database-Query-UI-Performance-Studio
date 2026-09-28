@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2 } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -34,7 +34,86 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [quickIndexChecked, setQuickIndexChecked] = useState<boolean>(false);
   const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
   const [showClusterAnalysisModal, setShowClusterAnalysisModal] = useState<boolean>(false);
+  const [showIndexCleanupModal, setShowIndexCleanupModal] = useState<boolean>(false);
+  const [isScanningCleanup, setIsScanningCleanup] = useState<boolean>(false);
+  const [cleanupScanCompleted, setCleanupScanCompleted] = useState<boolean>(false);
+  const [removedIndexes, setRemovedIndexes] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain'>('explorer');
+
+  const handleRunIndexCleanupScan = () => {
+    setShowIndexCleanupModal(true);
+    setIsScanningCleanup(true);
+    setTimeout(() => {
+      setIsScanningCleanup(false);
+      setCleanupScanCompleted(true);
+    }, 750);
+  };
+
+  const isIndexUnutilized = (idxName: string) => {
+    if (removedIndexes.includes(idxName)) return false;
+    if (idxName === 'idx_transactions_date') return true;
+    if (idxName.includes('amount_missing')) return true;
+    if (idxName.includes('email_missing')) return true;
+    return false;
+  };
+
+  const handleRemoveUnutilizedIndex = (idxName: string) => {
+    if (!removedIndexes.includes(idxName)) {
+      setRemovedIndexes((prev) => [...prev, idxName]);
+    }
+    if (idxName.includes('email_missing')) {
+      setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'customer_email'));
+    }
+    if (idxName.includes('amount_missing')) {
+      setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'amount'));
+    }
+  };
+
+  const handleRestoreRemovedIndex = (idxName: string) => {
+    setRemovedIndexes((prev) => prev.filter((n) => n !== idxName));
+  };
+
+  const handleRemoveAllUnutilized = () => {
+    const unutilized = ['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'];
+    setRemovedIndexes((prev) => Array.from(new Set([...prev, ...unutilized])));
+    setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'customer_email' && c !== 'amount'));
+  };
+
+  const unutilizedDiagnostics = [
+    {
+      name: 'idx_transactions_date',
+      table: 'transactions',
+      column: 'created_at',
+      type: 'B-Tree',
+      size: '2.4 MB',
+      hits: 0,
+      totalQueries: 100,
+      reason: 'Zero query predicates on created_at across the last 100 queries. The query planner ignores this index, wasting 2.4 MB of disk storage and causing 14% write I/O amplification on order ingestion.',
+      writeImpact: '14% insert latency penalty'
+    },
+    {
+      name: 'idx_transactions_amount_missing',
+      table: 'transactions',
+      column: 'amount',
+      type: 'B-Tree (Single-column)',
+      size: '2.1 MB',
+      hits: 0,
+      totalQueries: 100,
+      reason: 'Low cardinality/selectivity on standalone amount filter. Recorded 0 hits in last 100 queries as multi-column queries favor full table scans or composite (category, amount) indexes.',
+      writeImpact: '12% lock contention overhead'
+    },
+    {
+      name: 'idx_transactions_email_missing',
+      table: 'transactions',
+      column: 'customer_email',
+      type: 'B-Tree (Single-column)',
+      size: '2.3 MB',
+      hits: 0,
+      totalQueries: 100,
+      reason: 'Overlapped by composite (customer_email, status). Zero query hits recorded across the 100-query audit window for standalone lookups.',
+      writeImpact: '12% B-tree maintenance overhead'
+    }
+  ];
 
   const isIndexRedundant = (idxName: string, columns: string[]) => {
     if (consolidatedIndexes.includes(idxName)) return false;
@@ -65,6 +144,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     setCreatedCustomIndexes([]);
     setCreatedCompositeIndexes([]);
     setConsolidatedIndexes([]);
+    setRemovedIndexes([]);
+    setCleanupScanCompleted(false);
   };
 
   const [snapshots, setSnapshots] = useState<SchemaSnapshot[]>([
@@ -126,13 +207,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'created_at', type: 'TIMESTAMP', isPk: false, isFk: false, indexed: true },
       ],
       indexes: [
-        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], active: true },
-        { name: 'idx_orders_status_cat', type: 'Composite B-Tree', columns: ['status', 'category'], active: flags.btreeIndexing },
-        { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], active: true },
-        { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], active: createdCustomIndexes.includes('customer_email') },
-        { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], active: createdCustomIndexes.includes('amount') },
-        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], active: createdCompositeIndexes.includes('email_status') },
-        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], active: createdCompositeIndexes.includes('category_amount') },
+        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], active: !removedIndexes.includes('PRIMARY KEY (id)') },
+        { name: 'idx_orders_status_cat', type: 'Composite B-Tree', columns: ['status', 'category'], active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_status_cat') },
+        { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], active: !removedIndexes.includes('idx_transactions_date') },
+        { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], active: createdCustomIndexes.includes('customer_email') && !removedIndexes.includes('idx_transactions_email_missing') },
+        { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') },
+        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], active: createdCompositeIndexes.includes('email_status') && !removedIndexes.includes('idx_transactions_email_status') },
+        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], active: createdCompositeIndexes.includes('category_amount') && !removedIndexes.includes('idx_transactions_category_amount') },
       ],
       relationships: [
         { targetTable: 'line_items', type: 'One-to-Many', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -514,6 +595,49 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   )}
                   <div>
                     {(() => {
+                      if (removedIndexes.includes(idx.name)) {
+                        return (
+                          <div className="mb-2 p-2 bg-zinc-100 border border-zinc-300 rounded-lg flex items-center justify-between text-[11px] text-zinc-600 shadow-2xs">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              <Trash2 className="w-3.5 h-3.5 text-zinc-500" />
+                              <span>Index Removed by Cleanup Diagnostic (+2.4 MB space saved)</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRestoreRemovedIndex(idx.name);
+                              }}
+                              className="px-2 py-0.5 bg-white hover:bg-zinc-200 border border-zinc-300 text-zinc-700 font-semibold rounded text-[10px] cursor-pointer"
+                            >
+                              Restore
+                            </button>
+                          </div>
+                        );
+                      }
+                      if (cleanupScanCompleted && isIndexUnutilized(idx.name)) {
+                        return (
+                          <div className="mb-2 p-2.5 bg-rose-50 border border-rose-300 rounded-lg flex items-center justify-between text-[11px] text-rose-900 shadow-2xs">
+                            <div className="flex items-center gap-2 font-semibold">
+                              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                              <div>
+                                <div>Unutilized in Last 100 Queries (0 Hits)</div>
+                                <div className="text-[10px] text-rose-700 font-normal">Flagged for removal • Reclaim 2.4 MB disk space</div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveUnutilizedIndex(idx.name);
+                              }}
+                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors shrink-0"
+                            >
+                              Remove &amp; Free Space
+                            </button>
+                          </div>
+                        );
+                      }
                       const redundant = isIndexRedundant(idx.name, idx.columns);
                       return redundant ? (
                         <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
@@ -540,8 +664,14 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-sans px-1.5 py-0.2 rounded font-bold shadow-2xs" title="Calculated Query Complexity Reduction">
                           ⚡ {getOptimizationPotential(idx.name)}
                         </span>
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${idx.active ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-600'}`}>
-                          {idx.active ? 'ACTIVE' : 'INACTIVE'}
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                          removedIndexes.includes(idx.name)
+                            ? 'bg-zinc-200 text-zinc-600 line-through'
+                            : idx.active
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-zinc-200 text-zinc-600'
+                        }`}>
+                          {removedIndexes.includes(idx.name) ? 'REMOVED' : idx.active ? 'ACTIVE' : 'INACTIVE'}
                         </span>
                       </div>
                     </div>
@@ -628,6 +758,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
       </div>
     );
+  };
 
   return (
     <div className="DatabaseSchemaExplorerView bg-white rounded-xl border border-zinc-200 shadow-xl overflow-hidden flex flex-col">
@@ -720,6 +851,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>Suggest Composite Indexes</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-index-cleanup"
+            data-testid="btn-index-cleanup"
+            onClick={handleRunIndexCleanupScan}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Perform diagnostic scan for any indexes unutilized in the last 100 queries and flag for removal to save disk space"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Index Cleanup</span>
+            {cleanupScanCompleted && (
+              <span className="ml-1 px-1.5 py-0.2 bg-rose-800 text-rose-100 rounded-full text-[10px] font-bold">
+                {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].filter(name => !removedIndexes.includes(name)).length} Flagged
+              </span>
+            )}
           </button>
 
           <button
@@ -1350,7 +1498,197 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           </div>
         </div>
       )}
+
+      {/* Index Cleanup Diagnostic Modal */}
+      {showIndexCleanupModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-rose-100 text-rose-700 rounded-lg">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900 flex items-center gap-2">
+                    <span>Index Cleanup Diagnostic</span>
+                    <span className="text-[11px] font-mono font-bold bg-rose-100 text-rose-800 border border-rose-200 px-2 py-0.5 rounded-full">
+                      Last 100 Queries Analyzed
+                    </span>
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    Scans query engine execution logs to identify zero-hit indexes and flags them for removal to reclaim disk space.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowIndexCleanupModal(false)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {isScanningCleanup ? (
+              <div className="py-12 flex flex-col items-center justify-center space-y-4 text-center">
+                <div className="relative">
+                  <div className="w-12 h-12 rounded-full border-4 border-rose-200 border-t-rose-600 animate-spin" />
+                  <Trash2 className="w-5 h-5 text-rose-600 absolute inset-0 m-auto" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-sm font-bold text-zinc-900">Auditing Query Engine Execution Logs...</h4>
+                  <p className="text-xs text-zinc-500 max-w-sm">
+                    Scanning last 100 query executions for B-Tree index hit frequency, scan counts, and disk storage footprint...
+                  </p>
+                </div>
+                <div className="w-48 bg-zinc-100 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-rose-600 h-full w-2/3 animate-pulse rounded-full" />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                {/* Diagnostic Metrics Overview */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 text-center">
+                    <div className="text-[10px] uppercase font-bold text-zinc-400">Queries Audited</div>
+                    <div className="text-base font-extrabold text-zinc-900 font-mono mt-0.5">100 / 100</div>
+                    <div className="text-[10px] text-zinc-500 mt-0.5">Past 24h Window</div>
+                  </div>
+                  <div className="p-3 bg-rose-50/80 rounded-xl border border-rose-200 text-center">
+                    <div className="text-[10px] uppercase font-bold text-rose-600">Unutilized Indexes</div>
+                    <div className="text-base font-extrabold text-rose-700 font-mono mt-0.5">
+                      {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].filter(name => !removedIndexes.includes(name)).length} Flagged
+                    </div>
+                    <div className="text-[10px] text-rose-600 mt-0.5">0 Hits Recorded</div>
+                  </div>
+                  <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200 text-center">
+                    <div className="text-[10px] uppercase font-bold text-emerald-700">Disk Space Saved</div>
+                    <div className="text-base font-extrabold text-emerald-700 font-mono mt-0.5">
+                      {((removedIndexes.length > 0 ? (removedIndexes.filter(name => ['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].includes(name)).length * 2.3) : 0)).toFixed(1)} MB
+                    </div>
+                    <div className="text-[10px] text-emerald-600 mt-0.5">Reclaimed Disk</div>
+                  </div>
+                  <div className="p-3 bg-indigo-50/80 rounded-xl border border-indigo-200 text-center">
+                    <div className="text-[10px] uppercase font-bold text-indigo-700">Write Latency</div>
+                    <div className="text-base font-extrabold text-indigo-700 font-mono mt-0.5">
+                      {removedIndexes.length > 0 ? `-${Math.min(38, removedIndexes.length * 14)}%` : '0%'}
+                    </div>
+                    <div className="text-[10px] text-indigo-600 mt-0.5">I/O Overhead Cut</div>
+                  </div>
+                </div>
+
+                {/* Banner / Bulk Action */}
+                <div className="p-3.5 bg-gradient-to-r from-rose-50 to-orange-50 border border-rose-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold text-rose-950">
+                        Diagnostic Findings: Unused Indexes Detected
+                      </h4>
+                      <p className="text-[11px] text-rose-800">
+                        {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].filter(name => !removedIndexes.includes(name)).length > 0
+                          ? `Flagged ${['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].filter(name => !removedIndexes.includes(name)).length} indexes with zero engine hits across the last 100 queries. Removing them will reclaim up to 6.8 MB disk space.`
+                          : 'All unutilized indexes have been removed. Disk storage reclaimed and write overhead reduced.'}
+                      </p>
+                    </div>
+                  </div>
+                  {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].some(name => !removedIndexes.includes(name)) && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveAllUnutilized}
+                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs whitespace-nowrap cursor-pointer transition-colors shadow-xs"
+                    >
+                      Remove All Unutilized (Save 6.8 MB)
+                    </button>
+                  )}
+                </div>
+
+                {/* List of unutilized indexes */}
+                <div className="space-y-3">
+                  {unutilizedDiagnostics.map((diag) => {
+                    const isRemoved = removedIndexes.includes(diag.name);
+                    return (
+                      <div
+                        key={diag.name}
+                        className={`p-4 rounded-xl border transition-all ${
+                          isRemoved
+                            ? 'bg-zinc-50 border-zinc-200 opacity-70'
+                            : 'bg-white border-rose-200 shadow-2xs'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-100 pb-2.5 mb-2.5">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono font-bold text-xs text-zinc-900">{diag.name}</span>
+                              <span className="font-mono text-[10px] bg-zinc-100 text-zinc-700 px-2 py-0.5 rounded border border-zinc-200">
+                                {diag.table}.{diag.column}
+                              </span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-100 text-rose-800">
+                                0 hits / 100 queries
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-zinc-500 mt-0.5">
+                              Storage footprint: <strong className="text-zinc-700 font-mono">{diag.size}</strong> • Write I/O penalty: <strong className="text-rose-700">{diag.writeImpact}</strong>
+                            </div>
+                          </div>
+                          <div>
+                            {isRemoved ? (
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-bold text-emerald-700 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  Removed ({diag.size} freed)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRestoreRemovedIndex(diag.name)}
+                                  className="px-2.5 py-1 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded text-[11px] font-semibold cursor-pointer"
+                                >
+                                  Restore
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveUnutilizedIndex(diag.name)}
+                                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Remove &amp; Free {diag.size}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-zinc-600">
+                          <strong className="text-zinc-800">Diagnostic Reason:</strong> {diag.reason}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Footer Buttons */}
+                <div className="pt-2 flex items-center justify-between border-t border-zinc-200">
+                  <button
+                    type="button"
+                    onClick={handleRunIndexCleanupScan}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-zinc-600 hover:text-zinc-900 text-xs font-semibold rounded-lg hover:bg-zinc-100 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Rescan Last 100 Queries</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowIndexCleanupModal(false)}
+                    className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+                  >
+                    Close Diagnostic
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
-}
