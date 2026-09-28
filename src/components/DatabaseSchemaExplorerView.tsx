@@ -25,6 +25,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showDetailedStats, setShowDetailedStats] = useState<boolean>(false);
   const [quickIndexChecked, setQuickIndexChecked] = useState<boolean>(false);
   const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
+  const [showClusterAnalysisModal, setShowClusterAnalysisModal] = useState<boolean>(false);
 
   const isIndexRedundant = (idxName: string, columns: string[]) => {
     if (consolidatedIndexes.includes(idxName)) return false;
@@ -368,6 +369,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            id="btn-cluster-analysis"
+            data-testid="btn-cluster-analysis"
+            onClick={() => setShowClusterAnalysisModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Analyze index clusters and query pattern overlap to consolidate indexes"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Cluster Analysis</span>
+          </button>
+
+          <button
+            type="button"
             id="btn-revert-all-indexes"
             data-testid="btn-revert-all-indexes"
             onClick={handleRevertAllIndexes}
@@ -700,6 +713,34 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     </span>
                   </div>
                 )}
+              </div>
+
+              {/* Storage Overhead Calculator */}
+              <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl text-amber-950 space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="flex items-center gap-2">
+                    <Database className="w-4 h-4 text-amber-700" />
+                    <span>Storage Overhead &amp; Speedup Tradeoff Calculator</span>
+                  </span>
+                  <span className="font-mono bg-amber-200 text-amber-900 px-2 py-0.5 rounded text-[10px]">
+                    Table Footprint: 48.2 MB
+                  </span>
+                </div>
+                <p className="text-[11px] text-amber-900">
+                  Estimates disk write amplification and B-Tree leaf node allocations. Balancing multi-column query acceleration against disk capacity constraints.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[11px]">
+                  <div className="p-2 bg-white rounded border border-amber-200/80 flex flex-col">
+                    <span className="text-zinc-500 text-[10px] font-sans font-bold">idx_transactions_email_status</span>
+                    <span className="font-bold text-amber-900">💾 +4.2 MB (+8.7% storage)</span>
+                    <span className="text-[10px] text-emerald-700 font-sans font-semibold">99.8% Speedup Ratio</span>
+                  </div>
+                  <div className="p-2 bg-white rounded border border-amber-200/80 flex flex-col">
+                    <span className="text-zinc-500 text-[10px] font-sans font-bold">idx_transactions_category_amount</span>
+                    <span className="font-bold text-amber-900">💾 +6.8 MB (+14.1% storage)</span>
+                    <span className="text-[10px] text-emerald-700 font-sans font-semibold">99.2% Speedup Ratio</span>
+                  </div>
+                </div>
               </div>
 
               <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
@@ -1191,6 +1232,96 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           </div>
         </div>
       </div>
+
+      {/* Cluster Analysis Modal */}
+      {showClusterAnalysisModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">B-Tree Index Cluster Analysis</h3>
+                  <p className="text-xs text-zinc-500">
+                    Groups indexes serving overlapping query patterns and recommends optimal multi-column consolidation.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowClusterAnalysisModal(false)}
+                className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+              {/* Cluster 1 */}
+              <div className="p-4 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-xs text-indigo-950 flex items-center gap-1.5">
+                    <span>Cluster #1: Customer Lookup &amp; Status Filtering</span>
+                    <span className="bg-indigo-200 text-indigo-900 font-mono text-[10px] px-2 py-0.5 rounded font-bold">Overlap: 92%</span>
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded">
+                    High Consolidation Potential
+                  </span>
+                </div>
+                <p className="text-[11px] text-indigo-900">
+                  <strong className="text-indigo-950">Indexes involved:</strong> <code className="font-mono">idx_transactions_email_missing</code>, <code className="font-mono">idx_transactions_email_status</code>
+                </p>
+                <div className="p-2.5 bg-white rounded-lg border border-indigo-200 text-[11px] space-y-1">
+                  <div className="font-semibold text-zinc-900 flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Recommendation: Consolidate into composite <code className="font-mono">idx_transactions_email_status</code></span>
+                  </div>
+                  <p className="text-zinc-600 text-[10px]">
+                    Eliminates redundant single-column lookup overhead, reducing write lock contention by 42% and saving 2.1 MB storage.
+                  </p>
+                </div>
+              </div>
+
+              {/* Cluster 2 */}
+              <div className="p-4 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-xs text-indigo-950 flex items-center gap-1.5">
+                    <span>Cluster #2: Range Aggregations &amp; Category Filters</span>
+                    <span className="bg-indigo-200 text-indigo-900 font-mono text-[10px] px-2 py-0.5 rounded font-bold">Overlap: 88%</span>
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded">
+                    High Consolidation Potential
+                  </span>
+                </div>
+                <p className="text-[11px] text-indigo-900">
+                  <strong className="text-indigo-950">Indexes involved:</strong> <code className="font-mono">idx_transactions_amount_missing</code>, <code className="font-mono">idx_transactions_category_amount</code>
+                </p>
+                <div className="p-2.5 bg-white rounded-lg border border-indigo-200 text-[11px] space-y-1">
+                  <div className="font-semibold text-zinc-900 flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Recommendation: Consolidate into composite <code className="font-mono">idx_transactions_category_amount</code></span>
+                  </div>
+                  <p className="text-zinc-600 text-[10px]">
+                    Co-locates category buckets with sorted amount b-trees, eliminating secondary sorting passes for top-k queries.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowClusterAnalysisModal(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Close Cluster Analysis
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
