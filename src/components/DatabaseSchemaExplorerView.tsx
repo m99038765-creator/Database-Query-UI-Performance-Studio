@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -17,6 +17,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [createdCustomIndexes, setCreatedCustomIndexes] = useState<string[]>([]);
   const [showQueryComplexityInfo, setShowQueryComplexityInfo] = useState<boolean>(false);
   const [compareWithBaseline, setCompareWithBaseline] = useState<boolean>(false);
+  const [showSuggestIndexesModal, setShowSuggestIndexesModal] = useState<boolean>(false);
 
   const tables = [
     {
@@ -156,6 +157,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            onClick={() => setShowSuggestIndexesModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Analyze query workload and recommend B-Tree indexes"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Suggest Missing Indexes</span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleDownloadSchemaReport}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
             title="Download JSON report of current schema diagnostic findings"
@@ -265,6 +276,135 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
               >
                 Got It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Suggest Missing Indexes Modal */}
+      {showSuggestIndexesModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-100 text-emerald-700 rounded-lg">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">
+                    Workload Analysis &amp; Index Recommendations
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    AI-powered query analyzer identified 3 missing B-Tree index configurations.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSuggestIndexesModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-xs">
+              {createdCustomIndexes.length >= 2 && (
+                <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 flex items-start gap-2.5 animate-fadeIn">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold">Real-Time Conflict Detector: Overlapping Storage Overhead</div>
+                    <div className="text-[11px] text-amber-800 mt-0.5">
+                      Having {createdCustomIndexes.length} active custom single-column indexes introduces redundant leaf node storage overhead, increasing write latency by ~{(createdCustomIndexes.length * 6).toFixed(0)}% on bulk INSERT/UPDATE operations.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-zinc-900">idx_transactions_customer_email</span>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px]">99.7% Speedup</span>
+                </div>
+                <p className="text-zinc-600">
+                  <strong className="text-zinc-900">Target Query:</strong> Customer Email Wildcard Search (<code className="font-mono">WHERE customer_email LIKE '%...'</code>)<br />
+                  <strong className="text-zinc-900">Impact:</strong> Eliminates full table scan across 50,000 rows.
+                </p>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!createdCustomIndexes.includes('customer_email')) {
+                        setCreatedCustomIndexes([...createdCustomIndexes, 'customer_email']);
+                      }
+                    }}
+                    disabled={createdCustomIndexes.includes('customer_email')}
+                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-300 text-white font-semibold rounded text-[11px] cursor-pointer transition-colors"
+                  >
+                    {createdCustomIndexes.includes('customer_email') ? 'Index Active' : 'Apply Suggested Index'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-zinc-900">idx_transactions_amount</span>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px]">95.4% Speedup</span>
+                </div>
+                <p className="text-zinc-600">
+                  <strong className="text-zinc-900">Target Query:</strong> Transaction Amount Range Filter (<code className="font-mono">WHERE amount &gt; 500</code>)<br />
+                  <strong className="text-zinc-900">Impact:</strong> Converts $O(n)$ range scan to $O(\log n)$ B-Tree leaf node pointer seek.
+                </p>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!createdCustomIndexes.includes('amount')) {
+                        setCreatedCustomIndexes([...createdCustomIndexes, 'amount']);
+                      }
+                    }}
+                    disabled={createdCustomIndexes.includes('amount')}
+                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-300 text-white font-semibold rounded text-[11px] cursor-pointer transition-colors"
+                  >
+                    {createdCustomIndexes.includes('amount') ? 'Index Active' : 'Apply Suggested Index'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-zinc-900">idx_line_items_tx</span>
+                  <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-[10px]">99.6% Speedup</span>
+                </div>
+                <p className="text-zinc-600">
+                  <strong className="text-zinc-900">Target Query:</strong> N+1 Child Join Storm (<code className="font-mono">line_items.transaction_id</code>)<br />
+                  <strong className="text-zinc-900">Impact:</strong> Batches 100+ separate roundtrips into a single indexed join.
+                </p>
+                <div className="pt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!flags.batchEagerLoading) {
+                        onToggleFlag('batchEagerLoading');
+                      }
+                    }}
+                    disabled={flags.batchEagerLoading}
+                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-300 text-white font-semibold rounded text-[11px] cursor-pointer transition-colors"
+                  >
+                    {flags.batchEagerLoading ? 'Optimization Active' : 'Apply Batch Join'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowSuggestIndexesModal(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Done
               </button>
             </div>
           </div>
