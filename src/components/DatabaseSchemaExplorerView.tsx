@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -31,6 +31,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [compareWithBaseline, setCompareWithBaseline] = useState<boolean>(false);
   const [showSuggestIndexesModal, setShowSuggestIndexesModal] = useState<boolean>(false);
   const [showDetailedStats, setShowDetailedStats] = useState<boolean>(false);
+  const [showQueryImpact, setShowQueryImpact] = useState<boolean>(true);
   const [quickIndexChecked, setQuickIndexChecked] = useState<boolean>(false);
   const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
   const [showClusterAnalysisModal, setShowClusterAnalysisModal] = useState<boolean>(false);
@@ -49,6 +50,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [isExportingState, setIsExportingState] = useState<boolean>(false);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string>('idx_transactions_email_status');
   const [suggestionFilterTab, setSuggestionFilterTab] = useState<'all' | 'filter' | 'join' | 'composite'>('all');
+  const [showBulkOptimizeModal, setShowBulkOptimizeModal] = useState<boolean>(false);
+  const [bulkOptimizeSuccessNotice, setBulkOptimizeSuccessNotice] = useState<string | null>(null);
+  const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
+  const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
+  const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
+  const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
+  const [copiedDdlIndex, setCopiedDdlIndex] = useState<string | null>(null);
 
   useEffect(() => {
     // Automatically expand the selected table category when selectedTable changes
@@ -387,6 +395,210 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }
   ], [createdCustomIndexes, createdCompositeIndexes, flags, onToggleFlag]);
 
+  // AI-Driven Composite Index Opportunities derived from analyzing user query pattern history
+  const compositeIndexOpportunities = useMemo(() => [
+    {
+      id: 'idx_transactions_email_status',
+      name: 'idx_transactions_email_status',
+      targetTable: 'transactions',
+      targetEntity: 'Transactions Entity',
+      targetColumns: ['customer_email', 'status'],
+      compositeKey: 'email_status',
+      patternCategory: 'Equality + Filter',
+      speedup: '99.8%',
+      speedupMultiplier: '246x Faster',
+      latencyBefore: '395 ms',
+      latencyAfter: '1.6 ms',
+      frequencyPerHour: '5,120 queries/hr',
+      executionShare: '29.1% DB CPU time',
+      throughputBefore: '25 QPS',
+      throughputAfter: '6,250 QPS',
+      storageFootprint: '+4.2 MB (+8.7%)',
+      writeImpact: '+0.9ms on batch write',
+      querySql: 'SELECT * FROM transactions WHERE customer_email = ? AND status = ? ORDER BY created_at DESC LIMIT 20;',
+      queryPurpose: 'Customer Account Order Verification & Status Inspection',
+      columnOrdering: [
+        {
+          column: 'customer_email',
+          role: 'Leading Equality Key (High Selectivity)',
+          rationale: 'Email address has high cardinality (~45,000 distinct values). Placing it first segments the index into tiny branches, isolating matching candidate rows instantly.'
+        },
+        {
+          column: 'status',
+          role: 'Trailing Filter Key (State Qualification)',
+          rationale: 'Status has low selectivity (4 states: pending, completed, cancelled, refunded). Co-locating it second allows discarding non-matching orders right at the B-Tree leaf level without touching table heap pages.'
+        }
+      ],
+      rationale: {
+        summary: 'Single-column indexes on customer_email force the query engine to fetch underlying table heap pages for each row just to check the status field, triggering heavy disk buffer cache churn. The composite index co-locates customer_email and status directly in adjacent B-Tree leaf blocks, eliminating 99.4% of table I/O reads.',
+        heapScanProblem: 'With single-column indexing, 1,200+ heap pages are traversed per query. With composite indexing, 0 heap pages are visited for non-matching records.',
+        columnOrderJustification: 'Standard B-Tree rule: Equality predicates with high selectivity must lead before low-selectivity filter keys to maximize index branch traversal speed.',
+        plannerMechanics: 'Transforms Bitmap Heap Scan + Filter Recheck into a direct logarithmic Index Scan seeking straight to matching leaf tuples.'
+      },
+      planBefore: "Seq Scan on transactions (cost=0.00..1845.00 rows=12 width=142)\n  Filter: ((customer_email = 'alice@example.com'::text) AND (status = 'completed'::text))",
+      planAfter: "Index Scan using idx_transactions_email_status on transactions (cost=0.42..8.45 rows=12 width=142)\n  Index Cond: ((customer_email = 'alice@example.com'::text) AND (status = 'completed'::text))",
+      ddlStatement: 'CREATE INDEX idx_transactions_email_status ON transactions (customer_email, status);',
+      isApplied: createdCompositeIndexes.includes('email_status'),
+      onToggle: () => {
+        if (createdCompositeIndexes.includes('email_status')) {
+          setCreatedCompositeIndexes(createdCompositeIndexes.filter(c => c !== 'email_status'));
+        } else {
+          setCreatedCompositeIndexes([...createdCompositeIndexes, 'email_status']);
+        }
+      }
+    },
+    {
+      id: 'idx_transactions_category_amount',
+      name: 'idx_transactions_category_amount',
+      targetTable: 'transactions',
+      targetEntity: 'Transactions Entity',
+      targetColumns: ['category', 'amount'],
+      compositeKey: 'category_amount',
+      patternCategory: 'Equality + Range Aggregation',
+      speedup: '99.6%',
+      speedupMultiplier: '253x Faster',
+      latencyBefore: '482 ms',
+      latencyAfter: '1.9 ms',
+      frequencyPerHour: '8,900 queries/hr',
+      executionShare: '38.4% DB CPU time',
+      throughputBefore: '21 QPS',
+      throughputAfter: '5,260 QPS',
+      storageFootprint: '+6.8 MB (+14.1%)',
+      writeImpact: '+1.1ms on batch write',
+      querySql: 'SELECT category, AVG(amount), COUNT(*) FROM transactions WHERE category = ? AND amount > ? GROUP BY category;',
+      queryPurpose: 'Departmental Category Revenue & Range Aggregation',
+      columnOrdering: [
+        {
+          column: 'category',
+          role: 'Leading Equality Key (Merchandise Category)',
+          rationale: 'Category acts as the partition filter. Placing category first allows the B-Tree root search to descend directly to the leaf page section for that specific category.'
+        },
+        {
+          column: 'amount',
+          role: 'Trailing Range Key (Numeric Threshold)',
+          rationale: 'Amount is evaluated as a range condition (> threshold). Placing amount second bounds the leaf page scan to only rows satisfying the threshold, eliminating temporary RAM sort buffers.'
+        }
+      ],
+      rationale: {
+        summary: 'Filtering by equality on category AND a range condition on amount without composite indexing forces PostgreSQL to either scan the whole table or load thousands of category rows into RAM to evaluate amount. This composite index groups category and amount in sorted order, turning an expensive table scan into a logarithmic seek.',
+        heapScanProblem: 'Queries spend 38.4% of all DB read CPU time spilling HashAggregate batches to temporary disk buffers due to unindexed category-amount ranges.',
+        columnOrderJustification: 'Critical B-Tree rule: Equality columns MUST precede Range columns. If amount were placed first, the engine could not use category for direct seeks after the range predicate.',
+        plannerMechanics: 'Replaces HashAggregate and sequential disk spill with a stream GroupAggregate read directly from pre-sorted composite leaf blocks.'
+      },
+      planBefore: "HashAggregate (cost=1950.00..1960.00 rows=8 width=44)\n  -> Seq Scan on transactions Filter: ((category = 'Electronics'::text) AND (amount > 100.00))",
+      planAfter: "GroupAggregate (cost=0.42..18.20 rows=8 width=44)\n  -> Index Scan using idx_transactions_category_amount on transactions Index Cond: ((category = 'Electronics'::text) AND (amount > 100.00))",
+      ddlStatement: 'CREATE INDEX idx_transactions_category_amount ON transactions (category, amount);',
+      isApplied: createdCompositeIndexes.includes('category_amount'),
+      onToggle: () => {
+        if (createdCompositeIndexes.includes('category_amount')) {
+          setCreatedCompositeIndexes(createdCompositeIndexes.filter(c => c !== 'category_amount'));
+        } else {
+          setCreatedCompositeIndexes([...createdCompositeIndexes, 'category_amount']);
+        }
+      }
+    },
+    {
+      id: 'idx_line_items_tx_price',
+      name: 'idx_line_items_tx_price',
+      targetTable: 'line_items',
+      targetEntity: 'Order Items Entity',
+      targetColumns: ['transaction_id', 'unit_price'],
+      compositeKey: 'tx_price',
+      patternCategory: 'Join + Price Filter',
+      speedup: '99.5%',
+      speedupMultiplier: '185x Faster',
+      latencyBefore: '280 ms',
+      latencyAfter: '1.5 ms',
+      frequencyPerHour: '6,400 queries/hr',
+      executionShare: '18.7% DB CPU time',
+      throughputBefore: '35 QPS',
+      throughputAfter: '6,470 QPS',
+      storageFootprint: '+3.8 MB (+7.8%)',
+      writeImpact: '+0.5ms on item add',
+      querySql: 'SELECT li.sku, li.quantity, li.unit_price FROM line_items li WHERE li.transaction_id = ? AND li.unit_price >= 50.00;',
+      queryPurpose: 'High-Value Relational Child Item Expansion',
+      columnOrdering: [
+        {
+          column: 'transaction_id',
+          role: 'Foreign Key Anchor (Join Predicate)',
+          rationale: 'Matches parent transactions.id. Leading position satisfies the relational join condition instantly.'
+        },
+        {
+          column: 'unit_price',
+          role: 'Secondary Numeric Filter (Covering Filter)',
+          rationale: 'Filters high-value items directly within the index leaf, avoiding secondary heap page reads for cheaper items.'
+        }
+      ],
+      rationale: {
+        summary: 'Historical query traces show heavy traffic joining transactions with line_items while filtering for premium items (unit_price >= 50). A single foreign key index still requires fetching line_items rows from disk to check the price. This composite index allows an Index-Only Scan resolving the join and price filter with 0 table heap fetches.',
+        heapScanProblem: 'Nested loop joins perform sequential table visits on line_items heap blocks for each order, causing 280ms latency spikes.',
+        columnOrderJustification: 'transaction_id leads to bind the foreign key equality from the parent order, with unit_price following to filter lines in-index.',
+        plannerMechanics: 'Upgrades Nested Loop with filter recheck into a direct Index Only Scan on line_items with zero table heap page fetches.'
+      },
+      planBefore: "Nested Loop (cost=0.00..2800.00 rows=40 width=88)\n  -> Seq Scan on line_items Filter: ((transaction_id = t.id) AND (unit_price >= 50.00))",
+      planAfter: "Index Only Scan using idx_line_items_tx_price on line_items (cost=0.42..14.30 rows=40 width=88)\n  Index Cond: ((transaction_id = t.id) AND (unit_price >= 50.00))\n  Heap Fetches: 0",
+      ddlStatement: 'CREATE INDEX idx_line_items_tx_price ON line_items (transaction_id, unit_price);',
+      isApplied: createdCompositeIndexes.includes('tx_price'),
+      onToggle: () => {
+        if (createdCompositeIndexes.includes('tx_price')) {
+          setCreatedCompositeIndexes(createdCompositeIndexes.filter(c => c !== 'tx_price'));
+        } else {
+          setCreatedCompositeIndexes([...createdCompositeIndexes, 'tx_price']);
+        }
+      }
+    },
+    {
+      id: 'idx_customers_tier_created',
+      name: 'idx_customers_tier_created',
+      targetTable: 'customers',
+      targetEntity: 'Customers Entity',
+      targetColumns: ['tier', 'created_at'],
+      compositeKey: 'tier_created',
+      patternCategory: 'Equality + Order By',
+      speedup: '99.3%',
+      speedupMultiplier: '140x Faster',
+      latencyBefore: '165 ms',
+      latencyAfter: '1.2 ms',
+      frequencyPerHour: '3,850 queries/hr',
+      executionShare: '12.2% DB CPU time',
+      throughputBefore: '42 QPS',
+      throughputAfter: '5,880 QPS',
+      storageFootprint: '+2.6 MB (+5.4%)',
+      writeImpact: '+0.4ms on customer signup',
+      querySql: 'SELECT id, name, email, tier FROM customers WHERE tier = ? ORDER BY created_at DESC LIMIT 50;',
+      queryPurpose: 'Tiered Customer Cohort & Recent Signup Stream',
+      columnOrdering: [
+        {
+          column: 'tier',
+          role: 'Leading Equality Key (Membership Cohort)',
+          rationale: 'Categorical filter matching target account level (e.g. enterprise, vip, standard).'
+        },
+        {
+          column: 'created_at',
+          role: 'Pre-Sorted Order Key (Zero-Sort Delivery)',
+          rationale: 'Provides physical ordering by creation timestamp in the B-Tree leaf pages, satisfying ORDER BY created_at DESC with 0 memory sort buffers.'
+        }
+      ],
+      rationale: {
+        summary: 'Historical query logs show continuous dashboard polling for recent customer signups filtered by tier. Single-column indexing on tier locates matching records but forces PostgreSQL to sort all matching records in RAM before applying LIMIT 50. This composite index stores records already sorted by timestamp within each tier leaf chain, enabling instant early termination after 50 rows.',
+        heapScanProblem: 'Explicit Sort nodes consume WorkMem and risk spilling to temporary disk files when customer tiers grow.',
+        columnOrderJustification: 'tier leads to isolate the requested cohort. created_at follows in descending order to avoid filesort.',
+        plannerMechanics: 'Replaces Bitmap Heap Scan + Sort node with an Index Scan Backward that halts execution as soon as 50 rows are produced.'
+      },
+      planBefore: "Limit (cost=160.00..165.00 rows=50 width=128)\n  -> Sort (cost=155.00..160.00) Sort Key: created_at DESC\n        -> Bitmap Heap Scan on customers Filter: (tier = 'enterprise'::text)",
+      planAfter: "Limit (cost=0.42..12.50 rows=50 width=128)\n  -> Index Scan using idx_customers_tier_created on customers\n        Index Cond: (tier = 'enterprise'::text)\n        Buffers: shared hit=4",
+      ddlStatement: 'CREATE INDEX idx_customers_tier_created ON customers (tier, created_at DESC);',
+      isApplied: createdCompositeIndexes.includes('tier_created'),
+      onToggle: () => {
+        if (createdCompositeIndexes.includes('tier_created')) {
+          setCreatedCompositeIndexes(createdCompositeIndexes.filter(c => c !== 'tier_created'));
+        } else {
+          setCreatedCompositeIndexes([...createdCompositeIndexes, 'tier_created']);
+        }
+      }
+    }
+  ], [createdCompositeIndexes]);
+
   const handleAutoOptimizeWorkload = () => {
     setIsAutoOptimizingWorkload(true);
     setTimeout(() => {
@@ -399,7 +611,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       }
 
       // 2. Toggle optimal composite B-Tree indexes for multi-column predicates
-      setCreatedCompositeIndexes(['email_status', 'category_amount']);
+      setCreatedCompositeIndexes(['email_status', 'category_amount', 'tx_price', 'tier_created']);
 
       // 3. Ensure single-column indexes are set
       setCreatedCustomIndexes((prev) => Array.from(new Set([...prev, 'customer_email', 'amount'])));
@@ -608,11 +820,12 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'transaction_id', type: 'VARCHAR(36)', isPk: false, isFk: true, indexed: true },
         { name: 'sku', type: 'VARCHAR(64)', isPk: false, isFk: false, indexed: false },
         { name: 'quantity', type: 'INT', isPk: false, isFk: false, indexed: false },
-        { name: 'unit_price', type: 'DECIMAL(10,2)', isPk: false, isFk: false, indexed: false },
+        { name: 'unit_price', type: 'DECIMAL(10,2)', isPk: false, isFk: false, indexed: createdCompositeIndexes.includes('tx_price') },
       ],
       indexes: [
         { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: true },
-        { name: 'idx_line_items_tx', type: 'B-Tree (Foreign Key)', columns: ['transaction_id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: flags.batchEagerLoading }
+        { name: 'idx_line_items_tx', type: 'B-Tree (Foreign Key)', columns: ['transaction_id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: flags.batchEagerLoading },
+        { name: 'idx_line_items_tx_price', type: 'Composite B-Tree (AI Recommended)', columns: ['transaction_id', 'unit_price'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: createdCompositeIndexes.includes('tx_price') && !removedIndexes.includes('idx_line_items_tx_price') }
       ],
       relationships: [
         { targetTable: 'transactions', type: 'Many-to-One', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -628,11 +841,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'id', type: 'VARCHAR(36)', isPk: true, isFk: false, indexed: true },
         { name: 'name', type: 'VARCHAR(128)', isPk: false, isFk: false, indexed: false },
         { name: 'email', type: 'VARCHAR(128)', isPk: false, isFk: false, indexed: true },
-        { name: 'tier', type: 'VARCHAR(32)', isPk: false, isFk: false, indexed: false },
+        { name: 'tier', type: 'VARCHAR(32)', isPk: false, isFk: false, indexed: createdCompositeIndexes.includes('tier_created') },
+        { name: 'created_at', type: 'TIMESTAMP', isPk: false, isFk: false, indexed: createdCompositeIndexes.includes('tier_created') },
       ],
       indexes: [
         { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true },
-        { name: 'idx_customers_email', type: 'B-Tree Unique', columns: ['email'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true }
+        { name: 'idx_customers_email', type: 'B-Tree Unique', columns: ['email'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true },
+        { name: 'idx_customers_tier_created', type: 'Composite B-Tree (AI Recommended)', columns: ['tier', 'created_at'], targetTable: 'customers', targetEntity: 'Customers Entity', active: createdCompositeIndexes.includes('tier_created') && !removedIndexes.includes('idx_customers_tier_created') }
       ],
       relationships: []
     }
@@ -748,7 +963,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     } else if (idxName.includes('orders_status_cat') || idxName.includes('line_items_tx')) {
       readWriteScore = active ? 94 : 20;
       readWriteMetric = active ? '92:8 Read/Write (High Benefit)' : '100% Write Penalty';
-    } else if (idxName.includes('email_status') || idxName.includes('category_amount')) {
+    } else if (idxName.includes('email_status') || idxName.includes('category_amount') || idxName.includes('tx_price') || idxName.includes('tier_created')) {
       readWriteScore = active ? 92 : 20;
       readWriteMetric = active ? '90:10 Read/Write (Efficient)' : '100% Write Penalty';
     } else if (idxName.includes('customers_email')) {
@@ -782,7 +997,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     } else if (idxName.includes('PRIMARY KEY')) {
       scanEfficiencyScore = 99;
       scanEfficiencyMetric = 'O(1) Clustered Point Seek';
-    } else if (idxName.includes('orders_status_cat') || idxName.includes('email_status') || idxName.includes('category_amount')) {
+    } else if (idxName.includes('orders_status_cat') || idxName.includes('email_status') || idxName.includes('category_amount') || idxName.includes('tx_price') || idxName.includes('tier_created')) {
       scanEfficiencyScore = active ? 97 : 14;
       scanEfficiencyMetric = active ? 'O(log n) Composite Range Seek' : 'O(n) Table Scan Fallback';
     } else if (idxName.includes('line_items_tx')) {
@@ -859,6 +1074,755 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       dotClass,
       textClass,
       explanation
+    };
+  };
+
+  // Bulk Optimization Calculation Engine:
+  // Evaluates every listed index across all tables, calculates the optimal state vs current state,
+  // and projects the cumulative schema health, query throughput, and write overhead impacts.
+  const bulkOptimizationPlan = useMemo(() => {
+    const allListed = tables.flatMap((tbl) =>
+      tbl.indexes.map((idx) => {
+        const isRemoved = removedIndexes.includes(idx.name);
+        const redundant = isIndexRedundant(idx.name, idx.columns);
+        const currentHealth = getIndexHealthScore(idx.name, idx.active, tbl.name);
+
+        let isOptimal = false;
+        let recommendedAction: 'ACTIVATE' | 'PRUNE' | 'RESTORE' | 'KEEP_OPTIMAL' = 'KEEP_OPTIMAL';
+        let actionTitle = 'Index in Optimal State';
+        let reason = 'Operating at peak seek efficiency with balanced read/write metrics.';
+        let impactDescription = 'Zero action needed; queries execute with optimal O(1) or O(log n) efficiency.';
+        let speedupGain = 'Optimal';
+        let projectedHealthScore = currentHealth.score;
+
+        if (idx.name.includes('PRIMARY KEY')) {
+          if (isRemoved) {
+            isOptimal = false;
+            recommendedAction = 'RESTORE';
+            actionTitle = 'Restore Clustered Index';
+            reason = 'Primary key was pruned; restoring it provides instant O(1) row access.';
+            impactDescription = 'Restores primary record clustering and avoids full heap scan lookups.';
+            speedupGain = 'O(n) → O(1) Seek';
+            projectedHealthScore = 98;
+          } else {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Primary Clustered Key';
+            reason = 'Clustered B-Tree index is active and serving 22,000 queries/hr.';
+            impactDescription = 'O(1) Clustered Point Seek.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          }
+        } else if (idx.name === 'idx_transactions_date') {
+          // Unutilized index with 0 hits in past query batches and write amplification
+          if (isRemoved) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Pruned Status';
+            reason = 'Unutilized index correctly removed from buffer cache and disk writes.';
+            impactDescription = '+14% write latency saved; eliminates buffer cache pollution.';
+            speedupGain = 'Optimal (+14% Write Saved)';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'PRUNE';
+            actionTitle = 'Prune Unutilized Index';
+            reason = 'Zero hits recorded across past 100 query batches; causing 0:100 R/W write amplification.';
+            impactDescription = 'Reclaims buffer cache pages and eliminates write overhead on every order insert.';
+            speedupGain = '+14% Write Latency Saved';
+            projectedHealthScore = 90;
+          }
+        } else if (idx.name.includes('orders_status_cat')) {
+          const isActive = flags.btreeIndexing && !isRemoved;
+          if (isActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Active Composite Index';
+            reason = 'Active Composite B-Tree servicing 18,400 queries/hr.';
+            impactDescription = 'O(log n) Composite Range Seek across status and category.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Activate Composite B-Tree';
+            reason = 'Currently inactive; queries on status + category fall back to full table scan.';
+            impactDescription = 'Reduces query scan cost from 1,845 to 8.45; eliminates sequential scan.';
+            speedupGain = '99.7% Latency Reduction';
+            projectedHealthScore = 96;
+          }
+        } else if (idx.name.includes('line_items_tx')) {
+          const isActive = flags.batchEagerLoading;
+          if (isActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Foreign Key Index';
+            reason = 'Active foreign key B-Tree eliminating child join cascades.';
+            impactDescription = 'Converts Nested Loop sequential scans to O(1) Hash Joins.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Foreign Key B-Tree';
+            reason = 'Unindexed foreign key triggers 100+ separate roundtrips (N+1 storm).';
+            impactDescription = 'Collapses sequential N+1 sub-queries into a single index-accelerated batch.';
+            speedupGain = '233x Speedup (420ms → 1.8ms)';
+            projectedHealthScore = 97;
+          }
+        } else if (idx.name.includes('email_status')) {
+          const isActive = createdCompositeIndexes.includes('email_status') && !isRemoved;
+          if (isActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain AI Composite Index';
+            reason = 'Active composite index covering dual equality filter clause.';
+            impactDescription = 'Avoids secondary heap visits for customer status queries.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Composite B-Tree (email, status)';
+            reason = 'Customer order status queries suffer 395ms latency from heap lookups.';
+            impactDescription = 'Co-locates customer_email and status in adjacent leaf nodes (395ms → 1.6ms).';
+            speedupGain = '99.6% Speedup (246x Faster)';
+            projectedHealthScore = 94;
+          }
+        } else if (idx.name.includes('category_amount')) {
+          const isActive = createdCompositeIndexes.includes('category_amount') && !isRemoved;
+          if (isActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Range Aggregation Index';
+            reason = 'Active composite index accelerating categorical range aggregations.';
+            impactDescription = 'Leaf node range seek with in-index ordering.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Range Aggregation Index';
+            reason = 'Consumes 38.4% of total DB read CPU time without index coverage.';
+            impactDescription = 'Transforms 482ms grouping scans into 1.9ms index range seeks.';
+            speedupGain = '253x Speedup (482ms → 1.9ms)';
+            projectedHealthScore = 93;
+          }
+        } else if (idx.name.includes('line_items_tx_price')) {
+          const isActive = createdCompositeIndexes.includes('tx_price') && !isRemoved;
+          if (isActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Child Join Composite Index';
+            reason = 'Active covering composite index accelerating line item joins.';
+            impactDescription = 'Zero heap page fetches during relational joins.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Composite B-Tree (transaction_id, unit_price)';
+            reason = 'Child item price filter queries trigger expensive table heap reads.';
+            impactDescription = 'Transforms Nested Loop to Covering Index Only Scan (280ms → 1.5ms).';
+            speedupGain = '185x Speedup';
+            projectedHealthScore = 95;
+          }
+        } else if (idx.name.includes('customers_tier_created')) {
+          const isActive = createdCompositeIndexes.includes('tier_created') && !isRemoved;
+          if (isActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Retain Tier Ordering Composite Index';
+            reason = 'Pre-sorts customer accounts by creation date directly in B-Tree leaves.';
+            impactDescription = 'Satisfies ORDER BY created_at DESC with 0 RAM sort buffer.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Composite B-Tree (tier, created_at)';
+            reason = 'VIP customer cohort queries require temporary RAM sort buffers.';
+            impactDescription = 'Eliminates explicit Sort node with pre-ordered B-Tree streaming (165ms → 1.2ms).';
+            speedupGain = '140x Speedup';
+            projectedHealthScore = 94;
+          }
+        } else if (idx.name.includes('email_missing')) {
+          const isCompositeCovered = createdCompositeIndexes.includes('email_status');
+          const isCustomActive = createdCustomIndexes.includes('customer_email') && !isRemoved;
+          if (isCompositeCovered) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Covered by Composite Index';
+            reason = 'Prefix column covered by idx_transactions_email_status.';
+            impactDescription = 'Optimally covered by multi-column B-Tree.';
+            speedupGain = 'Optimal';
+            projectedHealthScore = 82;
+          } else if (isCustomActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Active Single-Column Index';
+            reason = 'Single column index active for customer_email.';
+            impactDescription = 'O(log n) Leaf Node Seek.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Email Index / Composite Coverage';
+            reason = 'Full table scan on 50,000 rows when filtering customer email.';
+            impactDescription = 'Enables direct leaf node lookup.';
+            speedupGain = '99.2% Complexity Reduction';
+            projectedHealthScore = 82;
+          }
+        } else if (idx.name.includes('amount_missing')) {
+          const isCustomActive = createdCustomIndexes.includes('amount') && !isRemoved;
+          if (isCustomActive) {
+            isOptimal = true;
+            recommendedAction = 'KEEP_OPTIMAL';
+            actionTitle = 'Active Single-Column Index';
+            reason = 'Index active on amount column.';
+            impactDescription = 'O(log n) Range Index Scan.';
+            speedupGain = 'Active';
+            projectedHealthScore = currentHealth.score;
+          } else {
+            isOptimal = false;
+            recommendedAction = 'ACTIVATE';
+            actionTitle = 'Deploy Amount Numeric Range Index';
+            reason = 'Unindexed decimal threshold scan checks 50,000 rows row-by-row.';
+            impactDescription = 'Allows planner to seek directly to the boundary leaf node.';
+            speedupGain = 'O(n) → O(log n) Seek';
+            projectedHealthScore = 80;
+          }
+        } else if (idx.name.includes('customers_email')) {
+          isOptimal = true;
+          recommendedAction = 'KEEP_OPTIMAL';
+          actionTitle = 'Retain Unique B-Tree Index';
+          reason = 'Unique constraint index active and serving customer lookups.';
+          impactDescription = 'O(log n) Unique B-Tree Seek.';
+          speedupGain = 'Active';
+          projectedHealthScore = currentHealth.score;
+        } else {
+          isOptimal = idx.active;
+          recommendedAction = idx.active ? 'KEEP_OPTIMAL' : 'ACTIVATE';
+          actionTitle = idx.active ? 'Retain Active Index' : 'Activate Index';
+          reason = idx.active ? 'Active index.' : 'Inactive index.';
+          impactDescription = 'Index seek optimization.';
+          speedupGain = 'Optimal';
+          projectedHealthScore = idx.active ? currentHealth.score : 80;
+        }
+
+        return {
+          id: `${tbl.name}-${idx.name}`,
+          tableName: tbl.name,
+          tableEntity: tbl.entityName,
+          indexName: idx.name,
+          indexType: idx.type,
+          columns: idx.columns,
+          currentActive: idx.active,
+          isRemoved,
+          isRedundant: redundant,
+          currentHealthScore: currentHealth.score,
+          currentHealthRating: currentHealth.rating,
+          currentBadgeClass: currentHealth.badgeClass,
+          projectedHealthScore,
+          isOptimal,
+          recommendedAction,
+          actionTitle,
+          reason,
+          impactDescription,
+          speedupGain
+        };
+      })
+    );
+
+    const pendingChanges = allListed.filter((item) => !item.isOptimal);
+    const totalCount = allListed.length;
+    const optimalCount = allListed.filter((item) => item.isOptimal).length;
+    const isFullyOptimized = pendingChanges.length === 0;
+
+    const currentAvgHealth = Math.round(
+      allListed.reduce((acc, item) => acc + item.currentHealthScore, 0) / (totalCount || 1)
+    );
+    const projectedAvgHealth = Math.round(
+      allListed.reduce((acc, item) => acc + item.projectedHealthScore, 0) / (totalCount || 1)
+    );
+    const healthGain = Math.max(0, projectedAvgHealth - currentAvgHealth);
+
+    return {
+      allListed,
+      pendingChanges,
+      totalCount,
+      optimalCount,
+      isFullyOptimized,
+      currentAvgHealth,
+      projectedAvgHealth,
+      healthGain
+    };
+  }, [tables, removedIndexes, flags, createdCompositeIndexes, createdCustomIndexes]);
+
+  // Single button handler to apply all calculated optimal improvements at once
+  const handleApplyBulkOptimize = () => {
+    setIsApplyingBulkOptimize(true);
+    setTimeout(() => {
+      // 1. Enable primary B-Tree indexing flags
+      if (!flags.btreeIndexing) {
+        onToggleFlag('btreeIndexing');
+      }
+      if (!flags.batchEagerLoading) {
+        onToggleFlag('batchEagerLoading');
+      }
+
+      // 2. Ensure composite indexes are activated
+      setCreatedCompositeIndexes(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+
+      // 3. Ensure custom bottleneck indexes are created
+      setCreatedCustomIndexes((prev) => Array.from(new Set([...prev, 'customer_email', 'amount'])));
+
+      // 4. Prune unutilized dead index (idx_transactions_date) to reclaim buffer cache & write latency
+      // and un-remove any essential indexes
+      setRemovedIndexes((prev) => {
+        const withoutEssentials = prev.filter((name) =>
+          !name.includes('PRIMARY KEY') &&
+          !name.includes('orders_status_cat') &&
+          !name.includes('email_status') &&
+          !name.includes('category_amount') &&
+          !name.includes('tx_price') &&
+          !name.includes('tier_created') &&
+          !name.includes('line_items_tx')
+        );
+        return Array.from(new Set([...withoutEssentials, 'idx_transactions_date']));
+      });
+
+      setIsApplyingBulkOptimize(false);
+      setAutoOptimizedCompleted(true);
+      setBulkOptimizeSuccessNotice(
+        `Bulk Optimization Complete: Applied ${bulkOptimizationPlan.pendingChanges.length} optimal changes across all tables! All ${bulkOptimizationPlan.totalCount} indexes are now in their optimal state with average schema health increased to ${bulkOptimizationPlan.projectedAvgHealth}/100.`
+      );
+      setTimeout(() => {
+        setBulkOptimizeSuccessNotice(null);
+      }, 7000);
+    }, 450);
+  };
+
+  // Real-time index search metrics and table isolation calculation for header filter
+  const headerSearchMetrics = useMemo(() => {
+    const queryLower = indexSearchQuery.trim().toLowerCase();
+    const totalIndexes = tables.reduce((acc, t) => acc + t.indexes.length, 0);
+
+    if (!queryLower) {
+      return {
+        totalIndexes,
+        matchingCount: totalIndexes,
+        isFiltering: false,
+        matchingTablesCount: tables.length,
+        tableMatches: {} as Record<string, number>
+      };
+    }
+
+    let matchingCount = 0;
+    const tableMatches: Record<string, number> = {};
+
+    tables.forEach((tbl) => {
+      const matchingIdxs = tbl.indexes.filter((idx) => {
+        const matchesName = idx.name.toLowerCase().includes(queryLower);
+        const matchesTargetTable =
+          tbl.name.toLowerCase().includes(queryLower) ||
+          (idx.targetTable && idx.targetTable.toLowerCase().includes(queryLower)) ||
+          (tbl.entityName && tbl.entityName.toLowerCase().includes(queryLower)) ||
+          (idx.targetEntity && idx.targetEntity.toLowerCase().includes(queryLower));
+        const matchesColumns = idx.columns.some((c) => c.toLowerCase().includes(queryLower));
+        const matchesType = idx.type.toLowerCase().includes(queryLower);
+        return matchesName || matchesTargetTable || matchesColumns || matchesType;
+      });
+
+      tableMatches[tbl.name] = matchingIdxs.length;
+      matchingCount += matchingIdxs.length;
+    });
+
+    const matchingTablesCount = Object.values(tableMatches).filter((c) => c > 0).length;
+
+    return {
+      totalIndexes,
+      matchingCount,
+      isFiltering: true,
+      matchingTablesCount,
+      tableMatches
+    };
+  }, [tables, indexSearchQuery]);
+
+  // Helper function to dynamically generate realistic PostgreSQL EXPLAIN mini-execution plan previews
+  // reflecting whether an index is currently active, unindexed, pruned, or redundant
+  const getMiniExecutionPlanPreview = (idxName: string, active: boolean, tableName: string) => {
+    const isRemoved = removedIndexes.includes(idxName);
+    const redundant = isIndexRedundant(idxName, []);
+
+    if (idxName.includes('PRIMARY KEY')) {
+      if (isRemoved) {
+        return {
+          nodeType: 'Seq Scan (Fallback)',
+          isOptimized: false,
+          cost: 'cost=0.00..1845.00 rows=1 width=142',
+          execTime: '38.4 ms',
+          scanMethod: 'O(n) Full Heap Scan',
+          cacheHit: '0% (Buffer Thrash)',
+          badgeText: '⚠️ Seq Scan Fallback',
+          badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+          querySql: `SELECT * FROM ${tableName} WHERE id = '018f3a9e-uuid';`,
+          planTree: `->  Seq Scan on ${tableName}  (cost=0.00..1845.00 rows=1 width=142)
+      Filter: (id = '018f3a9e-uuid'::uuid)
+      Rows Removed by Filter: 49999
+      Buffers: shared read=1845`
+        };
+      }
+      return {
+        nodeType: 'Index Scan (Clustered)',
+        isOptimized: true,
+        cost: 'cost=0.29..8.31 rows=1 width=142',
+        execTime: '0.04 ms',
+        scanMethod: 'O(1) Clustered Point Seek',
+        cacheHit: '100% Shared Cache',
+        badgeText: '⚡ O(1) Clustered Seek (0.04ms)',
+        badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+        querySql: `SELECT * FROM ${tableName} WHERE id = '018f3a9e-uuid';`,
+        planTree: `->  Index Scan using PRIMARY KEY on ${tableName}  (cost=0.29..8.31 rows=1 width=142)
+      Index Cond: (id = '018f3a9e-uuid'::uuid)
+      Buffers: shared hit=3`
+      };
+    }
+
+    if (idxName === 'idx_transactions_date') {
+      if (isRemoved) {
+        return {
+          nodeType: 'Pruned Index (Zero Overhead)',
+          isOptimized: true,
+          cost: 'write_penalty=0.00ms rows=0',
+          execTime: '0.00 ms (Write Reclaimed)',
+          scanMethod: '+14% Faster INSERT / UPDATE',
+          cacheHit: '2.4 MB Cache Freed',
+          badgeText: '✓ Pruned (+14% Write Speedup)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `-- Unutilized index successfully dropped from buffer pool`,
+          planTree: `->  Index Pruned from Physical Storage
+      Disk Space Saved: 2.4 MB
+      Write Amplification Penalty: 0% (was +14% write cost per tx)
+      Audit Trace: 0 hits in past 14,200 workload queries`
+        };
+      }
+      return {
+        nodeType: 'Bitmap Index Scan (Unutilized)',
+        isOptimized: false,
+        cost: 'cost=12.50..890.00 rows=12000 width=142',
+        execTime: '185.0 ms',
+        scanMethod: 'Low Selectivity (+14% Write Drag)',
+        cacheHit: 'High Cache Pollution',
+        badgeText: '⚠️ Unutilized (0 Hits / 100 Qs)',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT * FROM transactions WHERE created_at >= NOW() - INTERVAL '1 day';`,
+        planTree: `->  Bitmap Heap Scan on transactions  (cost=12.50..890.00 rows=12000)
+      Recheck Cond: (created_at >= '2026-09-28'::timestamp)
+      ->  Bitmap Index Scan on idx_transactions_date  (cost=0.00..12.50)
+      Notice: Zero hits recorded across recent production traffic`
+      };
+    }
+
+    if (idxName.includes('orders_status_cat')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'Index Scan (Composite B-Tree)',
+          isOptimized: true,
+          cost: 'cost=0.42..12.30 rows=45 width=128',
+          execTime: '1.2 ms',
+          scanMethod: 'O(log n) Composite Range Seek',
+          cacheHit: '100% Buffer Cache Hit',
+          badgeText: '⚡ 1.2ms (99.7% Latency Cut)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT * FROM transactions WHERE status = 'pending' AND category = 'Electronics' LIMIT 50;`,
+          planTree: `->  Index Scan using idx_orders_status_cat on transactions  (cost=0.42..12.30 rows=45 width=128)
+      Index Cond: ((status = 'pending'::text) AND (category = 'Electronics'::text))
+      Buffers: shared hit=4`
+        };
+      }
+      return {
+        nodeType: 'Seq Scan (Unindexed Filter)',
+        isOptimized: false,
+        cost: 'cost=0.00..1520.00 rows=45 width=128',
+        execTime: '412.0 ms',
+        scanMethod: 'O(n) Full Table Scan Fallback',
+        cacheHit: 'Reads 50,000 Heap Rows',
+        badgeText: '⚠️ 412ms Full Table Scan',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT * FROM transactions WHERE status = 'pending' AND category = 'Electronics' LIMIT 50;`,
+        planTree: `->  Seq Scan on transactions  (cost=0.00..1520.00 rows=50000 width=128)
+      Filter: ((status = 'pending'::text) AND (category = 'Electronics'::text))
+      Rows Removed by Filter: 49955
+      Buffers: shared read=1520`
+      };
+    }
+
+    if (idxName.includes('line_items_tx')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'Hash Join (Indexed FK Seek)',
+          isOptimized: true,
+          cost: 'cost=8.45..42.10 rows=350 width=88',
+          execTime: '1.8 ms',
+          scanMethod: 'O(1) Batched Foreign Key Seek',
+          cacheHit: 'N+1 Storm Eliminated',
+          badgeText: '⚡ 1.8ms (233x Faster)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT li.* FROM line_items li INNER JOIN transactions t ON li.transaction_id = t.id WHERE t.id IN (?);`,
+          planTree: `->  Hash Join  (cost=8.45..42.10 rows=350 width=88)
+      Hash Cond: (li.transaction_id = t.id)
+      ->  Index Scan using idx_line_items_tx on line_items li  (cost=0.42..32.10)
+            Index Cond: (transaction_id = ANY('{...}'::uuid[]))`
+        };
+      }
+      return {
+        nodeType: 'Nested Loop (Seq Scan per Row)',
+        isOptimized: false,
+        cost: 'cost=0.00..4120.00 rows=350 width=88',
+        execTime: '420.0 ms',
+        scanMethod: 'N+1 Query Storm (100+ roundtrips)',
+        cacheHit: '100+ Table Scans',
+        badgeText: '⚠️ 420ms N+1 Cascade',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT li.* FROM line_items li INNER JOIN transactions t ON li.transaction_id = t.id WHERE t.id IN (?);`,
+        planTree: `->  Nested Loop  (cost=0.00..4120.00 rows=350 width=88)
+      ->  Seq Scan on transactions t
+      ->  Seq Scan on line_items li
+            Filter: (transaction_id = t.id)  -- Executed 100+ times!`
+      };
+    }
+
+    if (idxName.includes('email_status')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'Index Scan (Compound B-Tree)',
+          isOptimized: true,
+          cost: 'cost=0.42..8.45 rows=12 width=142',
+          execTime: '1.6 ms',
+          scanMethod: 'O(log n) Dual Equality Leaf Seek',
+          cacheHit: 'Zero Heap Cache Churn',
+          badgeText: '⚡ 1.6ms (246x Faster)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT * FROM transactions WHERE customer_email = 'alice@example.com' AND status = 'completed';`,
+          planTree: `->  Index Scan using idx_transactions_email_status on transactions  (cost=0.42..8.45 rows=12)
+      Index Cond: ((customer_email = 'alice@example.com'::text) AND (status = 'completed'::text))
+      Buffers: shared hit=3`
+        };
+      }
+      return {
+        nodeType: 'Seq Scan (Missing Composite)',
+        isOptimized: false,
+        cost: 'cost=0.00..1845.00 rows=12 width=142',
+        execTime: '395.0 ms',
+        scanMethod: 'O(n) Table Scan Fallback',
+        cacheHit: 'Full 50k Table Traversal',
+        badgeText: '⚠️ 395ms Table Scan',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT * FROM transactions WHERE customer_email = 'alice@example.com' AND status = 'completed';`,
+        planTree: `->  Seq Scan on transactions  (cost=0.00..1845.00 rows=50000 width=142)
+      Filter: ((customer_email = 'alice@example.com'::text) AND (status = 'completed'::text))
+      Rows Removed by Filter: 49988`
+      };
+    }
+
+    if (idxName.includes('category_amount')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'GroupAggregate + Index Scan',
+          isOptimized: true,
+          cost: 'cost=0.42..15.60 rows=1 width=48',
+          execTime: '1.9 ms',
+          scanMethod: 'O(log n) Leaf Range Seek',
+          cacheHit: 'In-Index Aggregation',
+          badgeText: '⚡ 1.9ms (253x Faster)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT category, AVG(amount), COUNT(*) FROM transactions WHERE category = 'Books' AND amount > 50 GROUP BY category;`,
+          planTree: `->  GroupAggregate  (cost=0.42..15.60 rows=1 width=48)
+      Group Key: category
+      ->  Index Scan using idx_transactions_category_amount on transactions
+            Index Cond: ((category = 'Books'::text) AND (amount > 50.00))`
+        };
+      }
+      return {
+        nodeType: 'HashAggregate + Seq Scan',
+        isOptimized: false,
+        cost: 'cost=1520.00..1890.00 rows=1 width=48',
+        execTime: '482.0 ms',
+        scanMethod: 'Hash Spill to Disk Buffer',
+        cacheHit: '38.4% CPU Share',
+        badgeText: '⚠️ 482ms Hash Spill',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT category, AVG(amount), COUNT(*) FROM transactions WHERE category = 'Books' AND amount > 50 GROUP BY category;`,
+        planTree: `->  HashAggregate  (cost=1520.00..1890.00 rows=1 width=48)
+      Group Key: category
+      ->  Seq Scan on transactions
+            Filter: ((category = 'Books'::text) AND (amount > 50.00))`
+      };
+    }
+
+    if (idxName.includes('line_items_tx_price')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'Index Only Scan (Covering Composite)',
+          isOptimized: true,
+          cost: 'cost=0.42..14.30 rows=40 width=88',
+          execTime: '1.5 ms',
+          scanMethod: 'O(log n) Covering Composite Seek',
+          cacheHit: '0 Table Heap Fetches',
+          badgeText: '⚡ 1.5ms (185x Faster)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT li.sku, li.quantity, li.unit_price FROM line_items li WHERE li.transaction_id = '018f3a9e-uuid' AND li.unit_price >= 50.00;`,
+          planTree: `->  Index Only Scan using idx_line_items_tx_price on line_items li  (cost=0.42..14.30 rows=40)
+      Index Cond: ((transaction_id = '018f3a9e-uuid'::uuid) AND (unit_price >= 50.00))
+      Heap Fetches: 0`
+        };
+      }
+      return {
+        nodeType: 'Nested Loop + Seq Scan (Uncovered)',
+        isOptimized: false,
+        cost: 'cost=0.00..2800.00 rows=40 width=88',
+        execTime: '280.0 ms',
+        scanMethod: 'Sequential Heap Page Traversal',
+        cacheHit: '1,200 Heap Fetches',
+        badgeText: '⚠️ 280ms Unindexed Join Filter',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT li.sku, li.quantity, li.unit_price FROM line_items li WHERE li.transaction_id = '018f3a9e-uuid' AND li.unit_price >= 50.00;`,
+        planTree: `->  Seq Scan on line_items li  (cost=0.00..2800.00 rows=200000 width=88)
+      Filter: ((transaction_id = '018f3a9e-uuid'::uuid) AND (unit_price >= 50.00))`
+      };
+    }
+
+    if (idxName.includes('customers_tier_created')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'Index Scan Backward (Pre-Sorted)',
+          isOptimized: true,
+          cost: 'cost=0.42..12.50 rows=50 width=128',
+          execTime: '1.2 ms',
+          scanMethod: 'Early Exit Zero-Sort Seek',
+          cacheHit: '100% In-Order Leaf Traversal',
+          badgeText: '⚡ 1.2ms (140x Faster)',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT id, name, email, tier FROM customers WHERE tier = 'enterprise' ORDER BY created_at DESC LIMIT 50;`,
+          planTree: `->  Limit  (cost=0.42..12.50 rows=50 width=128)
+      ->  Index Scan Backward using idx_customers_tier_created on customers
+            Index Cond: (tier = 'enterprise'::text)
+      Buffers: shared hit=4`
+        };
+      }
+      return {
+        nodeType: 'Sort Buffer Spill + Seq Scan',
+        isOptimized: false,
+        cost: 'cost=160.00..165.00 rows=50 width=128',
+        execTime: '165.0 ms',
+        scanMethod: 'In-Memory Sort Buffer Spill',
+        cacheHit: 'Filesort on Disk WorkMem',
+        badgeText: '⚠️ 165ms Sort Buffer Spill',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT id, name, email, tier FROM customers WHERE tier = 'enterprise' ORDER BY created_at DESC LIMIT 50;`,
+        planTree: `->  Limit  (cost=160.00..165.00 rows=50 width=128)
+      ->  Sort  (cost=155.00..160.00)  Sort Key: created_at DESC
+            Sort Method: external merge  Disk: 420kB
+            ->  Seq Scan on customers  Filter: (tier = 'enterprise'::text)`
+      };
+    }
+
+    if (idxName.includes('email_missing') || idxName.includes('customer_email')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: redundant ? 'Index Scan (Shadowed)' : 'Index Scan (Single Column)',
+          isOptimized: !redundant,
+          cost: 'cost=0.42..14.20 rows=12 width=142',
+          execTime: redundant ? '2.4 ms (Redundant)' : '1.8 ms',
+          scanMethod: 'O(log n) Single-Column Seek',
+          cacheHit: redundant ? 'Covered by composite' : '99.2% Hit Rate',
+          badgeText: redundant ? '⚠️ Redundant Coverage' : '⚡ 1.8ms Index Seek',
+          badgeClass: redundant ? 'bg-amber-950/80 text-amber-300 border-amber-800' : 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT * FROM transactions WHERE customer_email = 'alice@example.com';`,
+          planTree: `->  Index Scan using idx_transactions_email on transactions  (cost=0.42..14.20 rows=12)
+      Index Cond: (customer_email = 'alice@example.com'::text)`
+        };
+      }
+      return {
+        nodeType: 'Seq Scan (Missing Index)',
+        isOptimized: false,
+        cost: 'cost=0.00..1845.00 rows=12 width=142',
+        execTime: '395.0 ms',
+        scanMethod: 'O(n) Table Scan',
+        cacheHit: 'Heap Scan on 50k rows',
+        badgeText: '⚠️ 395ms Table Scan',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT * FROM transactions WHERE customer_email = 'alice@example.com';`,
+        planTree: `->  Seq Scan on transactions  (cost=0.00..1845.00 rows=50000 width=142)
+      Filter: (customer_email = 'alice@example.com'::text)`
+      };
+    }
+
+    if (idxName.includes('amount_missing') || idxName.includes('amount')) {
+      if (active && !isRemoved) {
+        return {
+          nodeType: 'Index Scan Backward (Ordered B-Tree)',
+          isOptimized: true,
+          cost: 'cost=0.42..42.10 rows=20 width=142',
+          execTime: '0.8 ms',
+          scanMethod: 'O(log n) Boundary Leaf Scan',
+          cacheHit: 'Eliminates Disk Sort',
+          badgeText: '⚡ 0.8ms Range Seek',
+          badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+          querySql: `SELECT * FROM transactions WHERE amount > 500.00 ORDER BY amount DESC LIMIT 20;`,
+          planTree: `->  Limit  (cost=0.42..42.10 rows=20)
+      ->  Index Scan Backward using idx_transactions_amount on transactions
+            Index Cond: (amount > 500.00)`
+        };
+      }
+      return {
+        nodeType: 'Top-N Sort + Seq Scan',
+        isOptimized: false,
+        cost: 'cost=1845.00..2150.00 rows=20 width=142',
+        execTime: '142.0 ms',
+        scanMethod: 'In-Memory Sort Spill',
+        cacheHit: '50k rows sorted',
+        badgeText: '⚠️ 142ms Sort Spill',
+        badgeClass: 'bg-rose-900/60 text-rose-300 border-rose-700',
+        querySql: `SELECT * FROM transactions WHERE amount > 500.00 ORDER BY amount DESC LIMIT 20;`,
+        planTree: `->  Top-N Sort  (cost=1845.00..2150.00 rows=20)
+      Sort Key: amount DESC
+      ->  Seq Scan on transactions  Filter: (amount > 500.00)`
+      };
+    }
+
+    if (idxName.includes('customers_email')) {
+      return {
+        nodeType: 'Index Scan (Unique B-Tree)',
+        isOptimized: true,
+        cost: 'cost=0.29..8.31 rows=1 width=96',
+        execTime: '0.05 ms',
+        scanMethod: 'O(log n) Unique Key Seek',
+        cacheHit: '100% Cache Hit',
+        badgeText: '⚡ 0.05ms Unique Seek',
+        badgeClass: 'bg-emerald-950/80 text-emerald-300 border-emerald-800',
+        querySql: `SELECT * FROM customers WHERE email = 'user@example.com';`,
+        planTree: `->  Index Scan using idx_customers_email on customers  (cost=0.29..8.31 rows=1 width=96)
+      Index Cond: (email = 'user@example.com'::text)`
+      };
+    }
+
+    // Default fallback plan
+    return {
+      nodeType: active ? 'Index Scan' : 'Seq Scan',
+      isOptimized: active,
+      cost: active ? 'cost=0.42..18.40 rows=10' : 'cost=0.00..1845.00 rows=10',
+      execTime: active ? '1.4 ms' : '150.0 ms',
+      scanMethod: active ? 'O(log n) Seek' : 'O(n) Scan',
+      cacheHit: active ? '100% Cache' : 'Disk Read',
+      badgeText: active ? '⚡ 1.4ms Seek' : '⚠️ 150ms Scan',
+      badgeClass: active ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800' : 'bg-rose-900/60 text-rose-300 border-rose-700',
+      querySql: `SELECT * FROM ${tableName} LIMIT 20;`,
+      planTree: active
+        ? `->  Index Scan using ${idxName} on ${tableName}  (cost=0.42..18.40 rows=10)`
+        : `->  Seq Scan on ${tableName}  (cost=0.00..1845.00 rows=50000)`
     };
   };
 
@@ -1169,9 +2133,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       );
     }
     return (
-      <div className="grid grid-cols-1 lg:grid-cols-4 min-h-[500px]">
+      <div className={`grid grid-cols-1 min-h-[500px] ${showAiSuggestionsSidePanel ? 'lg:grid-cols-12' : 'lg:grid-cols-4'}`}>
         {/* Left Sidebar: Table List */}
-        <div className="p-4 bg-zinc-50/80 border-r border-zinc-200 space-y-2">
+        <div className={`p-4 bg-zinc-50/80 border-r border-zinc-200 space-y-2 ${showAiSuggestionsSidePanel ? 'lg:col-span-2' : 'lg:col-span-1'}`}>
           <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3 px-2">
             Database Tables ({tables.length})
           </h3>
@@ -1191,7 +2155,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 <div className="flex items-center gap-2.5">
                   <Table className={`w-4 h-4 ${isSelected ? 'text-indigo-200' : 'text-indigo-600'}`} />
                   <div>
-                    <div className="font-mono font-bold text-xs">{tbl.name}</div>
+                    <div className="font-mono font-bold text-xs flex items-center gap-1.5">
+                      <span>{tbl.name}</span>
+                      {headerSearchMetrics.isFiltering && (
+                        <span className={`text-[9px] font-mono font-bold px-1.5 py-0.2 rounded-full ${
+                          (headerSearchMetrics.tableMatches[tbl.name] || 0) > 0
+                            ? isSelected
+                              ? 'bg-indigo-900 text-indigo-100'
+                              : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                            : 'bg-zinc-200 text-zinc-500'
+                        }`}>
+                          {headerSearchMetrics.tableMatches[tbl.name] || 0} match
+                        </span>
+                      )}
+                    </div>
                     <div className={`text-[10px] ${isSelected ? 'text-indigo-200' : 'text-zinc-500'}`}>
                       {tbl.columns.length} columns • {tbl.indexes.length} indexes
                     </div>
@@ -1227,21 +2204,39 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             <p className="text-zinc-600 text-[11px] leading-relaxed">
               Workload engine detected table join &amp; filter clause bottlenecks. Inspect the &ldquo;Why&rdquo; behind each recommendation.
             </p>
-            <button
-              type="button"
-              id="btn-sidebar-open-suggestions-why"
-              data-testid="btn-sidebar-open-suggestions-why"
-              onClick={() => setShowSuggestIndexesModal(true)}
-              className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg text-[11px] cursor-pointer transition-colors shadow-2xs flex items-center justify-center gap-1"
-            >
-              <span>Open &apos;Why&apos; Side-Panel Summary</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
+            <div className="flex flex-col gap-1.5 pt-1">
+              <button
+                type="button"
+                id="btn-sidebar-open-ai-side-panel"
+                data-testid="btn-sidebar-open-ai-side-panel"
+                onClick={() => setShowAiSuggestionsSidePanel(true)}
+                className="w-full py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold rounded-lg text-[11px] cursor-pointer transition-all shadow-2xs flex items-center justify-center gap-1"
+                title="Display AI-Driven Index Suggestion side panel in Explorer view"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                <span>AI Suggestions Side Panel</span>
+                <span className="font-mono text-[9px] bg-white/20 px-1 rounded ml-0.5">
+                  {showAiSuggestionsSidePanel ? 'Active' : 'Open'}
+                </span>
+              </button>
+              <button
+                type="button"
+                id="btn-sidebar-open-suggestions-why"
+                data-testid="btn-sidebar-open-suggestions-why"
+                onClick={() => setShowSuggestIndexesModal(true)}
+                className="w-full py-1.5 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 font-semibold rounded-lg text-[11px] cursor-pointer transition-colors shadow-2xs flex items-center justify-center gap-1"
+              >
+                <span>Full Diagnostics Modal</span>
+                <ArrowRight className="w-3 h-3 text-zinc-400" />
+              </button>
+            </div>
           </div>
         </div>
 
-        {/* Right Main Area: Table Schema & Index Audit */}
-        <div className="lg:col-span-3 p-6 space-y-6 overflow-y-auto">
+        {/* Center Main Area: Table Schema & Index Audit */}
+        <div className={`p-6 space-y-6 overflow-y-auto ${
+          showAiSuggestionsSidePanel ? 'lg:col-span-6 xl:col-span-6' : 'lg:col-span-3'
+        }`}>
           {/* Estimated Speed-Up Visual Gauge */}
           <div className="p-4 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 rounded-2xl border border-indigo-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -1456,6 +2451,220 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   <ChevronUp className="w-3.5 h-3.5 text-zinc-500" />
                   <span>Collapse All</span>
                 </button>
+
+                {/* Show Query Impact Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-toggle-query-impact-quick"
+                  data-testid="btn-toggle-query-impact-quick"
+                  onClick={() => setShowQueryImpact(!showQueryImpact)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    showQueryImpact
+                      ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs ring-1 ring-indigo-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Toggle dynamic mini-execution plan previews directly under each index listing"
+                >
+                  <Activity className={`w-3.5 h-3.5 ${showQueryImpact ? 'text-white' : 'text-indigo-600'}`} />
+                  <span>Show Query Impact</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showQueryImpact ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-600'}`}>
+                    {showQueryImpact ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+
+                {/* Quick Bulk Optimize Button */}
+                <button
+                  type="button"
+                  id="btn-quick-bulk-optimize"
+                  data-testid="btn-quick-bulk-optimize"
+                  onClick={handleApplyBulkOptimize}
+                  disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all ${
+                    bulkOptimizationPlan.isFullyOptimized
+                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                      : 'bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white shadow-xs'
+                  }`}
+                  title="Calculate optimal changes for all listed indexes and apply all improvements at once"
+                >
+                  <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                  <span>
+                    {bulkOptimizationPlan.isFullyOptimized
+                      ? '✓ All Optimal'
+                      : `Bulk Optimize (${bulkOptimizationPlan.pendingChanges.length})`}
+                  </span>
+                </button>
+
+                {/* AI Suggestions Side Panel Quick Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-toggle-ai-sidepanel-quick"
+                  data-testid="btn-toggle-ai-sidepanel-quick"
+                  onClick={() => setShowAiSuggestionsSidePanel(!showAiSuggestionsSidePanel)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    showAiSuggestionsSidePanel
+                      ? 'bg-purple-600 text-white border-purple-700 shadow-xs ring-1 ring-purple-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Toggle AI-Driven Index Suggestion side panel in Explorer view"
+                >
+                  <Sparkles className={`w-3.5 h-3.5 ${showAiSuggestionsSidePanel ? 'text-amber-300' : 'text-purple-600'}`} />
+                  <span>AI Suggestions</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showAiSuggestionsSidePanel ? 'bg-white/20 text-white' : 'bg-purple-100 text-purple-700'}`}>
+                    {showAiSuggestionsSidePanel ? 'OPEN' : '4'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Bulk Optimize Success Notification Banner */}
+            {bulkOptimizeSuccessNotice && (
+              <div
+                id="bulk-optimize-success-notification"
+                data-testid="bulk-optimize-success-notification"
+                className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between gap-3 text-xs text-emerald-950 animate-fadeIn shadow-xs"
+              >
+                <div className="flex items-center gap-2.5">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                  <div>
+                    <strong className="font-bold text-emerald-900">Bulk Optimization Applied Successfully!</strong>
+                    <p className="text-[11px] text-emerald-800 mt-0.5">{bulkOptimizeSuccessNotice}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBulkOptimizeSuccessNotice(null)}
+                  className="text-emerald-700 hover:text-emerald-950 p-1 rounded cursor-pointer"
+                  title="Dismiss notice"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Bulk Schema Optimizer Feature Banner & Single Action Button */}
+            <div
+              id="bulk-optimize-container"
+              data-testid="bulk-optimize-container"
+              className="p-4 bg-gradient-to-r from-emerald-50/95 via-teal-50/70 to-indigo-50/85 border border-emerald-200 rounded-2xl shadow-xs space-y-3.5"
+            >
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3.5">
+                <div className="flex items-start sm:items-center gap-3">
+                  <div className="p-2.5 bg-gradient-to-br from-emerald-600 to-indigo-700 text-white rounded-xl shadow-xs shrink-0 mt-0.5 sm:mt-0">
+                    <Zap className="w-5 h-5 fill-amber-300 text-amber-300" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-900 flex items-center gap-1.5 font-sans">
+                        <span>Bulk Schema Optimizer</span>
+                      </h4>
+                      {bulkOptimizationPlan.isFullyOptimized ? (
+                        <span className="font-mono text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span>All {bulkOptimizationPlan.totalCount} Indexes In Optimal State</span>
+                        </span>
+                      ) : (
+                        <span className="font-mono text-[10px] bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full border border-amber-300 flex items-center gap-1 shadow-2xs animate-pulse">
+                          <Sparkles className="w-3 h-3 text-amber-600" />
+                          <span>{bulkOptimizationPlan.pendingChanges.length} Recommended Changes Calculated</span>
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-zinc-600 mt-0.5 leading-relaxed">
+                      Evaluates all listed indexes across tables to calculate the mathematically optimal set of changes (activating missing foreign/composite keys and pruning dead indexes).
+                    </p>
+                  </div>
+                </div>
+
+                {/* The Single Button to Apply All Recommended Improvements At Once */}
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  <button
+                    type="button"
+                    id="btn-view-bulk-optimizer-calculation"
+                    data-testid="btn-view-bulk-optimizer-calculation"
+                    onClick={() => setShowBulkOptimizeModal(true)}
+                    className="px-3 py-2 bg-white hover:bg-zinc-50 border border-emerald-300 text-emerald-950 rounded-xl text-xs font-bold cursor-pointer transition-all shadow-2xs flex items-center gap-1.5"
+                    title="Inspect calculated optimal changes breakdown for all listed indexes"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>View Calculations ({bulkOptimizationPlan.pendingChanges.length} Pending)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    id="btn-apply-bulk-optimize"
+                    data-testid="btn-apply-bulk-optimize"
+                    onClick={handleApplyBulkOptimize}
+                    disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all shadow-xs flex items-center gap-2 ${
+                      bulkOptimizationPlan.isFullyOptimized
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default opacity-90'
+                        : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white hover:shadow-md'
+                    }`}
+                    title="Apply all calculated optimal changes across all listed indexes in a single atomic batch"
+                  >
+                    {isApplyingBulkOptimize ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+                        <span>Applying Optimal Schema Changes...</span>
+                      </>
+                    ) : bulkOptimizationPlan.isFullyOptimized ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        <span>Schema Fully Optimized (Avg {bulkOptimizationPlan.currentAvgHealth}/100)</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-4 h-4 fill-amber-300 text-amber-300" />
+                        <span>Apply All Recommended Improvements ({bulkOptimizationPlan.pendingChanges.length} Changes)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Calculated Metrics Summary Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-emerald-200/70 text-xs">
+                <div className="bg-white/95 p-2.5 rounded-xl border border-emerald-100 flex flex-col justify-between shadow-2xs">
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Schema Health Score</span>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <span className="font-mono font-bold text-zinc-900 text-sm">{bulkOptimizationPlan.currentAvgHealth}/100</span>
+                    <ArrowRight className="w-3 h-3 text-zinc-400" />
+                    <span className="font-mono font-bold text-emerald-700 text-sm">
+                      {bulkOptimizationPlan.isFullyOptimized ? 'Optimal' : `${bulkOptimizationPlan.projectedAvgHealth}/100`}
+                    </span>
+                    {!bulkOptimizationPlan.isFullyOptimized && (
+                      <span className="text-[10px] font-mono text-emerald-600 font-bold bg-emerald-50 px-1 rounded">
+                        +{bulkOptimizationPlan.healthGain} pts
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-white/95 p-2.5 rounded-xl border border-emerald-100 flex flex-col justify-between shadow-2xs">
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Optimal vs Total</span>
+                  <div className="flex items-center gap-1.5 mt-1 font-mono font-bold text-sm">
+                    <span className={bulkOptimizationPlan.isFullyOptimized ? 'text-emerald-700' : 'text-amber-700'}>
+                      {bulkOptimizationPlan.optimalCount} / {bulkOptimizationPlan.totalCount} Indexes
+                    </span>
+                    <span className="text-[10px] text-zinc-500 font-sans font-normal">
+                      ({Math.round((bulkOptimizationPlan.optimalCount / bulkOptimizationPlan.totalCount) * 100)}%)
+                    </span>
+                  </div>
+                </div>
+
+                <div className="bg-white/95 p-2.5 rounded-xl border border-emerald-100 flex flex-col justify-between shadow-2xs">
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Query Latency Gain</span>
+                  <div className="flex items-center gap-1 mt-1 font-mono font-bold text-emerald-700 text-sm">
+                    <span>Up to 99.6% Speedup</span>
+                  </div>
+                </div>
+
+                <div className="bg-white/95 p-2.5 rounded-xl border border-emerald-100 flex flex-col justify-between shadow-2xs">
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Write I/O Overhead</span>
+                  <div className="flex items-center gap-1 mt-1 font-mono font-bold text-indigo-700 text-sm">
+                    <span>+14% Latency Saved</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -2013,6 +3222,61 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                     </div>
                                   )}
 
+                                  {/* Dynamic Mini-Execution Plan Preview under each index listing */}
+                                  {showQueryImpact && (() => {
+                                    const plan = getMiniExecutionPlanPreview(idx.name, idx.active, tbl.name);
+                                    return (
+                                      <div
+                                        id={`mini-plan-${idx.name}`}
+                                        data-testid={`mini-plan-${idx.name}`}
+                                        className="my-2 p-3 bg-zinc-950 text-zinc-100 rounded-xl border border-zinc-800 shadow-inner font-mono text-[11px] space-y-2 animate-fadeIn"
+                                      >
+                                        <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5 flex-wrap gap-1 font-sans">
+                                          <div className="flex items-center gap-1.5 text-zinc-300">
+                                            <Activity className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                                            <span className="font-bold text-[10px] uppercase tracking-wider text-zinc-300">
+                                              Mini-Execution Plan (EXPLAIN)
+                                            </span>
+                                          </div>
+                                          <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border shadow-2xs ${plan.badgeClass}`}>
+                                            {plan.badgeText}
+                                          </span>
+                                        </div>
+
+                                        {/* Visual Execution Tree */}
+                                        <div className="space-y-1">
+                                          <pre className="text-emerald-300/90 text-[10px] leading-relaxed whitespace-pre-wrap font-mono bg-black/60 p-2.5 rounded-lg border border-zinc-800/80">
+                                            {plan.planTree}
+                                          </pre>
+                                        </div>
+
+                                        {/* Planner Cost & Latency Metrics */}
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 text-[9.5px] font-mono text-zinc-400 pt-0.5">
+                                          <div className="bg-zinc-900/90 p-1.5 rounded border border-zinc-800/80 flex items-center justify-between">
+                                            <span className="text-zinc-500 font-sans">Planner Cost:</span>
+                                            <span className="text-zinc-200 font-bold truncate ml-1">{plan.cost.split(' ')[0].replace('cost=', '')}</span>
+                                          </div>
+                                          <div className="bg-zinc-900/90 p-1.5 rounded border border-zinc-800/80 flex items-center justify-between">
+                                            <span className="text-zinc-500 font-sans">Exec Latency:</span>
+                                            <span className={plan.isOptimized ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                                              {plan.execTime}
+                                            </span>
+                                          </div>
+                                          <div className="bg-zinc-900/90 p-1.5 rounded border border-zinc-800/80 flex items-center justify-between">
+                                            <span className="text-zinc-500 font-sans">Scan Method:</span>
+                                            <span className="text-indigo-300 font-bold truncate ml-1">{plan.scanMethod}</span>
+                                          </div>
+                                        </div>
+
+                                        {/* Target Query Preview */}
+                                        <div className="text-[10px] text-zinc-400 pt-1 border-t border-zinc-800/80 truncate">
+                                          <span className="text-zinc-500 font-sans">Target Query: </span>
+                                          <code className="text-zinc-300 text-[10px] font-mono">{plan.querySql}</code>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+
                                   <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
                                     <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
                                       {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
@@ -2133,6 +3397,362 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             </div>
           </div>
         </div>
+
+        {/* 'AI-Driven Index Suggestion' Side Panel */}
+        {showAiSuggestionsSidePanel ? (
+          <div
+            id="ai-driven-index-suggestion-side-panel"
+            data-testid="ai-driven-index-suggestion-side-panel"
+            className="lg:col-span-4 xl:col-span-4 border-t lg:border-t-0 lg:border-l border-zinc-200 bg-gradient-to-b from-indigo-50/40 via-white to-zinc-50/50 p-4 sm:p-5 space-y-4 overflow-y-auto flex flex-col max-h-[750px] lg:max-h-none"
+          >
+            {/* Side Panel Header */}
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-zinc-200">
+              <div className="flex items-start gap-2.5">
+                <div className="p-2 bg-gradient-to-br from-indigo-600 via-purple-600 to-indigo-800 text-white rounded-xl shadow-xs shrink-0 mt-0.5">
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <h3 className="text-sm font-bold text-zinc-900 tracking-tight">
+                      AI-Driven Index Suggestions
+                    </h3>
+                    <span className="font-mono text-[9px] bg-purple-100 text-purple-800 font-bold px-1.5 py-0.2 rounded border border-purple-200">
+                      Query History AI
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">
+                    Analyzed 14,200 user query patterns in history to uncover high-impact composite index opportunities.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="btn-close-ai-side-panel"
+                data-testid="btn-close-ai-side-panel"
+                onClick={() => setShowAiSuggestionsSidePanel(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-md hover:bg-zinc-100 cursor-pointer transition-colors shrink-0"
+                title="Collapse AI-Driven Index Suggestion side panel"
+                aria-label="Collapse side panel"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Query History Analytics Strip */}
+            <div className="p-3 bg-white rounded-xl border border-indigo-100 shadow-2xs space-y-2.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-zinc-700 flex items-center gap-1.5">
+                  <Activity className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Historical Query Pattern Scope</span>
+                </span>
+                <span className="font-mono font-bold text-indigo-900 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                  14,200 Query Traces
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 bg-zinc-50 rounded-lg border border-zinc-100">
+                  <div className="text-[10px] text-zinc-500 font-medium">Opportunities</div>
+                  <div className="font-mono font-bold text-xs text-purple-700 mt-0.5">
+                    {compositeIndexOpportunities.length} Composite
+                  </div>
+                </div>
+                <div className="p-2 bg-zinc-50 rounded-lg border border-zinc-100">
+                  <div className="text-[10px] text-zinc-500 font-medium">Applied State</div>
+                  <div className="font-mono font-bold text-xs text-emerald-700 mt-0.5">
+                    {compositeIndexOpportunities.filter(o => o.isApplied).length} of {compositeIndexOpportunities.length} Active
+                  </div>
+                </div>
+                <div className="p-2 bg-zinc-50 rounded-lg border border-zinc-100">
+                  <div className="text-[10px] text-zinc-500 font-medium">Max Speedup</div>
+                  <div className="font-mono font-bold text-xs text-indigo-700 mt-0.5">
+                    253x Faster
+                  </div>
+                </div>
+              </div>
+
+              {/* Single Click Batch Action */}
+              <button
+                type="button"
+                id="btn-apply-all-composite-opportunities"
+                data-testid="btn-apply-all-composite-opportunities"
+                onClick={() => {
+                  setCreatedCompositeIndexes(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+                  setBulkOptimizeSuccessNotice('Successfully applied all 4 AI-recommended composite indexes across transactions, line_items, and customers!');
+                  setTimeout(() => setBulkOptimizeSuccessNotice(null), 5000);
+                }}
+                disabled={compositeIndexOpportunities.every(o => o.isApplied)}
+                className={`w-full py-1.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer ${
+                  compositeIndexOpportunities.every(o => o.isApplied)
+                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 cursor-default'
+                    : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                <span>
+                  {compositeIndexOpportunities.every(o => o.isApplied)
+                    ? '✓ All Composite Opportunities Active'
+                    : `Apply All ${compositeIndexOpportunities.filter(o => !o.isApplied).length} Composite Opportunities`}
+                </span>
+              </button>
+            </div>
+
+            {/* Table Filter Tabs */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] font-semibold text-zinc-500 mr-1 flex items-center gap-1">
+                <Filter className="w-3 h-3" />
+                <span>Filter:</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setCompositePatternFilter('all')}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                  compositePatternFilter === 'all'
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-white hover:bg-zinc-100 text-zinc-600 border border-zinc-200'
+                }`}
+              >
+                All ({compositeIndexOpportunities.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompositePatternFilter('transactions')}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                  compositePatternFilter === 'transactions'
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-white hover:bg-zinc-100 text-zinc-600 border border-zinc-200'
+                }`}
+              >
+                transactions (2)
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompositePatternFilter('line_items')}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                  compositePatternFilter === 'line_items'
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-white hover:bg-zinc-100 text-zinc-600 border border-zinc-200'
+                }`}
+              >
+                line_items (1)
+              </button>
+              <button
+                type="button"
+                onClick={() => setCompositePatternFilter('customers')}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition-all cursor-pointer ${
+                  compositePatternFilter === 'customers'
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-white hover:bg-zinc-100 text-zinc-600 border border-zinc-200'
+                }`}
+              >
+                customers (1)
+              </button>
+            </div>
+
+            {/* List of Composite Index Opportunities */}
+            <div className="space-y-3 flex-1 overflow-y-auto pr-0.5">
+              {compositeIndexOpportunities
+                .filter(opp => compositePatternFilter === 'all' || opp.targetTable === compositePatternFilter)
+                .map((opp) => {
+                  const isSelected = selectedCompositeSuggestionId === opp.id;
+                  return (
+                    <div
+                      key={opp.id}
+                      id={`composite-opportunity-${opp.id}`}
+                      data-testid={`composite-opportunity-${opp.id}`}
+                      className={`p-3.5 rounded-xl border transition-all text-xs space-y-3 bg-white ${
+                        isSelected
+                          ? 'border-indigo-500 ring-2 ring-indigo-200 shadow-sm'
+                          : 'border-zinc-200 hover:border-zinc-300 shadow-2xs'
+                      }`}
+                    >
+                      {/* Opportunity Header */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-bold text-xs text-zinc-900">
+                              {opp.name}
+                            </span>
+                            <span className="font-mono text-[9px] bg-zinc-100 text-zinc-700 px-1.5 py-0.2 rounded font-semibold border border-zinc-200">
+                              {opp.targetTable}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-zinc-500 mt-0.5">
+                            {opp.queryPurpose}
+                          </div>
+                        </div>
+
+                        {opp.isApplied ? (
+                          <span className="font-mono text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0 border border-emerald-300">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Active</span>
+                          </span>
+                        ) : (
+                          <span className="font-mono text-[10px] bg-indigo-100 text-indigo-800 font-bold px-2 py-0.5 rounded-full shrink-0 border border-indigo-200">
+                            +{opp.speedup} Speedup
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Composite Column Ordering Structure */}
+                      <div className="p-2 bg-zinc-50 rounded-lg border border-zinc-200 space-y-1">
+                        <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider flex items-center justify-between">
+                          <span>Composite Column Ordering Blueprint</span>
+                          <span className="text-[9px] text-indigo-700 font-normal">Prefix Rule Enforced</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {opp.columnOrdering.map((col, idx) => (
+                            <React.Fragment key={col.column}>
+                              <div className="px-2 py-1 bg-white rounded border border-zinc-300 text-[10px] font-mono shadow-2xs">
+                                <span className="text-zinc-400 font-sans mr-1">Col {idx + 1}:</span>
+                                <strong className="text-indigo-950 font-bold">{col.column}</strong>
+                              </div>
+                              {idx < opp.columnOrdering.length - 1 && (
+                                <ArrowRight className="w-3 h-3 text-zinc-400 shrink-0" />
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Historical Query Pattern in History */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="font-bold text-zinc-700 flex items-center gap-1">
+                            <Search className="w-3 h-3 text-indigo-600" />
+                            <span>Query Pattern in History:</span>
+                          </span>
+                          <span className="font-mono text-zinc-500 font-medium">
+                            {opp.frequencyPerHour} ({opp.executionShare})
+                          </span>
+                        </div>
+                        <div className="p-2 bg-zinc-950 text-indigo-200 rounded-lg font-mono text-[10.5px] overflow-x-auto border border-zinc-800 shadow-inner">
+                          {opp.querySql}
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] pt-0.5 text-zinc-500">
+                          <span>Latency delta: <strong className="text-rose-600 line-through">{opp.latencyBefore}</strong> ➔ <strong className="text-emerald-700 font-bold">{opp.latencyAfter}</strong></span>
+                          <span className="font-mono text-emerald-700 font-extrabold">{opp.speedupMultiplier}</span>
+                        </div>
+                      </div>
+
+                      {/* Rationale Section */}
+                      <div className="p-2.5 bg-gradient-to-r from-indigo-50/70 to-purple-50/40 rounded-lg border border-indigo-200/80 space-y-1.5">
+                        <div className="font-bold text-indigo-950 flex items-center gap-1 text-[11px]">
+                          <Info className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span>Technical Rationale:</span>
+                        </div>
+                        <p className="text-[11px] text-zinc-700 leading-relaxed">
+                          {opp.rationale.summary}
+                        </p>
+                        <div className="pt-1.5 border-t border-indigo-100 space-y-1 text-[10px]">
+                          <div>
+                            <strong className="text-indigo-900">Why this column order:</strong>
+                            <span className="text-zinc-600 ml-1">{opp.rationale.columnOrderJustification}</span>
+                          </div>
+                          <div>
+                            <strong className="text-indigo-900">Planner transformation:</strong>
+                            <span className="text-zinc-600 ml-1">{opp.rationale.plannerMechanics}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Action Bar */}
+                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-100">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCompositeSuggestionId(opp.id)}
+                          className={`text-[10px] font-semibold cursor-pointer underline hover:text-indigo-700 ${
+                            isSelected ? 'text-indigo-700 font-bold' : 'text-zinc-500'
+                          }`}
+                        >
+                          {isSelected ? 'Viewing SQL DDL & Plan ▼' : 'Inspect SQL DDL & Plan ►'}
+                        </button>
+
+                        <button
+                          type="button"
+                          id={`btn-toggle-composite-${opp.id}`}
+                          data-testid={`btn-toggle-composite-${opp.id}`}
+                          onClick={opp.onToggle}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-2xs flex items-center gap-1 ${
+                            opp.isApplied
+                              ? 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700 border border-zinc-300'
+                              : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs'
+                          }`}
+                        >
+                          {opp.isApplied ? (
+                            <>
+                              <RefreshCw className="w-3 h-3 text-zinc-500" />
+                              <span>Revert Optimization</span>
+                            </>
+                          ) : (
+                            <>
+                              <Zap className="w-3 h-3 fill-amber-300 text-amber-300" />
+                              <span>Apply Composite Index</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {/* Expanded Inspector when Selected */}
+                      {isSelected && (
+                        <div className="pt-2 border-t border-indigo-100 space-y-2 animate-fadeIn bg-indigo-50/30 p-2.5 rounded-lg border">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-bold text-zinc-800">PostgreSQL DDL Definition:</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(opp.ddlStatement);
+                                setCopiedDdlIndex(opp.id);
+                                setTimeout(() => setCopiedDdlIndex(null), 2500);
+                              }}
+                              className="text-indigo-700 hover:text-indigo-900 font-semibold cursor-pointer flex items-center gap-1"
+                              title="Copy DDL command to clipboard"
+                            >
+                              <Copy className="w-3 h-3" />
+                              <span>{copiedDdlIndex === opp.id ? 'Copied!' : 'Copy DDL'}</span>
+                            </button>
+                          </div>
+                          <div className="p-2 bg-zinc-900 text-emerald-300 rounded font-mono text-[10px] overflow-x-auto border border-zinc-800">
+                            {opp.ddlStatement}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 text-[10px] pt-1">
+                            <div className="p-1.5 bg-white rounded border border-zinc-200">
+                              <span className="text-zinc-500">Storage Footprint:</span>
+                              <strong className="block text-zinc-800 font-mono mt-0.5">{opp.storageFootprint}</strong>
+                            </div>
+                            <div className="p-1.5 bg-white rounded border border-zinc-200">
+                              <span className="text-zinc-500">Write Amplification:</span>
+                              <strong className="block text-zinc-800 font-mono mt-0.5">{opp.writeImpact}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        ) : (
+          /* Docked Tab when Side Panel is Collapsed */
+          <div className="hidden lg:flex flex-col items-center justify-start border-l border-zinc-200 bg-zinc-50/80 p-2 shrink-0">
+            <button
+              type="button"
+              id="btn-reopen-ai-side-panel"
+              data-testid="btn-reopen-ai-side-panel"
+              onClick={() => setShowAiSuggestionsSidePanel(true)}
+              className="py-4 px-2 bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-xl shadow-xs cursor-pointer flex flex-col items-center gap-2.5 transition-all hover:scale-105"
+              title="Open AI-Driven Index Suggestion side panel"
+            >
+              <Sparkles className="w-4 h-4 text-purple-600 animate-pulse" />
+              <span className="[writing-mode:vertical-rl] text-[11px] font-bold tracking-wider uppercase text-zinc-700">
+                AI Suggestions Panel
+              </span>
+              <span className="font-mono text-[9px] bg-purple-100 text-purple-800 font-bold px-1 rounded-full">
+                4
+              </span>
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -2230,6 +3850,34 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             />
           </label>
 
+          <label
+            id="label-show-query-impact"
+            data-testid="label-show-query-impact"
+            className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-semibold cursor-pointer select-none transition-all shadow-2xs ${
+              showQueryImpact
+                ? 'bg-indigo-50/90 border-indigo-300 text-indigo-950 ring-1 ring-indigo-200'
+                : 'bg-zinc-50 border-zinc-200 text-zinc-700 hover:bg-zinc-100'
+            }`}
+            title="Dynamically display a mini-execution plan preview directly under each index listing"
+          >
+            <Activity className={`w-3.5 h-3.5 ${showQueryImpact ? 'text-indigo-600' : 'text-zinc-500'}`} />
+            <span>Show Query Impact</span>
+            <input
+              type="checkbox"
+              id="toggle-show-query-impact"
+              name="toggle-show-query-impact"
+              data-testid="toggle-show-query-impact"
+              checked={showQueryImpact}
+              onChange={(e) => setShowQueryImpact(e.target.checked)}
+              className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+            />
+            {showQueryImpact && (
+              <span className="px-1.5 py-0.2 bg-indigo-600 text-white rounded text-[10px] font-bold">
+                ON
+              </span>
+            )}
+          </label>
+
           <button
             type="button"
             onClick={handleTakeSnapshot}
@@ -2256,6 +3904,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            id="btn-toggle-ai-suggestions-sidepanel"
+            data-testid="btn-toggle-ai-suggestions-sidepanel"
+            onClick={() => setShowAiSuggestionsSidePanel(!showAiSuggestionsSidePanel)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border ${
+              showAiSuggestionsSidePanel
+                ? 'bg-gradient-to-r from-purple-700 via-indigo-700 to-indigo-800 text-white border-purple-600 shadow-xs ring-1 ring-purple-300'
+                : 'bg-white hover:bg-purple-50 border-purple-200 text-purple-900'
+            }`}
+            title="Toggle AI-Driven Index Suggestion side panel in Explorer view"
+          >
+            <Sparkles className={`w-3.5 h-3.5 ${showAiSuggestionsSidePanel ? 'text-amber-300' : 'text-purple-600'}`} />
+            <span>AI Index Suggestions Side Panel</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+              showAiSuggestionsSidePanel ? 'bg-purple-900 text-purple-200' : 'bg-purple-100 text-purple-800'
+            }`}>
+              {showAiSuggestionsSidePanel ? 'OPEN' : `${compositeIndexOpportunities.length} Opportunities`}
+            </span>
+          </button>
+
+          <button
+            type="button"
             id="btn-ai-index-suggestions"
             data-testid="btn-ai-index-suggestions"
             onClick={() => setShowSuggestIndexesModal(true)}
@@ -2267,6 +3936,41 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             <span className="px-1.5 py-0.2 bg-black/20 text-white rounded-full text-[10px] font-mono font-bold">
               {indexSuggestions.filter(s => !s.isApplied).length} Available
             </span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-bulk-optimize"
+            data-testid="btn-bulk-optimize"
+            onClick={handleApplyBulkOptimize}
+            disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs ${
+              bulkOptimizationPlan.isFullyOptimized
+                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white'
+            }`}
+            title="Calculates optimal set of changes for all listed indexes and applies all recommended improvements at once"
+          >
+            {isApplyingBulkOptimize ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                <span>Optimizing Schema...</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                <span>Bulk Optimize</span>
+                {bulkOptimizationPlan.isFullyOptimized ? (
+                  <span className="ml-1 px-1.5 py-0.2 bg-emerald-800 text-emerald-100 rounded-full text-[10px] font-bold">
+                    Optimal (96/100)
+                  </span>
+                ) : (
+                  <span className="ml-1 px-1.5 py-0.2 bg-black/25 text-white rounded-full text-[10px] font-mono font-bold">
+                    {bulkOptimizationPlan.pendingChanges.length} Pending
+                  </span>
+                )}
+              </>
+            )}
           </button>
 
           <button
@@ -2354,12 +4058,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
-            onClick={handleBulkApplyAllIndexes}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
-            title="Enable all high-priority missing indexes simultaneously to see cumulative performance impact"
+            id="btn-toolbar-bulk-apply-all"
+            data-testid="btn-toolbar-bulk-apply-all"
+            onClick={handleApplyBulkOptimize}
+            disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs ${
+              bulkOptimizationPlan.isFullyOptimized
+                ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white'
+            }`}
+            title="Calculate and enable all optimal index improvements across all listed tables at once"
           >
             <Zap className="w-3.5 h-3.5 fill-white" />
-            <span>Bulk Apply All</span>
+            <span>
+              {bulkOptimizationPlan.isFullyOptimized
+                ? '✓ All Optimal'
+                : `Bulk Apply (${bulkOptimizationPlan.pendingChanges.length})`}
+            </span>
           </button>
 
           <button
@@ -3285,6 +5000,259 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           </div>
         );
       })()}
+
+      {/* Bulk Optimization Calculation Breakdown Modal */}
+      {showBulkOptimizeModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col text-zinc-900 relative">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-zinc-200 bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-indigo-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-br from-emerald-600 via-teal-600 to-indigo-600 text-white rounded-xl shadow-xs">
+                  <Zap className="w-5 h-5 fill-amber-300 text-amber-300" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-zinc-900 tracking-tight">
+                      Bulk Schema Optimizer — Calculation Breakdown
+                    </h3>
+                    <span className="bg-emerald-100 text-emerald-800 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border border-emerald-300">
+                      {bulkOptimizationPlan.totalCount} Listed Indexes Analyzed
+                    </span>
+                    <span className="bg-indigo-100 text-indigo-800 text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border border-indigo-200">
+                      Avg Health: {bulkOptimizationPlan.currentAvgHealth}/100 → {bulkOptimizationPlan.projectedAvgHealth}/100
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-0.5">
+                    Calculated optimal set of changes for all listed database indexes to maximize query throughput while pruning redundant write overhead.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  id="btn-modal-apply-bulk-optimize"
+                  data-testid="btn-modal-apply-bulk-optimize"
+                  onClick={() => {
+                    handleApplyBulkOptimize();
+                    setShowBulkOptimizeModal(false);
+                  }}
+                  disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs ${
+                    bulkOptimizationPlan.isFullyOptimized
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default opacity-90'
+                      : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white shadow-sm'
+                  }`}
+                  title="Apply all recommended improvements across all listed indexes in a single batch"
+                >
+                  <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                  <span>
+                    {bulkOptimizationPlan.isFullyOptimized
+                      ? '✓ All Optimal'
+                      : `Apply All (${bulkOptimizationPlan.pendingChanges.length} Improvements)`}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowBulkOptimizeModal(false)}
+                  className="text-zinc-400 hover:text-zinc-700 p-1.5 rounded-lg hover:bg-zinc-100 cursor-pointer transition-colors"
+                  aria-label="Close calculation modal"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* High-Level Calculation Metrics */}
+            <div className="p-4 sm:p-5 border-b border-zinc-200 bg-zinc-50/70 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs shrink-0">
+              <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Optimization Scope</span>
+                <div className="font-mono font-bold text-zinc-900 text-sm">
+                  {bulkOptimizationPlan.totalCount} Listed Indexes
+                </div>
+                <div className="text-[10px] text-zinc-500">Across 3 database entities</div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Recommended Changes</span>
+                <div className="font-mono font-bold text-amber-700 text-sm flex items-center gap-1.5">
+                  <span>{bulkOptimizationPlan.pendingChanges.length} Changes Needed</span>
+                </div>
+                <div className="text-[10px] text-zinc-500">
+                  {bulkOptimizationPlan.optimalCount} currently optimal
+                </div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Projected Health Gain</span>
+                <div className="font-mono font-bold text-emerald-700 text-sm flex items-center gap-1">
+                  <span>{bulkOptimizationPlan.currentAvgHealth}</span>
+                  <span>→</span>
+                  <span>{bulkOptimizationPlan.projectedAvgHealth}/100</span>
+                  <span className="text-[10px] font-mono text-emerald-600 font-bold bg-emerald-50 px-1 rounded ml-1">
+                    +{bulkOptimizationPlan.healthGain}
+                  </span>
+                </div>
+                <div className="text-[10px] text-emerald-700 font-medium">Optimal health tier</div>
+              </div>
+
+              <div className="bg-white p-3 rounded-xl border border-zinc-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Estimated Net Impact</span>
+                <div className="font-mono font-bold text-indigo-700 text-sm">
+                  +99.6% Speedup
+                </div>
+                <div className="text-[10px] text-indigo-600 font-medium">-14% dead index write I/O</div>
+              </div>
+            </div>
+
+            {/* List / Table of Calculated Optimal Changes */}
+            <div className="overflow-y-auto flex-1 p-4 sm:p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-wider flex items-center gap-1.5 font-sans">
+                  <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Calculated Index Status &amp; Recommended Actions</span>
+                </h4>
+                <span className="text-[11px] text-zinc-500 font-mono">
+                  {bulkOptimizationPlan.pendingChanges.length} of {bulkOptimizationPlan.totalCount} require modification
+                </span>
+              </div>
+
+              <div className="space-y-2.5">
+                {bulkOptimizationPlan.allListed.map((item) => (
+                  <div
+                    key={item.id}
+                    id={`bulk-plan-item-${item.indexName}`}
+                    data-testid={`bulk-plan-item-${item.indexName}`}
+                    className={`p-3.5 rounded-xl border transition-all text-xs ${
+                      !item.isOptimal
+                        ? 'bg-amber-50/50 border-amber-200 shadow-2xs'
+                        : 'bg-white border-zinc-200'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono font-bold text-zinc-900 text-xs">{item.indexName}</span>
+                          <span className="text-[10px] bg-zinc-100 text-zinc-700 font-mono px-1.5 py-0.2 rounded border border-zinc-200">
+                            {item.indexType}
+                          </span>
+                          <span className="text-[10px] bg-indigo-50 text-indigo-700 font-mono px-1.5 py-0.2 rounded border border-indigo-200">
+                            {item.tableEntity} ({item.tableName})
+                          </span>
+                        </div>
+
+                        <div className="text-[11px] text-zinc-600">
+                          Columns: <code className="font-mono text-zinc-800 bg-zinc-100 px-1 rounded">{item.columns.join(', ')}</code>
+                        </div>
+
+                        <p className="text-[11px] text-zinc-700 leading-relaxed pt-0.5">
+                          {item.reason}
+                        </p>
+                      </div>
+
+                      <div className="flex sm:flex-col items-end justify-between sm:justify-start gap-1.5 shrink-0">
+                        {/* Health Score Transition */}
+                        <div className="flex items-center gap-1 font-mono text-[11px]">
+                          <span className={`px-2 py-0.5 rounded-full font-bold border ${item.currentBadgeClass}`}>
+                            Health: {item.currentHealthScore}
+                          </span>
+                          {!item.isOptimal && (
+                            <>
+                              <ArrowRight className="w-3 h-3 text-zinc-400" />
+                              <span className="px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                {item.projectedHealthScore}
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Calculated Recommendation Action Badge */}
+                        <div>
+                          {item.isOptimal ? (
+                            <span className="inline-flex items-center gap-1 font-sans text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              <span>Optimal (No Action Needed)</span>
+                            </span>
+                          ) : item.recommendedAction === 'PRUNE' ? (
+                            <span className="inline-flex items-center gap-1 font-sans text-[10px] font-bold text-rose-800 bg-rose-50 border border-rose-300 px-2 py-0.5 rounded-md">
+                              <Trash2 className="w-3 h-3 text-rose-600" />
+                              <span>Action: Prune Dead Index</span>
+                            </span>
+                          ) : item.recommendedAction === 'RESTORE' ? (
+                            <span className="inline-flex items-center gap-1 font-sans text-[10px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-300 px-2 py-0.5 rounded-md">
+                              <Key className="w-3 h-3 text-indigo-600" />
+                              <span>Action: Restore Primary Clustered Key</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 font-sans text-[10px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-md">
+                              <Zap className="w-3 h-3 text-amber-600 fill-amber-600" />
+                              <span>Action: {item.actionTitle}</span>
+                            </span>
+                          )}
+                        </div>
+
+                        <span className="text-[10px] font-mono text-emerald-700 font-bold">
+                          {item.speedupGain}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Modal Footer with Single Button */}
+            <div className="p-4 sm:p-5 border-t border-zinc-200 bg-zinc-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+              <div className="text-xs text-zinc-600">
+                {bulkOptimizationPlan.isFullyOptimized ? (
+                  <span className="font-semibold text-emerald-700 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>All {bulkOptimizationPlan.totalCount} listed indexes are operating in their optimal configuration.</span>
+                  </span>
+                ) : (
+                  <span>
+                    Calculated <strong className="text-amber-800 font-bold">{bulkOptimizationPlan.pendingChanges.length} improvements</strong> across {bulkOptimizationPlan.totalCount} listed indexes.
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkOptimizeModal(false)}
+                  className="px-4 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 font-semibold rounded-lg text-xs cursor-pointer shadow-2xs transition-colors"
+                >
+                  Close
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-footer-apply-bulk-optimize"
+                  data-testid="btn-footer-apply-bulk-optimize"
+                  onClick={() => {
+                    handleApplyBulkOptimize();
+                    setShowBulkOptimizeModal(false);
+                  }}
+                  disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+                  className={`px-4 py-2 rounded-lg font-bold text-xs cursor-pointer transition-all shadow-xs flex items-center gap-1.5 ${
+                    bulkOptimizationPlan.isFullyOptimized
+                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default opacity-90'
+                      : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                  <span>
+                    {bulkOptimizationPlan.isFullyOptimized
+                      ? 'Schema Fully Optimized'
+                      : `Apply All Recommended Improvements (${bulkOptimizationPlan.pendingChanges.length} Changes)`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Schema Snapshots Manager Modal */}
       {showSnapshotsModal && (
