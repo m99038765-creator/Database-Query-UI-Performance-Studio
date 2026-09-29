@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -16,6 +16,8 @@ export interface SchemaSnapshot {
   customIndexes: string[];
   createdCompositeIndexes?: string[];
   removedIndexes?: string[];
+  lockedIndexes?: string[];
+  isProtected?: boolean;
   importedCustomIndices?: Array<{
     name: string;
     type: string;
@@ -37,6 +39,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [createdCustomIndexes, setCreatedCustomIndexes] = useState<string[]>([]);
   const [createdCompositeIndexes, setCreatedCompositeIndexes] = useState<string[]>([]);
   const [consolidatedIndexes, setConsolidatedIndexes] = useState<string[]>([]);
+  const [lockedIndexes, setLockedIndexes] = useState<string[]>([]);
   const [isAnalyzingWorkload, setIsAnalyzingWorkload] = useState<boolean>(false);
   const [hasAnalyzedWorkload, setHasAnalyzedWorkload] = useState<boolean>(true);
   const [showQueryComplexityInfo, setShowQueryComplexityInfo] = useState<boolean>(false);
@@ -85,6 +88,28 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [importSnapshotBeforeApply, setImportSnapshotBeforeApply] = useState<boolean>(true);
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+
+  // Global keyboard shortcuts for power users (Ctrl+S to save snapshot, Ctrl+Shift+O to run bulk optimization)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCmdOrCtrl = e.ctrlKey || e.metaKey;
+
+      if (isCmdOrCtrl && e.key.toLowerCase() === 's' && !e.shiftKey) {
+        e.preventDefault();
+        handleOpenSnapshotModal();
+      }
+
+      if (isCmdOrCtrl && e.shiftKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        handleAutoOptimizeWorkload();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -628,25 +653,55 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }
   ], [createdCompositeIndexes]);
 
+  const handleToggleLockIndex = (indexName: string) => {
+    setLockedIndexes((prev) => {
+      const isNowLocked = !prev.includes(indexName);
+      const nextLocked = isNowLocked ? [...prev, indexName] : prev.filter((name) => name !== indexName);
+      setImportSuccessNotice(
+        isNowLocked
+          ? `Locked index "${indexName}": High-priority manual lock enabled. Protected against Auto-Optimize and Index Cleanup.`
+          : `Unlocked index "${indexName}": Can now be modified or pruned by automated operations.`
+      );
+      setTimeout(() => {
+        setImportSuccessNotice(null);
+      }, 4500);
+      return nextLocked;
+    });
+  };
+
   const handleAutoOptimizeWorkload = () => {
     setIsAutoOptimizingWorkload(true);
     setTimeout(() => {
-      // 1. Toggle core B-Tree flags for expensive queries
-      if (!flags.btreeIndexing) {
+      // 1. Toggle core B-Tree flags for expensive queries (if affected indexes are not locked)
+      if (!flags.btreeIndexing && !lockedIndexes.includes('idx_orders_status_cat')) {
         onToggleFlag('btreeIndexing');
       }
-      if (!flags.batchEagerLoading) {
+      if (!flags.batchEagerLoading && !lockedIndexes.includes('idx_line_items_tx')) {
         onToggleFlag('batchEagerLoading');
       }
 
-      // 2. Toggle optimal composite B-Tree indexes for multi-column predicates
-      setCreatedCompositeIndexes(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+      // 2. Toggle optimal composite B-Tree indexes for multi-column predicates (respecting locks)
+      setCreatedCompositeIndexes((prev) => {
+        const next = new Set(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+        if (lockedIndexes.includes('idx_transactions_email_status') && !prev.includes('email_status')) next.delete('email_status');
+        if (lockedIndexes.includes('idx_transactions_category_amount') && !prev.includes('category_amount')) next.delete('category_amount');
+        if (lockedIndexes.includes('idx_line_items_tx_price') && !prev.includes('tx_price')) next.delete('tx_price');
+        if (lockedIndexes.includes('idx_customers_tier_created') && !prev.includes('tier_created')) next.delete('tier_created');
+        return Array.from(next);
+      });
 
-      // 3. Ensure single-column indexes are set
-      setCreatedCustomIndexes((prev) => Array.from(new Set([...prev, 'customer_email', 'amount'])));
+      // 3. Ensure single-column indexes are set (respecting locks)
+      setCreatedCustomIndexes((prev) => {
+        const additions: string[] = [];
+        if (!lockedIndexes.includes('idx_transactions_email_missing')) additions.push('customer_email');
+        if (!lockedIndexes.includes('idx_transactions_amount_missing')) additions.push('amount');
+        return Array.from(new Set([...prev, ...additions]));
+      });
 
-      // 4. Prune dead unutilized index (idx_transactions_date) to prevent buffer cache pollution
-      setRemovedIndexes((prev) => Array.from(new Set([...prev, 'idx_transactions_date'])));
+      // 4. Prune dead unutilized index (idx_transactions_date) to prevent buffer cache pollution ONLY if NOT locked
+      if (!lockedIndexes.includes('idx_transactions_date')) {
+        setRemovedIndexes((prev) => Array.from(new Set([...prev, 'idx_transactions_date'])));
+      }
 
       setIsAutoOptimizingWorkload(false);
       setAutoOptimizedCompleted(true);
@@ -673,6 +728,11 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
 
   const handleRemoveUnutilizedIndex = (idxName: string) => {
+    if (lockedIndexes.includes(idxName)) {
+      setImportSuccessNotice(`Cannot remove index "${idxName}": Index is locked as high-priority manual.`);
+      setTimeout(() => setImportSuccessNotice(null), 4000);
+      return;
+    }
     if (!removedIndexes.includes(idxName)) {
       setRemovedIndexes((prev) => [...prev, idxName]);
     }
@@ -689,9 +749,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
 
   const handleRemoveAllUnutilized = () => {
-    const unutilized = ['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'];
+    const unutilized = ['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing']
+      .filter((name) => !lockedIndexes.includes(name));
     setRemovedIndexes((prev) => Array.from(new Set([...prev, ...unutilized])));
-    setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'customer_email' && c !== 'amount'));
+    setCreatedCustomIndexes((prev) =>
+      prev.filter((c) => {
+        if (c === 'customer_email' && lockedIndexes.includes('idx_transactions_email_missing')) return true;
+        if (c === 'amount' && lockedIndexes.includes('idx_transactions_amount_missing')) return true;
+        return c !== 'customer_email' && c !== 'amount';
+      })
+    );
   };
 
   const unutilizedDiagnostics = [
@@ -738,6 +805,11 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
 
   const handleConsolidateIndex = (idxName: string) => {
+    if (lockedIndexes.includes(idxName)) {
+      setImportSuccessNotice(`Cannot consolidate index "${idxName}": Index is locked as high-priority manual.`);
+      setTimeout(() => setImportSuccessNotice(null), 4000);
+      return;
+    }
     setConsolidatedIndexes([...consolidatedIndexes, idxName]);
     if (idxName.includes('email_missing')) {
       setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
@@ -756,11 +828,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
 
   const handleRevertAllIndexes = () => {
-    setCreatedCustomIndexes([]);
-    setCreatedCompositeIndexes([]);
+    const lockedCustom: string[] = [];
+    if (lockedIndexes.includes('idx_transactions_email_missing')) lockedCustom.push('customer_email');
+    if (lockedIndexes.includes('idx_transactions_amount_missing')) lockedCustom.push('amount');
+    setCreatedCustomIndexes(lockedCustom);
+
+    const lockedComposite: string[] = [];
+    if (lockedIndexes.includes('idx_transactions_email_status')) lockedComposite.push('email_status');
+    if (lockedIndexes.includes('idx_transactions_category_amount')) lockedComposite.push('category_amount');
+    if (lockedIndexes.includes('idx_line_items_tx_price')) lockedComposite.push('tx_price');
+    if (lockedIndexes.includes('idx_customers_tier_created')) lockedComposite.push('tier_created');
+    setCreatedCompositeIndexes(lockedComposite);
+
     setConsolidatedIndexes([]);
     setRemovedIndexes([]);
-    setImportedCustomIndices([]);
+    setImportedCustomIndices((prev) => prev.filter((idx) => lockedIndexes.includes(idx.name)));
     setActiveSchemaPrototypeName('Standard Workload Schema');
     setCleanupScanCompleted(false);
     setAutoOptimizedCompleted(false);
@@ -784,6 +866,121 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showNamedSnapshotModal, setShowNamedSnapshotModal] = useState<boolean>(false);
   const [newSnapshotName, setNewSnapshotName] = useState<string>('');
   const [showSnapshotsModal, setShowSnapshotsModal] = useState<boolean>(false);
+  const [migrationVersion1Id, setMigrationVersion1Id] = useState<string>('snapshot-default');
+  const [migrationVersion2Id, setMigrationVersion2Id] = useState<string>('snapshot-default');
+
+  const handleExportMigrationSQL = () => {
+    const v1 = snapshots.find((s) => s.id === migrationVersion1Id) || snapshots[0];
+    const v2 = snapshots.find((s) => s.id === migrationVersion2Id) || snapshots[snapshots.length - 1];
+    if (!v1 || !v2) return;
+
+    let sqlLines: string[] = [];
+    sqlLines.push(`-- =====================================================================`);
+    sqlLines.push(`-- PostgreSQL Production Migration Script`);
+    sqlLines.push(`-- Generated from Schema Versioning Comparison`);
+    sqlLines.push(`-- From Version: "${v1.name}" (${v1.timestamp})`);
+    sqlLines.push(`-- To Version:   "${v2.name}" (${v2.timestamp})`);
+    sqlLines.push(`-- =====================================================================\n`);
+
+    sqlLines.push(`BEGIN;\n`);
+
+    if (v1.flags?.btreeIndexing !== v2.flags?.btreeIndexing) {
+      sqlLines.push(`-- [Flag Delta] btreeIndexing changed: ${v1.flags?.btreeIndexing} -> ${v2.flags?.btreeIndexing}`);
+      sqlLines.push(`ALTER DATABASE CURRENT SET enable_seqscan = ${v2.flags?.btreeIndexing ? 'off' : 'on'};\n`);
+    }
+
+    const v1Custom = new Set(v1.customIndexes || []);
+    const v2Custom = new Set(v2.customIndexes || []);
+
+    for (const idx of v2Custom) {
+      if (!v1Custom.has(idx)) {
+        sqlLines.push(`-- [Add Custom Index]`);
+        if (idx === 'customer_email') {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_transactions_email_missing ON transactions (customer_email);`);
+        } else if (idx === 'amount') {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_transactions_amount_missing ON transactions (amount);`);
+        } else {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_${idx} ON transactions (${idx});`);
+        }
+      }
+    }
+
+    for (const idx of v1Custom) {
+      if (!v2Custom.has(idx)) {
+        sqlLines.push(`-- [Drop Custom Index]`);
+        if (idx === 'customer_email') {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_transactions_email_missing;`);
+        } else if (idx === 'amount') {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_transactions_amount_missing;`);
+        } else {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_${idx};`);
+        }
+      }
+    }
+
+    const v1Comp = new Set(v1.createdCompositeIndexes || []);
+    const v2Comp = new Set(v2.createdCompositeIndexes || []);
+
+    for (const comp of v2Comp) {
+      if (!v1Comp.has(comp)) {
+        sqlLines.push(`-- [Add Composite Index]`);
+        if (comp === 'email_status') {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_transactions_email_status ON transactions (customer_email, status);`);
+        } else if (comp === 'category_amount') {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_transactions_category_amount ON transactions (category, amount);`);
+        } else if (comp === 'tx_price') {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_line_items_tx_price ON line_items (transaction_id, unit_price);`);
+        } else if (comp === 'tier_created') {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_customers_tier_created ON customers (tier, created_at DESC);`);
+        } else {
+          sqlLines.push(`CREATE INDEX CONCURRENTLY idx_${comp} ON transactions (${comp});`);
+        }
+      }
+    }
+
+    for (const comp of v1Comp) {
+      if (!v2Comp.has(comp)) {
+        sqlLines.push(`-- [Drop Composite Index]`);
+        if (comp === 'email_status') {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_transactions_email_status;`);
+        } else if (comp === 'category_amount') {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_transactions_category_amount;`);
+        } else if (comp === 'tx_price') {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_line_items_tx_price;`);
+        } else if (comp === 'tier_created') {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_customers_tier_created;`);
+        } else {
+          sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS idx_${comp};`);
+        }
+      }
+    }
+
+    const v1Removed = new Set(v1.removedIndexes || []);
+    const v2Removed = new Set(v2.removedIndexes || []);
+
+    for (const rem of v2Removed) {
+      if (!v1Removed.has(rem)) {
+        sqlLines.push(`-- [Prune Unutilized Index]`);
+        sqlLines.push(`DROP INDEX CONCURRENTLY IF EXISTS ${rem};`);
+      }
+    }
+
+    sqlLines.push(`\nCOMMIT;`);
+
+    const sqlContent = sqlLines.join('\n');
+    const blob = new Blob([sqlContent], { type: 'text/sql' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `migration_${v1.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_to_${v2.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.sql`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    setImportSuccessNotice(`Successfully generated & downloaded Migration SQL script between "${v1.name}" and "${v2.name}"!`);
+    setTimeout(() => setImportSuccessNotice(null), 5000);
+  };
 
   const handleBulkApplyAllIndexes = () => {
     if (!flags.btreeIndexing) {
@@ -1259,6 +1456,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         customIndexes: [...createdCustomIndexes],
         createdCompositeIndexes: [...createdCompositeIndexes],
         removedIndexes: [...removedIndexes],
+        lockedIndexes: [...lockedIndexes],
         importedCustomIndices: [...importedCustomIndices],
         activeSchemaPrototypeName: activeSchemaPrototypeName,
         totalIndexesCount: activeCount
@@ -1339,17 +1537,24 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     // 4. Restore removed indexes
     setRemovedIndexes(snap.removedIndexes ? [...snap.removedIndexes] : []);
 
-    // 5. Restore imported custom table indices
+    // 5. Restore locked indexes
+    if (snap.lockedIndexes) {
+      setLockedIndexes([...snap.lockedIndexes]);
+    } else {
+      setLockedIndexes([]);
+    }
+
+    // 6. Restore imported custom table indices
     setImportedCustomIndices(snap.importedCustomIndices ? [...snap.importedCustomIndices] : []);
 
-    // 6. Restore prototype name
+    // 7. Restore prototype name
     if (snap.activeSchemaPrototypeName) {
       setActiveSchemaPrototypeName(snap.activeSchemaPrototypeName);
     } else {
       setActiveSchemaPrototypeName(snap.name);
     }
 
-    // 7. Show user notification
+    // 8. Show user notification
     const totalCount = snap.totalIndexesCount ?? (snap.customIndexes.length + (snap.createdCompositeIndexes?.length ?? 0));
     setImportSuccessNotice(`Switched to checkpoint: "${snap.name}" (${totalCount} active indexes)`);
     setTimeout(() => {
@@ -1382,6 +1587,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       customIndexes: [...createdCustomIndexes],
       createdCompositeIndexes: [...createdCompositeIndexes],
       removedIndexes: [...removedIndexes],
+      lockedIndexes: [...lockedIndexes],
       importedCustomIndices: [...importedCustomIndices],
       activeSchemaPrototypeName: finalName,
       totalIndexesCount: activeCount
@@ -1400,6 +1606,24 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const handleRestoreSnapshot = (snap: SchemaSnapshot) => {
     handleSelectCheckpoint(snap.id);
     setShowSnapshotsModal(false);
+  };
+
+  const handleToggleProtectSnapshot = (snapshotId: string) => {
+    setSnapshots((prev) =>
+      prev.map((s) => {
+        if (s.id === snapshotId) {
+          const nextProtected = !s.isProtected;
+          setImportSuccessNotice(
+            nextProtected
+              ? `Snapshot "${s.name}" marked as Protected. Protected from automated overwrite and cleanup.`
+              : `Snapshot "${s.name}" un-protected.`
+          );
+          setTimeout(() => setImportSuccessNotice(null), 4000);
+          return { ...s, isProtected: nextProtected };
+        }
+        return s;
+      })
+    );
   };
 
   const getIndexImpactSummary = (indexName: string) => {
@@ -1631,7 +1855,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         let speedupGain = 'Optimal';
         let projectedHealthScore = currentHealth.score;
 
-        if (idx.name.includes('PRIMARY KEY')) {
+        const isLocked = lockedIndexes.includes(idx.name);
+
+        if (isLocked) {
+          isOptimal = true;
+          recommendedAction = 'KEEP_OPTIMAL';
+          actionTitle = 'Index Locked (Protected)';
+          reason = 'Protected by user lock from automated Auto-Optimize and Index Cleanup modifications.';
+          impactDescription = 'Preserved in current user-defined configuration.';
+          speedupGain = 'Locked (Protected)';
+          projectedHealthScore = currentHealth.score;
+        } else if (idx.name.includes('PRIMARY KEY')) {
           if (isRemoved) {
             isOptimal = false;
             recommendedAction = 'RESTORE';
@@ -1894,28 +2128,40 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       projectedAvgHealth,
       healthGain
     };
-  }, [tables, removedIndexes, flags, createdCompositeIndexes, createdCustomIndexes]);
+  }, [tables, removedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, lockedIndexes]);
 
   // Single button handler to apply all calculated optimal improvements at once
   const handleApplyBulkOptimize = () => {
     setIsApplyingBulkOptimize(true);
     setTimeout(() => {
-      // 1. Enable primary B-Tree indexing flags
-      if (!flags.btreeIndexing) {
+      // 1. Enable primary B-Tree indexing flags (if related indexes are not locked)
+      if (!flags.btreeIndexing && !lockedIndexes.includes('idx_orders_status_cat')) {
         onToggleFlag('btreeIndexing');
       }
-      if (!flags.batchEagerLoading) {
+      if (!flags.batchEagerLoading && !lockedIndexes.includes('idx_line_items_tx')) {
         onToggleFlag('batchEagerLoading');
       }
 
-      // 2. Ensure composite indexes are activated
-      setCreatedCompositeIndexes(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+      // 2. Ensure composite indexes are activated (respecting locked indexes)
+      setCreatedCompositeIndexes((prev) => {
+        const next = new Set(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+        if (lockedIndexes.includes('idx_transactions_email_status') && !prev.includes('email_status')) next.delete('email_status');
+        if (lockedIndexes.includes('idx_transactions_category_amount') && !prev.includes('category_amount')) next.delete('category_amount');
+        if (lockedIndexes.includes('idx_line_items_tx_price') && !prev.includes('tx_price')) next.delete('tx_price');
+        if (lockedIndexes.includes('idx_customers_tier_created') && !prev.includes('tier_created')) next.delete('tier_created');
+        return Array.from(next);
+      });
 
-      // 3. Ensure custom bottleneck indexes are created
-      setCreatedCustomIndexes((prev) => Array.from(new Set([...prev, 'customer_email', 'amount'])));
+      // 3. Ensure custom bottleneck indexes are created (respecting locked indexes)
+      setCreatedCustomIndexes((prev) => {
+        const additions: string[] = [];
+        if (!lockedIndexes.includes('idx_transactions_email_missing')) additions.push('customer_email');
+        if (!lockedIndexes.includes('idx_transactions_amount_missing')) additions.push('amount');
+        return Array.from(new Set([...prev, ...additions]));
+      });
 
-      // 4. Prune unutilized dead index (idx_transactions_date) to reclaim buffer cache & write latency
-      // and un-remove any essential indexes
+      // 4. Prune unutilized dead index (idx_transactions_date) to reclaim buffer cache & write latency ONLY if NOT locked
+      // and un-remove any essential indexes (while preserving user locks)
       setRemovedIndexes((prev) => {
         const withoutEssentials = prev.filter((name) =>
           !name.includes('PRIMARY KEY') &&
@@ -1924,9 +2170,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           !name.includes('category_amount') &&
           !name.includes('tx_price') &&
           !name.includes('tier_created') &&
-          !name.includes('line_items_tx')
+          !name.includes('line_items_tx') &&
+          !lockedIndexes.includes(name)
         );
-        return Array.from(new Set([...withoutEssentials, 'idx_transactions_date']));
+        if (!lockedIndexes.includes('idx_transactions_date')) {
+          return Array.from(new Set([...withoutEssentials, 'idx_transactions_date']));
+        }
+        return withoutEssentials;
       });
 
       setIsApplyingBulkOptimize(false);
@@ -2583,87 +2833,161 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
   const renderContent = () => {
     if (activeTab === 'dependency-chain') {
+      const indexDependencies = [
+        {
+          indexName: 'idx_transactions_email_status',
+          targetTable: 'transactions',
+          type: 'Composite B-Tree',
+          riskLevel: 'Critical Risk',
+          riskBadge: 'bg-rose-100 text-rose-800 border-rose-300',
+          removalConsequence: 'Dropping this index forces full sequential table scans (O(n)), increasing user lookup latency from 1.2ms to 840ms and causing API gateway timeouts under peak traffic.',
+          dependentQueries: [
+            { name: 'Q1: Customer Email & Status Filtering', impact: 'O(log n) Index Scan → O(n) Full Heap Scan' },
+            { name: 'Q4: Active Account Support Lookup', impact: 'Index Seek → Sequential Scan Timeout' }
+          ],
+          dependentReports: [
+            { name: 'Customer Success Daily Audit Report', impact: 'Report generation time increases by 4,200%' },
+            { name: 'Billing & Subscription Status Dashboard', impact: 'API connection pool lock contention' }
+          ]
+        },
+        {
+          indexName: 'idx_line_items_tx',
+          targetTable: 'line_items',
+          type: 'Foreign Key B-Tree',
+          riskLevel: 'High Risk',
+          riskBadge: 'bg-orange-100 text-orange-800 border-orange-300',
+          removalConsequence: 'Removes foreign key join acceleration, re-introducing the synchronous N+1 subquery storm (100+ separate roundtrips per page) and risking connection pool exhaustion.',
+          dependentQueries: [
+            { name: 'Q6: Relational Line Items Join', impact: 'Batched Join → 100+ Unbatched N+1 Queries' },
+            { name: 'Q8: Order Fulfillment Dispatch', impact: 'Thread lock contention on connection pool' }
+          ],
+          dependentReports: [
+            { name: 'Daily E-Commerce Sales & Line Item Summary', impact: 'Database socket exhaustion and query timeout' },
+            { name: 'Inventory & Stock Dispatch Audit', impact: 'Delayed fulfillment batch processing' }
+          ]
+        },
+        {
+          indexName: 'idx_transactions_category_amount',
+          targetTable: 'transactions',
+          type: 'Composite B-Tree',
+          riskLevel: 'High Risk',
+          riskBadge: 'bg-amber-100 text-amber-800 border-amber-300',
+          removalConsequence: 'Disables sorted category and amount range index traversal, forcing SQLite/PostgreSQL to allocate RAM/disk temporary sort files and spilling sort memory.',
+          dependentQueries: [
+            { name: 'Q2: Category Revenue Filtering', impact: 'Index Scan Backward → Explicit Sort in RAM' },
+            { name: 'Q5: High-Value Transaction Audit', impact: 'Bitmap Heap Scan + Costly Sort' }
+          ],
+          dependentReports: [
+            { name: 'Executive Revenue Breakdown by Category', impact: 'Memory spill warnings and slow dashboard response' },
+            { name: 'Fraud & High-Value Alert Monitor', impact: 'Delayed real-time anomaly detection' }
+          ]
+        },
+        {
+          indexName: 'idx_customers_tier_created',
+          targetTable: 'customers',
+          type: 'Composite B-Tree',
+          riskLevel: 'Medium Risk',
+          riskBadge: 'bg-blue-100 text-blue-800 border-blue-300',
+          removalConsequence: 'Removes pre-sorted order delivery for customer tiers, requiring memory sort buffers to sort records descending by creation date.',
+          dependentQueries: [
+            { name: 'Q3: Enterprise Customer Signups', impact: 'Zero-Sort Delivery → Explicit Sort Buffer' },
+            { name: 'Q7: VIP Cohort Retention Check', impact: 'Slower pagination and list rendering' }
+          ],
+          dependentReports: [
+            { name: 'VIP Customer Growth & Retention Dashboard', impact: '140% increase in CPU time during report queries' },
+            { name: 'Enterprise Account Activity Audit', impact: 'Slightly elevated query execution latency' }
+          ]
+        }
+      ];
+
       return (
         <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto bg-white">
-          <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl space-y-2">
+          <div className="p-4 bg-indigo-50/90 border border-indigo-200 rounded-xl space-y-2">
             <h3 className="font-bold text-sm text-indigo-950 flex items-center gap-2">
               <Link className="w-4 h-4 text-indigo-700" />
-              <span>Relational Index Dependency &amp; Complement Chain</span>
+              <span>Dependency Tree View: Index Impact &amp; Removal Risk Analysis</span>
             </h3>
             <p className="text-xs text-indigo-900">
-              Visualizes how B-Tree indexes depend on parent primary keys and complement secondary filters to avoid redundant duplicate index allocations.
+              Visualizes the nested hierarchy of dependent queries and enterprise reports tied to each database index. Highlights performance degradation and business risk if an index is pruned or removed.
             </p>
           </div>
 
           <div className="space-y-4">
-            {/* Chain Node 1 */}
-            <div className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-900">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                  <span>Entity Root: transactions.id (Clustered Primary Key)</span>
-                </div>
-                <span className="text-[10px] font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">O(1) Base Anchor</span>
-              </div>
-              <p className="text-xs text-zinc-600">
-                Foundational root entity. All foreign key references and child tables (<code className="font-mono">line_items.transaction_id</code>) depend on this primary key to establish relational integrity.
-              </p>
-              <div className="pl-4 border-l-2 border-indigo-200 space-y-2 mt-2">
-                <div className="p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs flex items-center justify-between">
-                  <div>
-                    <strong className="text-indigo-950 font-mono">└─ Complemented by: idx_transactions_email_status</strong>
-                    <p className="text-[11px] text-zinc-600 mt-0.5">Composite B-Tree index supersedes and covers single-column lookups on <code className="font-mono">customer_email</code>, avoiding redundant index storage.</p>
-                  </div>
-                  <span className="font-mono text-[10px] text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded shrink-0">Redundancy Prevented</span>
-                </div>
-              </div>
-            </div>
+            {indexDependencies.map((dep, idx) => {
+              const isLocked = lockedIndexes.includes(dep.indexName);
+              const isRemoved = removedIndexes.includes(dep.indexName);
 
-            {/* Chain Node 2 */}
-            <div className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-900">
-                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
-                  <span>Entity Root: transactions.category &amp; amount</span>
-                </div>
-                <span className="text-[10px] font-mono bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-bold">Range Partition Anchor</span>
-              </div>
-              <p className="text-xs text-zinc-600">
-                Multi-attribute filtering root. Serves range aggregations and category grouping queries.
-              </p>
-              <div className="pl-4 border-l-2 border-indigo-200 space-y-2 mt-2">
-                <div className="p-2.5 bg-indigo-50/50 rounded-lg border border-indigo-100 text-xs flex items-center justify-between">
-                  <div>
-                    <strong className="text-indigo-950 font-mono">└─ Complemented by: idx_transactions_category_amount</strong>
-                    <p className="text-[11px] text-zinc-600 mt-0.5">Co-locates category sorting buckets with amount b-tree ranges, completely replacing unindexed table scans.</p>
+              return (
+                <div key={idx} className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-100 pb-3">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="w-3 h-3 rounded-full bg-indigo-600 shrink-0" />
+                      <span className="font-mono font-bold text-xs text-zinc-900">{dep.indexName}</span>
+                      <span className="text-[10px] font-mono bg-zinc-100 text-zinc-700 px-2 py-0.5 rounded border border-zinc-200">
+                        {dep.targetTable} • {dep.type}
+                      </span>
+                      {isLocked && (
+                        <span className="px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded text-[10px] font-bold flex items-center gap-1">
+                          <Lock className="w-3 h-3 text-amber-700" />
+                          LOCKED (Protected)
+                        </span>
+                      )}
+                      {isRemoved && (
+                        <span className="px-2 py-0.5 bg-rose-100 text-rose-800 border border-rose-300 rounded text-[10px] font-bold">
+                          REMOVED
+                        </span>
+                      )}
+                    </div>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${dep.riskBadge}`}>
+                      Risk of Removal: {dep.riskLevel}
+                    </span>
                   </div>
-                  <span className="font-mono text-[10px] text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded shrink-0">Optimized Join Path</span>
-                </div>
-              </div>
-            </div>
 
-            {/* Chain Node 3 */}
-            <div className="p-4 bg-white rounded-xl border border-zinc-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-mono text-xs font-bold text-zinc-900">
-                  <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
-                  <span>Foreign Key Dependency: line_items.transaction_id</span>
-                </div>
-                <span className="text-[10px] font-mono bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-bold">Join Cascade Protection</span>
-              </div>
-              <p className="text-xs text-zinc-600">
-                Child relation foreign key. Depends on parent <code className="font-mono">transactions.id</code> to prevent N+1 query storms.
-              </p>
-              <div className="pl-4 border-l-2 border-purple-200 space-y-2 mt-2">
-                <div className="p-2.5 bg-purple-50/50 rounded-lg border border-purple-100 text-xs flex items-center justify-between">
-                  <div>
-                    <strong className="text-purple-950 font-mono">└─ Dependent Index: idx_line_items_tx</strong>
-                    <p className="text-[11px] text-zinc-600 mt-0.5">Batches child record loading into single indexed lookups when expanding transaction details.</p>
+                  <div className="p-3 bg-rose-50/70 border border-rose-200/80 rounded-lg text-xs space-y-1">
+                    <div className="font-bold text-rose-950 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                      <span>Consequences of Removal / Pruning:</span>
+                    </div>
+                    <p className="text-rose-900 text-[11px] leading-relaxed">
+                      {dep.removalConsequence}
+                    </p>
                   </div>
-                  <span className="font-mono text-[10px] text-purple-700 bg-purple-100 px-2 py-0.5 rounded shrink-0">N+1 Eliminated</span>
+
+                  {/* Nested Dependent Queries & Reports Tree */}
+                  <div className="pl-4 border-l-2 border-indigo-200 space-y-3 pt-1">
+                    <div>
+                      <h5 className="text-[11px] font-bold text-zinc-700 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                        <Terminal className="w-3 h-3 text-indigo-600" />
+                        <span>Directly Dependent Queries ({dep.dependentQueries.length})</span>
+                      </h5>
+                      <div className="space-y-1.5">
+                        {dep.dependentQueries.map((q, qi) => (
+                          <div key={qi} className="p-2.5 bg-zinc-50 rounded-lg border border-zinc-200/80 flex items-center justify-between text-xs font-mono">
+                            <span className="font-bold text-zinc-800">└─ {q.name}</span>
+                            <span className="text-[10px] text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">{q.impact}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <h5 className="text-[11px] font-bold text-zinc-700 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                        <Database className="w-3 h-3 text-purple-600" />
+                        <span>Dependent Enterprise Reports ({dep.dependentReports.length})</span>
+                      </h5>
+                      <div className="space-y-1.5">
+                        {dep.dependentReports.map((r, ri) => (
+                          <div key={ri} className="p-2.5 bg-zinc-50 rounded-lg border border-zinc-200/80 flex items-center justify-between text-xs">
+                            <span className="font-medium text-zinc-800">└─ 📊 {r.name}</span>
+                            <span className="text-[10px] text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-mono">{r.impact}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
+              );
+            })}
           </div>
         </div>
       );
@@ -3538,6 +3862,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                             {matchingIndexes.map((idx, i) => {
                               const health = getIndexHealthScore(idx.name, idx.active, tbl.name);
                               const isRemoved = removedIndexes.includes(idx.name);
+                              const isLocked = lockedIndexes.includes(idx.name);
 
                               return (
                                 <div
@@ -3545,7 +3870,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
                                   onMouseLeave={() => setHoveredIndexWhatIf(null)}
                                   className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all bg-white ${
-                                    idx.active
+                                    isLocked
+                                      ? 'border-amber-300 ring-1 ring-amber-200/80 shadow-xs'
+                                      : idx.active
                                       ? 'border-emerald-300 shadow-2xs'
                                       : 'border-zinc-200 opacity-80 hover:opacity-100'
                                   }`}
@@ -3643,16 +3970,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                                 <div className="text-[10px] text-rose-700 font-normal">Flagged for removal • Reclaim 2.4 MB disk space</div>
                                               </div>
                                             </div>
-                                            <button
-                                              type="button"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleRemoveUnutilizedIndex(idx.name);
-                                              }}
-                                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors shrink-0"
-                                            >
-                                              Remove &amp; Free Space
-                                            </button>
+                                            {isLocked ? (
+                                              <span className="px-2.5 py-1 bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded text-[10px] shrink-0">
+                                                Protected (Locked)
+                                              </span>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleRemoveUnutilizedIndex(idx.name);
+                                                }}
+                                                className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors shrink-0"
+                                              >
+                                                Remove &amp; Free Space
+                                              </button>
+                                            )}
                                           </div>
                                         );
                                       }
@@ -3663,16 +3996,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                             <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
                                             <span>Redundant Coverage (Covered by Composite Index)</span>
                                           </div>
-                                          <button
-                                            type="button"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              handleConsolidateIndex(idx.name);
-                                            }}
-                                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
-                                          >
-                                            Consolidate
-                                          </button>
+                                          {isLocked ? (
+                                            <span className="px-2.5 py-1 bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded text-[10px]">
+                                              Protected (Locked)
+                                            </span>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleConsolidateIndex(idx.name);
+                                              }}
+                                              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
+                                            >
+                                              Consolidate
+                                            </button>
+                                          )}
                                         </div>
                                       ) : null;
                                     })()}
@@ -3690,6 +4029,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs font-bold text-zinc-900 mb-1.5">
                                       <div className="flex items-center gap-2 flex-wrap">
                                         <span className="font-mono text-indigo-950 font-bold">{idx.name}</span>
+                                        {isLocked && (
+                                          <span
+                                            id={`locked-badge-${idx.name}`}
+                                            data-testid={`locked-badge-${idx.name}`}
+                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-950 border border-amber-300 shadow-2xs"
+                                            title="High-priority manual lock enabled. Protected from automated optimization and index cleanup."
+                                          >
+                                            <Lock className="w-3 h-3 text-amber-700" />
+                                            LOCKED
+                                          </span>
+                                        )}
                                         {/* Color-Coded Index Health Score Badge (0-100) */}
                                         <span
                                           id={`health-score-${idx.name}`}
@@ -3870,30 +4220,80 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                     );
                                   })()}
 
-                                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
-                                    <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
-                                      {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
-                                    </span>
-                                    {idx.active && !idx.name.includes('PRIMARY KEY') && (
+                                  <div className="flex flex-col sm:flex-row sm:items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px] gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
+                                        {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
+                                      </span>
+                                      {isLocked && (
+                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-50 text-amber-900 border border-amber-200">
+                                          <Lock className="w-3 h-3 text-amber-700" />
+                                          Manual High-Priority
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          if (idx.name.includes('status') || idx.name.includes('cat')) {
-                                            if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
-                                          } else if (idx.name.includes('line_items') || idx.columns.includes('transaction_id')) {
-                                            if (flags.batchEagerLoading) onToggleFlag('batchEagerLoading');
-                                          } else if (idx.columns.includes('customer_email')) {
-                                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
-                                          } else if (idx.columns.includes('amount')) {
-                                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
-                                          }
+                                        id={`btn-lock-index-${idx.name}`}
+                                        data-testid={`btn-lock-index-${idx.name}`}
+                                        aria-label={isLocked ? `Unlock index ${idx.name}` : `Lock index ${idx.name}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleToggleLockIndex(idx.name);
                                         }}
-                                        className="px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
-                                        title="Revert / Undo optimization on this index"
+                                        className={`px-2.5 py-1 rounded-md font-bold text-[10px] transition-all cursor-pointer shadow-xs flex items-center gap-1.5 border ${
+                                          isLocked
+                                            ? 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 ring-1 ring-amber-300'
+                                            : 'bg-white hover:bg-zinc-100 text-zinc-700 border-zinc-300 hover:border-zinc-400'
+                                        }`}
+                                        title={
+                                          isLocked
+                                            ? `Index is locked (High-Priority Manual). Protected from Auto-Optimize and Index Cleanup. Click to unlock.`
+                                            : `Lock Index: Prevent Auto-Optimize and Index Cleanup operations from ever modifying or removing this high-priority index.`
+                                        }
                                       >
-                                        Undo Optimization
+                                        {isLocked ? (
+                                          <>
+                                            <Lock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                                            <span>Locked Index</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Unlock className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                                            <span>Lock Index</span>
+                                          </>
+                                        )}
                                       </button>
-                                    )}
+                                      {idx.active && !idx.name.includes('PRIMARY KEY') && (
+                                        <button
+                                          type="button"
+                                          disabled={isLocked}
+                                          onClick={() => {
+                                            if (isLocked) {
+                                              setImportSuccessNotice(`Cannot undo optimization: Index "${idx.name}" is locked as high-priority manual.`);
+                                              setTimeout(() => setImportSuccessNotice(null), 4000);
+                                              return;
+                                            }
+                                            if (idx.name.includes('status') || idx.name.includes('cat')) {
+                                              if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
+                                            } else if (idx.name.includes('line_items') || idx.columns.includes('transaction_id')) {
+                                              if (flags.batchEagerLoading) onToggleFlag('batchEagerLoading');
+                                            } else if (idx.columns.includes('customer_email')) {
+                                              setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
+                                            } else if (idx.columns.includes('amount')) {
+                                              setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+                                            }
+                                          }}
+                                          className={`px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors shadow-2xs ${
+                                            isLocked ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+                                          }`}
+                                          title={isLocked ? 'Index is locked: Protected from automated modifications' : 'Revert / Undo optimization on this index'}
+                                        >
+                                          Undo Optimization
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               );
@@ -6478,24 +6878,91 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                           Active Checkpoint
                         </span>
                       )}
+                      {snap.isProtected && (
+                        <span className="text-[10px] font-mono bg-amber-100 text-amber-900 px-1.5 py-0.2 rounded font-bold flex items-center gap-1 border border-amber-300">
+                          <Shield className="w-2.5 h-2.5 text-amber-700 fill-amber-700" />
+                          Protected
+                        </span>
+                      )}
                     </div>
                     <div className="text-[11px] text-zinc-500 mt-0.5">
                       Saved at {snap.timestamp} • Active Indexes: {snap.totalIndexesCount ?? snap.customIndexes.length}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleRestoreSnapshot(snap)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs ${
-                      selectedCheckpointId === snap.id
-                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                        : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                    }`}
-                  >
-                    {selectedCheckpointId === snap.id ? 'Active' : 'Restore State'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      id={`btn-toggle-protect-${snap.id}`}
+                      data-testid={`btn-toggle-protect-${snap.id}`}
+                      onClick={() => handleToggleProtectSnapshot(snap.id)}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer flex items-center gap-1 ${
+                        snap.isProtected
+                          ? 'bg-amber-100 text-amber-900 border-amber-300 shadow-2xs'
+                          : 'bg-white text-zinc-600 border-zinc-300 hover:bg-zinc-100'
+                      }`}
+                      title={snap.isProtected ? 'Protected: Prevents automated overwrite or pruning' : 'Mark as Protected'}
+                    >
+                      <Shield className={`w-3.5 h-3.5 ${snap.isProtected ? 'text-amber-700 fill-amber-700' : 'text-zinc-400'}`} />
+                      <span>{snap.isProtected ? 'Protected' : 'Protect'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreSnapshot(snap)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs ${
+                        selectedCheckpointId === snap.id
+                          ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                          : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                      }`}
+                    >
+                      {selectedCheckpointId === snap.id ? 'Active' : 'Restore State'}
+                    </button>
+                  </div>
                 </div>
               ))}
+            </div>
+
+            {/* Migration SQL Export Panel */}
+            <div className="p-3.5 bg-zinc-50 rounded-xl border border-zinc-200 space-y-3">
+              <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-wider flex items-center gap-1.5">
+                <Code className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Simulate Production Migration SQL Diff</span>
+              </h4>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-600 mb-1">From Version (Base)</label>
+                  <select
+                    value={migrationVersion1Id}
+                    onChange={(e) => setMigrationVersion1Id(e.target.value)}
+                    className="w-full p-1.5 rounded-lg border border-zinc-300 bg-white text-xs font-mono"
+                  >
+                    {snapshots.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-zinc-600 mb-1">To Version (Target)</label>
+                  <select
+                    value={migrationVersion2Id}
+                    onChange={(e) => setMigrationVersion2Id(e.target.value)}
+                    className="w-full p-1.5 rounded-lg border border-zinc-300 bg-white text-xs font-mono"
+                  >
+                    {snapshots.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="btn-export-migration-sql"
+                data-testid="btn-export-migration-sql"
+                onClick={handleExportMigrationSQL}
+                className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Difference as 'Migration SQL' Script</span>
+              </button>
             </div>
 
             <div className="pt-3 border-t border-zinc-200 flex items-center justify-between">
@@ -6760,6 +7227,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   className="px-2.5 py-1 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded text-[11px] font-semibold cursor-pointer"
                                 >
                                   Restore
+                                </button>
+                              </div>
+                            ) : lockedIndexes.includes(diag.name) ? (
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-300 px-2 py-1 rounded flex items-center gap-1">
+                                  <Lock className="w-3.5 h-3.5 text-amber-700" />
+                                  Locked (Protected)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleLockIndex(diag.name)}
+                                  className="px-2 py-1 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded text-[11px] font-semibold cursor-pointer"
+                                  title="Unlock index to allow removal"
+                                >
+                                  Unlock
                                 </button>
                               </div>
                             ) : (

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ExplainPlanNode, OptimizationFlags, QueryExecutionResult } from '../types';
-import { Terminal, Database, Code, CheckCircle2, AlertTriangle, ArrowDownRight, Layers } from 'lucide-react';
+import { Terminal, Database, Code, CheckCircle2, AlertTriangle, ArrowDownRight, Layers, Sparkles } from 'lucide-react';
 
 interface ExplainPlanViewerProps {
   result?: QueryExecutionResult;
@@ -20,6 +20,7 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
   searchTerm = ''
 }) => {
   const [activeTab, setActiveTab] = useState<'plan' | 'sql' | 'architecture'>('plan');
+  const [showExecutiveSummary, setShowExecutiveSummary] = useState<boolean>(false);
 
   const safeFlags = flags || {
     batchEagerLoading: true,
@@ -193,14 +194,89 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
       <div className="p-4">
         {activeTab === 'plan' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs text-zinc-500 pb-1 border-b border-zinc-100">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-zinc-500 pb-2 border-b border-zinc-100 gap-2">
               <span className="font-medium">
                 Execution Tree (PostgreSQL-compatible EXPLAIN ANALYZE format)
               </span>
-              <span className="font-mono">
-                Total Query Cost: {effectiveExplainPlan.cost.toFixed(2)} | Time: {executionTime}ms
-              </span>
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-xs font-semibold text-zinc-700 cursor-pointer bg-zinc-100 hover:bg-zinc-200/70 px-2.5 py-1 rounded-lg transition-colors">
+                  <input
+                    type="checkbox"
+                    id="checkbox-executive-summary"
+                    data-testid="checkbox-executive-summary"
+                    checked={showExecutiveSummary}
+                    onChange={(e) => setShowExecutiveSummary(e.target.checked)}
+                    className="rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Show Executive Summary</span>
+                </label>
+                <span className="font-mono">
+                  Total Query Cost: {effectiveExplainPlan.cost.toFixed(2)} | Time: {executionTime}ms
+                </span>
+              </div>
             </div>
+
+            {showExecutiveSummary && (
+              <div className="p-4 bg-gradient-to-br from-indigo-50/90 via-slate-50 to-emerald-50/80 rounded-xl border border-indigo-200 shadow-sm space-y-3 animate-fadeIn">
+                <div className="flex items-center justify-between border-b border-indigo-100 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-2xs">
+                      <Sparkles className="w-4 h-4" />
+                    </span>
+                    <h4 className="text-xs font-bold text-indigo-950 uppercase tracking-wider">
+                      Natural Language Executive Performance Summary
+                    </h4>
+                  </div>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                    safeFlags.btreeIndexing && safeFlags.batchEagerLoading
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                      : 'bg-rose-100 text-rose-800 border-rose-300'
+                  }`}>
+                    {safeFlags.btreeIndexing && safeFlags.batchEagerLoading ? '✓ Low Risk / Optimized' : '⚠️ High Risk / Bottlenecked'}
+                  </span>
+                </div>
+
+                <div className="text-xs text-zinc-700 space-y-2 leading-relaxed">
+                  <p>
+                    {safeFlags.btreeIndexing && safeFlags.batchEagerLoading ? (
+                      <>
+                        <strong>High-Level Assessment:</strong> The query workload is currently operating at peak efficiency, completing point lookups in <strong>{executionTime}ms</strong> with a total planner cost of <strong>{effectiveExplainPlan.cost.toFixed(2)}</strong>. All target predicates utilize active composite B-Tree indexes, completely eliminating full-table sequential scans.
+                      </>
+                    ) : (
+                      <>
+                        <strong>Critical Risk Identified:</strong> The execution plan currently triggers a <strong>Full Sequential Scan</strong> across unindexed table structures, forcing PostgreSQL to inspect 50,000+ rows in memory. Combined with an unbatched N+1 subquery storm, this query introduces severe thread lock contention and risks database connection pool exhaustion.
+                      </>
+                    )}
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <div className="p-2.5 bg-white/90 rounded-lg border border-zinc-200/80 shadow-2xs">
+                      <div className="font-bold text-zinc-900 mb-1 flex items-center gap-1.5">
+                        <AlertTriangle className={`w-3.5 h-3.5 ${safeFlags.btreeIndexing ? 'text-emerald-600' : 'text-rose-600'}`} />
+                        <span>Scan Efficiency &amp; I/O</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-600">
+                        {safeFlags.btreeIndexing
+                          ? 'Index Scan active (O(log n) tree seek). Reclaims 100% of buffer cache bandwidth.'
+                          : 'O(n) Sequential Scan. 50,000 rows scanned with 0 cache hits per query execution.'}
+                      </p>
+                    </div>
+
+                    <div className="p-2.5 bg-white/90 rounded-lg border border-zinc-200/80 shadow-2xs">
+                      <div className="font-bold text-zinc-900 mb-1 flex items-center gap-1.5">
+                        <Database className={`w-3.5 h-3.5 ${safeFlags.batchEagerLoading ? 'text-emerald-600' : 'text-blue-600'}`} />
+                        <span>Roundtrip Latency &amp; N+1</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-600">
+                        {safeFlags.batchEagerLoading
+                          ? 'Batched eager loading active (1 single roundtrip query for related records).'
+                          : 'Synchronous N+1 subquery storm executing 50+ separate roundtrips per page.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {renderPlanNode(effectiveExplainPlan)}
           </div>
