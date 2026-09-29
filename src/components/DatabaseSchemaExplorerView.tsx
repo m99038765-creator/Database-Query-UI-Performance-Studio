@@ -54,6 +54,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [isScanningCleanup, setIsScanningCleanup] = useState<boolean>(false);
   const [cleanupScanCompleted, setCleanupScanCompleted] = useState<boolean>(false);
   const [removedIndexes, setRemovedIndexes] = useState<string[]>([]);
+  const [reindexedIndexes, setReindexedIndexes] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain'>('explorer');
   const [showWorkloadOptimizationModal, setShowWorkloadOptimizationModal] = useState<boolean>(false);
   const [isAutoOptimizingWorkload, setIsAutoOptimizingWorkload] = useState<boolean>(false);
@@ -1606,6 +1607,14 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const handleRestoreSnapshot = (snap: SchemaSnapshot) => {
     handleSelectCheckpoint(snap.id);
     setShowSnapshotsModal(false);
+  };
+
+  const handleReindexIndex = (indexName: string) => {
+    if (!reindexedIndexes.includes(indexName)) {
+      setReindexedIndexes([...reindexedIndexes, indexName]);
+      setImportSuccessNotice(`Successfully executed REINDEX CONCURRENTLY on "${indexName}". Fragmentation reduced to 3% and index health score restored!`);
+      setTimeout(() => setImportSuccessNotice(null), 4000);
+    }
   };
 
   const handleToggleProtectSnapshot = (snapshotId: string) => {
@@ -4145,6 +4154,41 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       </div>
                                     </div>
                                   </div>
+
+                                  {/* Proactive Re-Index Action Banner if Low Health or Fragmentation > 30% */}
+                                  {(() => {
+                                    const isReindexed = reindexedIndexes.includes(idx.name);
+                                    const fragmentation = isReindexed ? 3 : (idx.name.includes('missing') || idx.name.includes('date') || !idx.active) ? 38 : 12;
+                                    const effectiveHealthScore = isReindexed ? Math.max(health.score, 95) : health.score;
+
+                                    return (effectiveHealthScore < 70 || fragmentation > 30) && !isRemoved ? (
+                                      <div
+                                        id={`reindex-banner-${idx.name}`}
+                                        data-testid={`reindex-banner-${idx.name}`}
+                                        className="my-2 p-2.5 bg-rose-50 border border-rose-300 rounded-lg flex items-center justify-between text-[11px] text-rose-950 shadow-2xs"
+                                      >
+                                        <div className="flex items-center gap-2 font-semibold">
+                                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 animate-pulse" />
+                                          <div>
+                                            <div>Index Fragmentation Alert: {fragmentation}% B-Tree Bloat Detected</div>
+                                            <div className="text-[10px] text-rose-700 font-normal">Health score is {effectiveHealthScore}/100. Run REINDEX CONCURRENTLY to rebuild tree balance and eliminate sequential page reads.</div>
+                                          </div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          id={`btn-reindex-${idx.name}`}
+                                          data-testid={`btn-reindex-${idx.name}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleReindexIndex(idx.name);
+                                          }}
+                                          className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors shrink-0"
+                                        >
+                                          ⚡ Run REINDEX CONCURRENTLY
+                                        </button>
+                                      </div>
+                                    ) : null;
+                                  })()}
 
                                   {(() => {
                                     const impact = getIndexImpactSummary(idx.name);
