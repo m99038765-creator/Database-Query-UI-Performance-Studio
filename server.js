@@ -10,26 +10,32 @@ app.use(express.json());
 app.get(["/healthz", "/_health", "/health", "/_ready"], (_req, res) => {
   res.status(200).send("OK");
 });
-var possibleDirs = [
+var candidateDirs = [
   path.join(process.cwd(), "dist"),
   path.join(process.cwd(), "build"),
   path.join(__dirname, "dist"),
-  path.join(__dirname, "build"),
-  "/dist",
-  "/build"
+  path.join(__dirname, "build")
 ];
-var distDir = possibleDirs.find((dir) => fs.existsSync(dir)) || path.join(__dirname, "dist");
-var indexHtmlPath = path.join(distDir, "index.html");
-console.log(`Resolved static directory: ${distDir} (exists: ${fs.existsSync(distDir)})`);
-console.log(`Resolved index.html path: ${indexHtmlPath} (exists: ${fs.existsSync(indexHtmlPath)})`);
-if (fs.existsSync(distDir)) {
-  app.use(express.static(distDir));
+for (const dir of candidateDirs) {
+  if (fs.existsSync(dir)) {
+    app.use(express.static(dir));
+  }
 }
+var findIndexHtml = () => {
+  for (const dir of candidateDirs) {
+    const candidate = path.join(dir, "index.html");
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+};
 app.use((req, res, next) => {
   if (req.method !== "GET") {
     return next();
   }
-  if (fs.existsSync(indexHtmlPath)) {
+  const indexHtmlPath = findIndexHtml();
+  if (indexHtmlPath) {
     res.sendFile(indexHtmlPath);
   } else {
     res.status(200).send(`<!doctype html>
@@ -50,42 +56,28 @@ app.use((req, res, next) => {
 </html>`);
   }
 });
-var portsToListen = /* @__PURE__ */ new Set();
-if (process.env.PORT) {
-  const envPort = parseInt(process.env.PORT, 10);
-  if (!isNaN(envPort)) portsToListen.add(envPort);
-}
-portsToListen.add(8080);
-portsToListen.add(3e3);
-var activeServers = [];
-for (const port of portsToListen) {
-  try {
-    const s = app.listen(port, "0.0.0.0", () => {
-      console.log(`Server successfully listening on http://0.0.0.0:${port}`);
+var PORT = parseInt(process.env.PORT || "8080", 10);
+var server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server successfully listening on http://0.0.0.0:${PORT}`);
+});
+server.on("error", (err) => {
+  console.error(`Server error on port ${PORT}:`, err);
+  if (err && err.code === "EADDRINUSE" && !process.env.PORT) {
+    console.log(`Port ${PORT} in use, trying fallback port 3000...`);
+    app.listen(3e3, "0.0.0.0", () => {
+      console.log(`Server successfully listening on http://0.0.0.0:3000`);
     });
-    s.on("error", (err) => {
-      if (err.code === "EADDRINUSE") {
-        console.log(`Port ${port} is already in use (e.g. by Nginx proxy bridge), skipping.`);
-      } else {
-        console.error(`Server error on port ${port}:`, err);
-      }
-    });
-    activeServers.push(s);
-  } catch (err) {
-    console.log(`Could not bind to port ${port}:`, err);
   }
-}
+});
 var gracefulShutdown = (signal) => {
   console.log(`Received ${signal}. Shutting down gracefully...`);
-  for (const s of activeServers) {
-    try {
-      s.close();
-    } catch (_) {
-    }
-  }
+  server.close(() => {
+    console.log("HTTP server closed.");
+    process.exit(0);
+  });
   setTimeout(() => {
     process.exit(0);
-  }, 1e3);
+  }, 2e3);
 };
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
