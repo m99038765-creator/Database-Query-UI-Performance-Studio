@@ -5,11 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build && cp -r build dist && esbuild server.ts --platform=node --packages=external --bundle --format=esm --outfile=server.js",
+    "build": "vite build && mkdir -p dist && cp -r build/. dist/ && esbuild server.ts --platform=node --packages=external --bundle --format=esm --outfile=server.js",
     "gcp-build": "npm run build",
     "start": "node server.ts",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

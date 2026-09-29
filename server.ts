@@ -7,7 +7,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
 
 app.use(express.json());
 
@@ -16,22 +15,33 @@ app.get(['/healthz', '/_health', '/health', '/_ready'], (_req, res) => {
   res.status(200).send('OK');
 });
 
-const distDir = fs.existsSync(path.join(__dirname, 'dist'))
-  ? path.join(__dirname, 'dist')
-  : path.join(__dirname, 'build');
+// Resolve the static files directory (supports dist, build, relative to cwd or __dirname)
+const possibleDirs = [
+  path.join(process.cwd(), 'dist'),
+  path.join(process.cwd(), 'build'),
+  path.join(__dirname, 'dist'),
+  path.join(__dirname, 'build'),
+  '/dist',
+  '/build'
+];
+const distDir = possibleDirs.find((dir) => fs.existsSync(dir)) || path.join(__dirname, 'dist');
 const indexHtmlPath = path.join(distDir, 'index.html');
 
-// Serve static files from the dist or build directory if it exists
+console.log(`Resolved static directory: ${distDir} (exists: ${fs.existsSync(distDir)})`);
+console.log(`Resolved index.html path: ${indexHtmlPath} (exists: ${fs.existsSync(indexHtmlPath)})`);
+
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
 }
 
 // Fallback route for SPA client-side routing
-app.get('*', (_req, res) => {
+app.use((req, res, next) => {
+  if (req.method !== 'GET') {
+    return next();
+  }
   if (fs.existsSync(indexHtmlPath)) {
     res.sendFile(indexHtmlPath);
   } else {
-    // Graceful fallback if dist is building or missing
     res.status(200).send(`<!doctype html>
 <html lang="en">
   <head>
@@ -51,28 +61,49 @@ app.get('*', (_req, res) => {
   }
 });
 
-const server = app.listen(port, '0.0.0.0', () => {
-  console.log(`Server listening on http://0.0.0.0:${port}`);
-});
+// Listen on all relevant ports:
+// 1. process.env.PORT (Cloud Run default, e.g. 8080)
+// 2. 8080 (standard Cloud Run HTTP port)
+// 3. 3000 (AI Studio Nginx reverse proxy target and container standard)
+const portsToListen = new Set<number>();
+if (process.env.PORT) {
+  const envPort = parseInt(process.env.PORT, 10);
+  if (!isNaN(envPort)) portsToListen.add(envPort);
+}
+portsToListen.add(8080);
+portsToListen.add(3000);
 
-server.on('error', (err: any) => {
-  console.error('Server error:', err);
-  process.exit(1);
-});
+const activeServers: any[] = [];
+
+for (const port of portsToListen) {
+  try {
+    const s = app.listen(port, '0.0.0.0', () => {
+      console.log(`Server successfully listening on http://0.0.0.0:${port}`);
+    });
+    s.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.log(`Port ${port} is already in use (e.g. by Nginx proxy bridge), skipping.`);
+      } else {
+        console.error(`Server error on port ${port}:`, err);
+      }
+    });
+    activeServers.push(s);
+  } catch (err) {
+    console.log(`Could not bind to port ${port}:`, err);
+  }
+}
 
 // Graceful shutdown handling for Cloud Run revision rollout
 const gracefulShutdown = (signal: string) => {
   console.log(`Received ${signal}. Shutting down gracefully...`);
-  server.close(() => {
-    console.log('HTTP server closed.');
-    process.exit(0);
-  });
-
-  // Force shutdown after 10s if connections remain
+  for (const s of activeServers) {
+    try {
+      s.close();
+    } catch (_) {}
+  }
   setTimeout(() => {
-    console.error('Could not close connections in time, forcefully shutting down');
-    process.exit(1);
-  }, 10000);
+    process.exit(0);
+  }, 1000);
 };
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

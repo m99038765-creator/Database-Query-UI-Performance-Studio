@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -42,6 +42,19 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showWorkloadOptimizationModal, setShowWorkloadOptimizationModal] = useState<boolean>(false);
   const [isAutoOptimizingWorkload, setIsAutoOptimizingWorkload] = useState<boolean>(false);
   const [autoOptimizedCompleted, setAutoOptimizedCompleted] = useState<boolean>(false);
+  const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
+  const [indexSearchQuery, setIndexSearchQuery] = useState<string>('');
+  const [indexCategoryFilter, setIndexCategoryFilter] = useState<string>('all');
+  const [exportSuccessNotice, setExportSuccessNotice] = useState<string | null>(null);
+  const [isExportingState, setIsExportingState] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Automatically expand the selected table category when selectedTable changes
+    setCollapsedCategories((prev) => ({
+      ...prev,
+      [selectedTable]: false
+    }));
+  }, [selectedTable]);
 
   const expensiveQueriesWorkload = [
     {
@@ -293,6 +306,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const tables = [
     {
       name: 'transactions',
+      entityName: 'Transactions Entity',
+      entityBadge: 'Core Ledger',
+      entityRole: 'Primary Relational Anchor',
       description: 'Primary transactional ledger storing 50,000+ orders and execution telemetry.',
       columns: [
         { name: 'id', type: 'VARCHAR(36)', isPk: true, isFk: false, indexed: true },
@@ -305,13 +321,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'created_at', type: 'TIMESTAMP', isPk: false, isFk: false, indexed: true },
       ],
       indexes: [
-        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], active: !removedIndexes.includes('PRIMARY KEY (id)') },
-        { name: 'idx_orders_status_cat', type: 'Composite B-Tree', columns: ['status', 'category'], active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_status_cat') },
-        { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], active: !removedIndexes.includes('idx_transactions_date') },
-        { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], active: createdCustomIndexes.includes('customer_email') && !removedIndexes.includes('idx_transactions_email_missing') },
-        { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') },
-        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], active: createdCompositeIndexes.includes('email_status') && !removedIndexes.includes('idx_transactions_email_status') },
-        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], active: createdCompositeIndexes.includes('category_amount') && !removedIndexes.includes('idx_transactions_category_amount') },
+        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: !removedIndexes.includes('PRIMARY KEY (id)') },
+        { name: 'idx_orders_status_cat', type: 'Composite B-Tree', columns: ['status', 'category'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_status_cat') },
+        { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: !removedIndexes.includes('idx_transactions_date') },
+        { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('customer_email') && !removedIndexes.includes('idx_transactions_email_missing') },
+        { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') },
+        { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCompositeIndexes.includes('email_status') && !removedIndexes.includes('idx_transactions_email_status') },
+        { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCompositeIndexes.includes('category_amount') && !removedIndexes.includes('idx_transactions_category_amount') },
       ],
       relationships: [
         { targetTable: 'line_items', type: 'One-to-Many', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -319,6 +335,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     },
     {
       name: 'line_items',
+      entityName: 'Order Items Entity',
+      entityBadge: 'Child Relation',
+      entityRole: 'Itemized Order Breakdowns',
       description: 'Order items table storing SKU details and quantities (N+1 query target if unbatched).',
       columns: [
         { name: 'id', type: 'VARCHAR(36)', isPk: true, isFk: false, indexed: true },
@@ -328,8 +347,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'unit_price', type: 'DECIMAL(10,2)', isPk: false, isFk: false, indexed: false },
       ],
       indexes: [
-        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], active: true },
-        { name: 'idx_line_items_tx', type: 'B-Tree (Foreign Key)', columns: ['transaction_id'], active: flags.batchEagerLoading }
+        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: true },
+        { name: 'idx_line_items_tx', type: 'B-Tree (Foreign Key)', columns: ['transaction_id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: flags.batchEagerLoading }
       ],
       relationships: [
         { targetTable: 'transactions', type: 'Many-to-One', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -337,6 +356,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     },
     {
       name: 'customers',
+      entityName: 'Customers Entity',
+      entityBadge: 'Master Dimension',
+      entityRole: 'Accounts & User Registry',
       description: 'Customer directory and enterprise tier tracking.',
       columns: [
         { name: 'id', type: 'VARCHAR(36)', isPk: true, isFk: false, indexed: true },
@@ -345,8 +367,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'tier', type: 'VARCHAR(32)', isPk: false, isFk: false, indexed: false },
       ],
       indexes: [
-        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], active: true },
-        { name: 'idx_customers_email', type: 'B-Tree Unique', columns: ['email'], active: true }
+        { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true },
+        { name: 'idx_customers_email', type: 'B-Tree Unique', columns: ['email'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true }
       ],
       relationships: []
     }
@@ -376,6 +398,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       return { topQuery: 'Q4: Customer Email Search', reduction: 'O(n) → O(log n) Leaf Node Seek' };
     } else if (indexName.includes('amount')) {
       return { topQuery: 'Q5: Amount Threshold Filter', reduction: 'O(n) → O(log n) Range Index Scan' };
+    } else if (indexName.includes('line_items') || indexName.includes('tx')) {
+      return { topQuery: 'Q6: Relational Line Items Join', reduction: 'O(n) → O(1) Indexed Hash Join' };
     }
     return { topQuery: 'Top Queries #1-#5', reduction: 'O(n) → O(log n) Read Optimization' };
   };
@@ -499,6 +523,113 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const handleExportSchemaState = () => {
+    setIsExportingState(true);
+
+    const totalIdxCount = tables.reduce((acc, t) => acc + t.indexes.length, 0);
+    const activeIdxCount = tables.reduce(
+      (acc, t) => acc + t.indexes.filter((idx) => idx.active && !removedIndexes.includes(idx.name)).length,
+      0
+    );
+
+    const schemaSnapshot = {
+      snapshotMetadata: {
+        exportVersion: '1.0.0',
+        exportedAt: new Date().toISOString(),
+        exportedTimestamp: Date.now(),
+        databaseEngine: 'PostgreSQL / Cloud SQL Relational Engine',
+        stateDescription: 'Optimized Database Schema & Index Configuration Snapshot'
+      },
+      optimizationFlags: {
+        ...flags
+      },
+      performanceImpact: {
+        speedUpEstimatedPercent: speedUpPercent,
+        totalTables: tables.length,
+        totalIndexes: totalIdxCount,
+        activeIndexes: activeIdxCount,
+        prunedUnutilizedIndexes: removedIndexes.length,
+        workloadLatencyImprovement: 'Up to 99.6% reduction on expensive queries'
+      },
+      indexConfiguration: {
+        createdCustomIndexes: [...createdCustomIndexes],
+        createdCompositeIndexes: [...createdCompositeIndexes],
+        consolidatedIndexes: [...consolidatedIndexes],
+        removedOrPrunedIndexes: [...removedIndexes]
+      },
+      tablesAndEntities: tables.map((t) => ({
+        tableName: t.name,
+        entityName: t.entityName,
+        entityBadge: t.entityBadge,
+        entityRole: t.entityRole,
+        description: t.description,
+        columnCount: t.columns.length,
+        columns: t.columns.map((col) => ({
+          name: col.name,
+          type: col.type,
+          isPk: col.isPk,
+          isFk: col.isFk,
+          indexed: col.indexed
+        })),
+        indexes: t.indexes.map((idx) => ({
+          name: idx.name,
+          type: idx.type,
+          columns: idx.columns,
+          targetTable: idx.targetTable,
+          targetEntity: idx.targetEntity,
+          active: idx.active && !removedIndexes.includes(idx.name),
+          status: removedIndexes.includes(idx.name)
+            ? 'REMOVED'
+            : idx.active
+            ? 'ACTIVE'
+            : 'INACTIVE',
+          optimizationComplexityReduction: getOptimizationPotential(idx.name),
+          impactSummary: getIndexImpactSummary(idx.name)
+        })),
+        relationships: t.relationships.map((rel) => ({
+          targetTable: rel.targetTable,
+          type: rel.type,
+          foreignKey: rel.foreignKey,
+          optimized: rel.optimized
+        }))
+      })),
+      expensiveQueriesWorkload: expensiveQueriesWorkload.map((q) => ({
+        id: q.id,
+        name: q.name,
+        frequency: q.frequency,
+        executionShare: q.executionShare,
+        unindexedLatency: q.unindexedLatency,
+        optimizedLatency: q.optimizedLatency,
+        speedup: q.speedup,
+        optimalIndexName: q.optimalIndexName,
+        optimalIndexType: q.optimalIndexType,
+        isToggled: q.isToggled
+      }))
+    };
+
+    const fileName = `schema-state-export-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    const jsonBlob = new Blob([JSON.stringify(schemaSnapshot, null, 2)], {
+      type: 'application/json'
+    });
+    const downloadUrl = URL.createObjectURL(jsonBlob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.href = downloadUrl;
+    downloadAnchor.download = fileName;
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    document.body.removeChild(downloadAnchor);
+    URL.revokeObjectURL(downloadUrl);
+
+    setTimeout(() => {
+      setIsExportingState(false);
+      setExportSuccessNotice(`Successfully exported schema state snapshot (${activeIdxCount} active indexes) to ${fileName}`);
+    }, 400);
+
+    setTimeout(() => {
+      setExportSuccessNotice(null);
+    }, 5000);
   };
 
   const renderContent = () => {
@@ -777,213 +908,585 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             </div>
           </div>
 
-          {/* Current B-Tree Indexes */}
-          <div>
-            <h4 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">
-              Active Index Structures &amp; Performance Impact
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {currentTableData.indexes.map((idx, i) => (
-                <div
-                  key={`idx-${i}`}
-                  onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
-                  onMouseLeave={() => setHoveredIndexWhatIf(null)}
-                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all ${
-                    idx.active
-                      ? 'bg-emerald-50/50 border-emerald-300'
-                      : 'bg-zinc-50 border-zinc-200 opacity-80 hover:opacity-100'
-                  }`}
+          {/* Index List Grouped by Target Entity & Table with Collapsible Categories */}
+          <div id="indexes-grouped-list" data-testid="grouped-index-list" className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-zinc-200">
+              <div>
+                <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-wider flex items-center gap-2">
+                  <span>Active Index Structures Grouped by Entity</span>
+                  <span className="font-mono text-[10px] bg-indigo-100 text-indigo-800 font-bold px-2 py-0.5 rounded-full border border-indigo-200">
+                    {tables.reduce((acc, t) => acc + t.indexes.length, 0)} Total Indexes
+                  </span>
+                </h4>
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  Indexes grouped by the table or entity they target, with collapsible categories for rapid scanning and navigation of large schemas.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Real-time Filter Text Input Field */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    id="filter-indexes-input"
+                    name="filter-indexes-input"
+                    data-testid="filter-indexes-input"
+                    value={indexSearchQuery}
+                    onChange={(e) => setIndexSearchQuery(e.target.value)}
+                    placeholder="Filter indexes by name or target table..."
+                    aria-label="Filter indexes by name or target table"
+                    className="filter-indexes-input pl-8 pr-7 py-1.5 text-xs bg-white border border-zinc-300 rounded-lg text-zinc-800 placeholder-zinc-400 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-52 sm:w-72 shadow-2xs font-mono transition-all"
+                  />
+                  {indexSearchQuery && (
+                    <button
+                      type="button"
+                      id="btn-clear-index-filter"
+                      data-testid="btn-clear-index-filter"
+                      onClick={() => setIndexSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 p-0.5 rounded cursor-pointer"
+                      title="Clear filter"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Bulk Category Expand / Collapse Buttons */}
+                <button
+                  type="button"
+                  id="btn-expand-all-categories"
+                  data-testid="btn-expand-all-categories"
+                  onClick={() => setCollapsedCategories({})}
+                  className="px-2.5 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1 transition-colors"
+                  title="Expand all table & entity categories"
                 >
-                  {/* Interactive What-If Hover Tooltip */}
-                  {hoveredIndexWhatIf === idx.name && (
-                    <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-zinc-900 text-white p-4 rounded-xl shadow-2xl border border-indigo-500/60 animate-fadeIn text-xs">
-                      <div className="flex items-center justify-between mb-2 pb-2 border-b border-zinc-800">
-                        <div className="flex items-center gap-2">
-                          <Sparkles className="w-4 h-4 text-indigo-400" />
-                          <strong className="text-indigo-300">What-If Analysis: {idx.name}</strong>
-                        </div>
-                        <span className="font-mono text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded border border-indigo-800">
-                          Top 5 Frequent Slow Queries
-                        </span>
-                      </div>
-                      <div className="space-y-2">
-                        {getWhatIfTop5Queries(idx.name).map((q, qi) => (
-                          <div key={qi} className="p-2 rounded bg-zinc-800/95 border border-zinc-700/80 flex flex-col gap-1">
-                            <div className="font-mono text-[11px] text-zinc-200 truncate" title={q.query}>
-                              {qi + 1}. {q.query}
-                            </div>
-                            <div className="flex items-center justify-between text-[10px] font-mono">
-                              <span className="text-zinc-400">Freq: {q.freq}</span>
-                              <div className="flex items-center gap-2">
-                                <span className="line-through text-zinc-500">{q.before}</span>
-                                <span className="text-zinc-300">→</span>
-                                <span className="text-emerald-400 font-bold">{q.after}</span>
-                                <span className="bg-emerald-950 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-800">{q.improvement}</span>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 text-[10px] text-zinc-400 italic text-center">
-                        💡 Hovering index structures dynamically estimates B-Tree execution time improvements.
-                      </div>
-                    </div>
-                  )}
+                  <ChevronDown className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Expand All</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-collapse-all-categories"
+                  data-testid="btn-collapse-all-categories"
+                  onClick={() => {
+                    const allCol: Record<string, boolean> = {};
+                    tables.forEach((t) => {
+                      allCol[t.name] = true;
+                    });
+                    setCollapsedCategories(allCol);
+                  }}
+                  className="px-2.5 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1 transition-colors"
+                  title="Collapse all categories for high-level schema scanning"
+                >
+                  <ChevronUp className="w-3.5 h-3.5 text-zinc-500" />
+                  <span>Collapse All</span>
+                </button>
+              </div>
+            </div>
 
-                  {/* Baseline Comparison Ribbon */}
-                  {compareWithBaseline && (() => {
-                    const cmp = getBaselineComparisonForIndex(idx.name, idx.active);
-                    return (
-                      <div className={`mb-2.5 p-2 rounded-lg border text-[11px] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 ${
-                        cmp.isNewOptimization
-                          ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950 shadow-2xs'
-                          : 'bg-zinc-100/90 border-zinc-200 text-zinc-800'
-                      }`}>
-                        <div className="flex items-center gap-1.5">
-                          <Layers className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                          <span className="font-medium text-[11px]">
-                            <span className="line-through text-zinc-500 mr-1">Baseline: {cmp.baselineStatus}</span>
-                            <span className="text-zinc-400">➔</span>
-                            <span className="font-bold ml-1 text-emerald-800">Current: {cmp.currentStatus}</span>
-                          </span>
-                        </div>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${cmp.badgeClass}`}>
-                          {cmp.speedup}
-                        </span>
-                      </div>
-                    );
-                  })()}
-                  <div>
-                    {(() => {
-                      if (removedIndexes.includes(idx.name)) {
-                        return (
-                          <div className="mb-2 p-2 bg-zinc-100 border border-zinc-300 rounded-lg flex items-center justify-between text-[11px] text-zinc-600 shadow-2xs">
-                            <div className="flex items-center gap-1.5 font-medium">
-                              <Trash2 className="w-3.5 h-3.5 text-zinc-500" />
-                              <span>Index Removed by Cleanup Diagnostic (+2.4 MB space saved)</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRestoreRemovedIndex(idx.name);
-                              }}
-                              className="px-2 py-0.5 bg-white hover:bg-zinc-200 border border-zinc-300 text-zinc-700 font-semibold rounded text-[10px] cursor-pointer"
-                            >
-                              Restore
-                            </button>
-                          </div>
-                        );
-                      }
-                      if (cleanupScanCompleted && isIndexUnutilized(idx.name)) {
-                        return (
-                          <div className="mb-2 p-2.5 bg-rose-50 border border-rose-300 rounded-lg flex items-center justify-between text-[11px] text-rose-900 shadow-2xs">
-                            <div className="flex items-center gap-2 font-semibold">
-                              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                              <div>
-                                <div>Unutilized in Last 100 Queries (0 Hits)</div>
-                                <div className="text-[10px] text-rose-700 font-normal">Flagged for removal • Reclaim 2.4 MB disk space</div>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleRemoveUnutilizedIndex(idx.name);
-                              }}
-                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors shrink-0"
-                            >
-                              Remove &amp; Free Space
-                            </button>
-                          </div>
-                        );
-                      }
-                      const redundant = isIndexRedundant(idx.name, idx.columns);
-                      return redundant ? (
-                        <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
-                          <div className="flex items-center gap-2 font-semibold">
-                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
-                            <span>Redundant Coverage (Covered by Composite Index)</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleConsolidateIndex(idx.name);
-                            }}
-                            className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
-                          >
-                            Consolidate
-                          </button>
-                        </div>
-                      ) : null;
-                    })()}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-bold text-zinc-900 mb-1">
-                      <span className="font-mono">{idx.name}</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-sans px-1.5 py-0.2 rounded font-bold shadow-2xs" title="Calculated Query Complexity Reduction">
-                          ⚡ {getOptimizationPotential(idx.name)}
-                        </span>
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                          removedIndexes.includes(idx.name)
-                            ? 'bg-zinc-200 text-zinc-600 line-through'
-                            : idx.active
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-zinc-200 text-zinc-600'
-                        }`}>
-                          {removedIndexes.includes(idx.name) ? 'REMOVED' : idx.active ? 'ACTIVE' : 'INACTIVE'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="text-[11px] text-zinc-500 font-mono mb-2">
-                      Type: {idx.type} • Columns: ({idx.columns.join(', ')})
-                    </div>
-                  </div>
+            {/* Real-time Filter Active Notification Banner */}
+            {indexSearchQuery && (
+              <div
+                id="active-filter-notification"
+                data-testid="active-filter-notification"
+                className="p-2.5 px-3 bg-indigo-50/80 border border-indigo-200 rounded-xl flex items-center justify-between gap-2 text-xs text-indigo-950 animate-fadeIn shadow-2xs"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Filter className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span>
+                    Filtering indexes in real-time matching: <strong className="font-mono bg-white px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-900">&ldquo;{indexSearchQuery}&rdquo;</strong>
+                  </span>
+                  <span className="text-[11px] text-indigo-700">
+                    (matching name or target table)
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIndexSearchQuery('')}
+                  className="text-[11px] text-indigo-700 hover:text-indigo-950 font-bold cursor-pointer underline flex items-center gap-1 shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Reset Filter</span>
+                </button>
+              </div>
+            )}
 
-                  {(() => {
-                    const impact = getIndexImpactSummary(idx.name);
-                    return (
-                      <div className="my-2 p-2 bg-white/90 rounded-lg border border-zinc-200/80 text-[11px] space-y-0.5 shadow-2xs">
-                        <div className="font-bold text-zinc-900 flex items-center justify-between">
-                          <span>📊 {impact.topQuery}</span>
-                          <span className="font-mono text-[10px] text-indigo-700 font-semibold">{impact.reduction}</span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {showDetailedStats && (
-                    <div className="my-1.5 p-2 bg-indigo-50/70 rounded-lg border border-indigo-200 text-[11px] font-mono flex items-center justify-between text-indigo-950">
-                      <span>Storage Size: <strong className="text-indigo-900">{idx.active ? (idx.name.includes('PRIMARY') ? '4.8 MB' : '2.1 MB') : '0 KB'}</strong></span>
-                      <span>Hit Rate: <strong className="text-emerald-700">{idx.active ? '99.4%' : '0.0%'}</strong></span>
-                    </div>
-                  )}
-
-                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
-                    <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
-                      {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
+            {/* Entity Filter Pills */}
+            <div className="flex items-center gap-1.5 flex-wrap text-xs">
+              <span className="text-[11px] font-semibold text-zinc-400 mr-1 flex items-center gap-1">
+                <Filter className="w-3 h-3 text-zinc-400" />
+                <span>Filter Entity:</span>
+              </span>
+              <button
+                type="button"
+                id="filter-entity-all"
+                data-testid="filter-entity-all"
+                onClick={() => setIndexCategoryFilter('all')}
+                className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold transition-all cursor-pointer ${
+                  indexCategoryFilter === 'all'
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600'
+                }`}
+              >
+                All Entities ({tables.reduce((acc, t) => acc + t.indexes.length, 0)})
+              </button>
+              {tables.map((t) => {
+                const count = t.indexes.length;
+                const isSelected = indexCategoryFilter === t.name;
+                return (
+                  <button
+                    key={t.name}
+                    type="button"
+                    id={`filter-entity-${t.name}`}
+                    data-testid={`filter-entity-${t.name}`}
+                    onClick={() => {
+                      setIndexCategoryFilter(t.name);
+                      setCollapsedCategories((prev) => ({ ...prev, [t.name]: false }));
+                    }}
+                    className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                      isSelected
+                        ? 'bg-indigo-600 text-white shadow-2xs'
+                        : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-600'
+                    }`}
+                  >
+                    <span>{t.name}</span>
+                    <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-indigo-700 text-indigo-100' : 'bg-zinc-200 text-zinc-600'}`}>
+                      {count}
                     </span>
-                    {idx.active && !idx.name.includes('PRIMARY KEY') && (
-                      <button
-                        type="button"
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Collapsible Categories Grouped by Entity */}
+            <div className="space-y-3.5">
+              {tables
+                .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
+                .map((tbl) => {
+                  const queryLower = indexSearchQuery.trim().toLowerCase();
+                  const matchingIndexes = tbl.indexes.filter((idx) => {
+                    if (!queryLower) return true;
+                    const matchesName = idx.name.toLowerCase().includes(queryLower);
+                    const matchesTargetTable =
+                      tbl.name.toLowerCase().includes(queryLower) ||
+                      (idx.targetTable && idx.targetTable.toLowerCase().includes(queryLower)) ||
+                      (tbl.entityName && tbl.entityName.toLowerCase().includes(queryLower)) ||
+                      (idx.targetEntity && idx.targetEntity.toLowerCase().includes(queryLower));
+                    const matchesColumns = idx.columns.some((c) => c.toLowerCase().includes(queryLower));
+                    const matchesType = idx.type.toLowerCase().includes(queryLower);
+                    return matchesName || matchesTargetTable || matchesColumns || matchesType;
+                  });
+
+                  if (queryLower && matchingIndexes.length === 0) {
+                    return null;
+                  }
+
+                  const isCollapsed = queryLower ? false : !!collapsedCategories[tbl.name];
+                  const activeCount = matchingIndexes.filter(
+                    (idx) => idx.active && !removedIndexes.includes(idx.name)
+                  ).length;
+
+                  return (
+                    <div
+                      key={tbl.name}
+                      data-testid={`collapsible-category-${tbl.name}`}
+                      className={`border rounded-xl transition-all overflow-hidden ${
+                        selectedTable === tbl.name
+                          ? 'border-indigo-300 shadow-xs'
+                          : 'border-zinc-200 hover:border-zinc-300'
+                      }`}
+                    >
+                      {/* Collapsible Category Header */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        id={`category-header-${tbl.name}`}
+                        data-testid={`category-header-${tbl.name}`}
                         onClick={() => {
-                          if (idx.name.includes('status') || idx.name.includes('cat')) {
-                            if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
-                          } else if (idx.columns.includes('customer_email')) {
-                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
-                          } else if (idx.columns.includes('amount')) {
-                            setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+                          setCollapsedCategories((prev) => ({
+                            ...prev,
+                            [tbl.name]: !isCollapsed
+                          }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setCollapsedCategories((prev) => ({
+                              ...prev,
+                              [tbl.name]: !isCollapsed
+                            }));
                           }
                         }}
-                        className="px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
-                        title="Revert / Undo optimization on this index"
+                        className={`p-3.5 flex items-center justify-between cursor-pointer select-none transition-colors ${
+                          selectedTable === tbl.name
+                            ? 'bg-gradient-to-r from-indigo-50/90 via-white to-indigo-50/40'
+                            : 'bg-zinc-50/80 hover:bg-zinc-100/80'
+                        }`}
                       >
-                        Undo Optimization
-                      </button>
-                    )}
+                        <div className="flex items-center gap-3">
+                          <span
+                            className="p-1 rounded-md text-zinc-500 hover:text-zinc-800 transition-transform"
+                            aria-label={isCollapsed ? `Expand ${tbl.name} indexes` : `Collapse ${tbl.name} indexes`}
+                          >
+                            {isCollapsed ? (
+                              <ChevronRight className="w-4 h-4 text-zinc-500" />
+                            ) : (
+                              <ChevronDown className="w-4 h-4 text-indigo-600" />
+                            )}
+                          </span>
+
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <Table className="w-4 h-4 text-indigo-600 shrink-0" />
+                            <span className="font-bold text-xs text-zinc-900">
+                              {tbl.entityName || tbl.name}
+                            </span>
+                            <span className="font-mono text-[10px] bg-zinc-200/80 text-zinc-700 px-1.5 py-0.5 rounded border border-zinc-300">
+                              entity: {tbl.name}
+                            </span>
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                              {tbl.entityBadge}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-[11px] font-mono font-semibold text-zinc-600">
+                            {matchingIndexes.length} {matchingIndexes.length === 1 ? 'index' : 'indexes'}
+                          </span>
+                          <span
+                            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border ${
+                              activeCount > 0
+                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                : 'bg-zinc-100 text-zinc-500 border-zinc-200'
+                            }`}
+                          >
+                            {activeCount} active
+                          </span>
+                          <span className="text-[10px] text-zinc-400 font-medium hidden sm:inline">
+                            {isCollapsed ? 'Click to Expand ▾' : 'Click to Collapse ▴'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* When Collapsed: Quick Index Summary Bar */}
+                      {isCollapsed ? (
+                        <div
+                          onClick={() => {
+                            setCollapsedCategories((prev) => ({
+                              ...prev,
+                              [tbl.name]: false
+                            }));
+                          }}
+                          className="px-4 py-2 bg-white border-t border-zinc-100 flex items-center justify-between gap-2 cursor-pointer hover:bg-zinc-50/60 transition-colors"
+                        >
+                          <div className="flex items-center gap-1.5 flex-wrap overflow-hidden text-[10px]">
+                            <span className="text-zinc-400 font-medium">Targeted indexes:</span>
+                            {matchingIndexes.map((idx) => {
+                              const isRemoved = removedIndexes.includes(idx.name);
+                              return (
+                                <span
+                                  key={idx.name}
+                                  className={`font-mono px-1.5 py-0.5 rounded border ${
+                                    isRemoved
+                                      ? 'bg-zinc-100 text-zinc-400 line-through border-zinc-200'
+                                      : idx.active
+                                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200 font-semibold'
+                                      : 'bg-zinc-100 text-zinc-600 border-zinc-200'
+                                  }`}
+                                >
+                                  {idx.name}
+                                </span>
+                              );
+                            })}
+                          </div>
+                          <span className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold shrink-0">
+                            Expand Category ▾
+                          </span>
+                        </div>
+                      ) : (
+                        /* When Expanded: Full Grid of Index Cards for this Target Entity */
+                        <div className="p-4 bg-zinc-50/50 border-t border-zinc-200 space-y-3">
+                          {/* Entity Context Sub-bar */}
+                          <div className="p-2.5 bg-white rounded-lg border border-zinc-200/80 text-[11px] text-zinc-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-zinc-800">{tbl.entityRole}:</span>
+                              <span>{tbl.description}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedTable(tbl.name);
+                              }}
+                              className={`text-[11px] font-semibold px-2 py-0.5 rounded cursor-pointer transition-colors shrink-0 flex items-center gap-1 ${
+                                selectedTable === tbl.name
+                                  ? 'bg-indigo-100 text-indigo-800'
+                                  : 'text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50'
+                              }`}
+                            >
+                              <span>{selectedTable === tbl.name ? 'Focused Table' : 'Focus in Schema ER'}</span>
+                              <ArrowRight className="w-3 h-3" />
+                            </button>
+                          </div>
+
+                          {/* Index Cards Grid */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {matchingIndexes.map((idx, i) => (
+                              <div
+                                key={`idx-${tbl.name}-${i}`}
+                                onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
+                                onMouseLeave={() => setHoveredIndexWhatIf(null)}
+                                className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all bg-white ${
+                                  idx.active
+                                    ? 'border-emerald-300 shadow-2xs'
+                                    : 'border-zinc-200 opacity-80 hover:opacity-100'
+                                }`}
+                              >
+                                {/* Interactive What-If Hover Tooltip */}
+                                {hoveredIndexWhatIf === idx.name && (
+                                  <div className="absolute left-0 right-0 top-full mt-2 z-50 bg-zinc-900 text-white p-4 rounded-xl shadow-2xl border border-indigo-500/60 animate-fadeIn text-xs">
+                                    <div className="flex items-center justify-between mb-2 pb-2 border-b border-zinc-800">
+                                      <div className="flex items-center gap-2">
+                                        <Sparkles className="w-4 h-4 text-indigo-400" />
+                                        <strong className="text-indigo-300">What-If Analysis: {idx.name}</strong>
+                                      </div>
+                                      <span className="font-mono text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded border border-indigo-800">
+                                        Top 5 Frequent Slow Queries
+                                      </span>
+                                    </div>
+                                    <div className="space-y-2">
+                                      {getWhatIfTop5Queries(idx.name).map((q, qi) => (
+                                        <div key={qi} className="p-2 rounded bg-zinc-800/95 border border-zinc-700/80 flex flex-col gap-1">
+                                          <div className="font-mono text-[11px] text-zinc-200 truncate" title={q.query}>
+                                            {qi + 1}. {q.query}
+                                          </div>
+                                          <div className="flex items-center justify-between text-[10px] font-mono">
+                                            <span className="text-zinc-400">Freq: {q.freq}</span>
+                                            <div className="flex items-center gap-2">
+                                              <span className="line-through text-zinc-500">{q.before}</span>
+                                              <span className="text-zinc-300">→</span>
+                                              <span className="text-emerald-400 font-bold">{q.after}</span>
+                                              <span className="bg-emerald-950 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-800">{q.improvement}</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div className="mt-2 text-[10px] text-zinc-400 italic text-center">
+                                      💡 Hovering index structures dynamically estimates B-Tree execution time improvements.
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Baseline Comparison Ribbon */}
+                                {compareWithBaseline && (() => {
+                                  const cmp = getBaselineComparisonForIndex(idx.name, idx.active);
+                                  return (
+                                    <div className={`mb-2.5 p-2 rounded-lg border text-[11px] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 ${
+                                      cmp.isNewOptimization
+                                        ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950 shadow-2xs'
+                                        : 'bg-zinc-100/90 border-zinc-200 text-zinc-800'
+                                    }`}>
+                                      <div className="flex items-center gap-1.5">
+                                        <Layers className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                                        <span className="font-medium text-[11px]">
+                                          <span className="line-through text-zinc-500 mr-1">Baseline: {cmp.baselineStatus}</span>
+                                          <span className="text-zinc-400">➔</span>
+                                          <span className="font-bold ml-1 text-emerald-800">Current: {cmp.currentStatus}</span>
+                                        </span>
+                                      </div>
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${cmp.badgeClass}`}>
+                                        {cmp.speedup}
+                                      </span>
+                                    </div>
+                                  );
+                                })()}
+
+                                <div>
+                                  {/* Diagnostic Removal / Redundancy Banners */}
+                                  {(() => {
+                                    if (removedIndexes.includes(idx.name)) {
+                                      return (
+                                        <div className="mb-2 p-2 bg-zinc-100 border border-zinc-300 rounded-lg flex items-center justify-between text-[11px] text-zinc-600 shadow-2xs">
+                                          <div className="flex items-center gap-1.5 font-medium">
+                                            <Trash2 className="w-3.5 h-3.5 text-zinc-500" />
+                                            <span>Index Removed by Cleanup Diagnostic (+2.4 MB space saved)</span>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleRestoreRemovedIndex(idx.name);
+                                            }}
+                                            className="px-2 py-0.5 bg-white hover:bg-zinc-200 border border-zinc-300 text-zinc-700 font-semibold rounded text-[10px] cursor-pointer"
+                                          >
+                                            Restore
+                                          </button>
+                                        </div>
+                                      );
+                                    }
+                                    if (cleanupScanCompleted && isIndexUnutilized(idx.name)) {
+                                      return (
+                                        <div className="mb-2 p-2.5 bg-rose-50 border border-rose-300 rounded-lg flex items-center justify-between text-[11px] text-rose-900 shadow-2xs">
+                                          <div className="flex items-center gap-2 font-semibold">
+                                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                                            <div>
+                                              <div>Unutilized in Last 100 Queries (0 Hits)</div>
+                                              <div className="text-[10px] text-rose-700 font-normal">Flagged for removal • Reclaim 2.4 MB disk space</div>
+                                            </div>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleRemoveUnutilizedIndex(idx.name);
+                                            }}
+                                            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors shrink-0"
+                                          >
+                                            Remove &amp; Free Space
+                                          </button>
+                                        </div>
+                                      );
+                                    }
+                                    const redundant = isIndexRedundant(idx.name, idx.columns);
+                                    return redundant ? (
+                                      <div className="mb-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-[11px] text-amber-900 shadow-2xs">
+                                        <div className="flex items-center gap-2 font-semibold">
+                                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 animate-pulse" />
+                                          <span>Redundant Coverage (Covered by Composite Index)</span>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleConsolidateIndex(idx.name);
+                                          }}
+                                          className="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded text-[10px] shadow-xs cursor-pointer transition-colors"
+                                        >
+                                          Consolidate
+                                        </button>
+                                      </div>
+                                    ) : null;
+                                  })()}
+
+                                  {/* Target Entity Pill */}
+                                  <div className="text-[10px] font-mono text-zinc-500 mb-1.5 flex items-center justify-between">
+                                    <span className="flex items-center gap-1">
+                                      <Table className="w-3 h-3 text-indigo-500" />
+                                      <span>Target Entity: <strong className="text-zinc-700">{tbl.name}</strong></span>
+                                    </span>
+                                    <span className="text-zinc-400 font-sans">{tbl.entityBadge}</span>
+                                  </div>
+
+                                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-bold text-zinc-900 mb-1">
+                                    <span className="font-mono text-indigo-950">{idx.name}</span>
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-[10px] font-sans px-1.5 py-0.2 rounded font-bold shadow-2xs" title="Calculated Query Complexity Reduction">
+                                        ⚡ {getOptimizationPotential(idx.name)}
+                                      </span>
+                                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                        removedIndexes.includes(idx.name)
+                                          ? 'bg-zinc-200 text-zinc-600 line-through'
+                                          : idx.active
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : 'bg-zinc-200 text-zinc-600'
+                                      }`}>
+                                        {removedIndexes.includes(idx.name) ? 'REMOVED' : idx.active ? 'ACTIVE' : 'INACTIVE'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="text-[11px] text-zinc-500 font-mono mb-2">
+                                    Type: {idx.type} • Columns: ({idx.columns.join(', ')})
+                                  </div>
+                                </div>
+
+                                {(() => {
+                                  const impact = getIndexImpactSummary(idx.name);
+                                  return (
+                                    <div className="my-2 p-2 bg-zinc-50 rounded-lg border border-zinc-200 text-[11px] space-y-0.5 shadow-2xs">
+                                      <div className="font-bold text-zinc-900 flex items-center justify-between">
+                                        <span>📊 {impact.topQuery}</span>
+                                        <span className="font-mono text-[10px] text-indigo-700 font-semibold">{impact.reduction}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+
+                                {showDetailedStats && (
+                                  <div className="my-1.5 p-2 bg-indigo-50/70 rounded-lg border border-indigo-200 text-[11px] font-mono flex items-center justify-between text-indigo-950">
+                                    <span>Storage Size: <strong className="text-indigo-900">{idx.active ? (idx.name.includes('PRIMARY') ? '4.8 MB' : '2.1 MB') : '0 KB'}</strong></span>
+                                    <span>Hit Rate: <strong className="text-emerald-700">{idx.active ? '99.4%' : '0.0%'}</strong></span>
+                                  </div>
+                                )}
+
+                                <div className="flex items-center justify-between pt-2 border-t border-zinc-200/60 text-[11px]">
+                                  <span className={idx.active ? 'font-medium text-emerald-700' : 'text-zinc-500'}>
+                                    {idx.active ? '⚡ Optimizes WHERE & JOIN lookups to O(log n)' : '⚠️ Inactive or missing index'}
+                                  </span>
+                                  {idx.active && !idx.name.includes('PRIMARY KEY') && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (idx.name.includes('status') || idx.name.includes('cat')) {
+                                          if (flags.btreeIndexing) onToggleFlag('btreeIndexing');
+                                        } else if (idx.name.includes('line_items') || idx.columns.includes('transaction_id')) {
+                                          if (flags.batchEagerLoading) onToggleFlag('batchEagerLoading');
+                                        } else if (idx.columns.includes('customer_email')) {
+                                          setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
+                                        } else if (idx.columns.includes('amount')) {
+                                          setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+                                        }
+                                      }}
+                                      className="px-2 py-0.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded font-semibold text-[10px] transition-colors cursor-pointer shadow-2xs"
+                                      title="Revert / Undo optimization on this index"
+                                    >
+                                      Undo Optimization
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+              {/* Empty state if search returns zero indexes */}
+              {indexSearchQuery &&
+                tables
+                  .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
+                  .every((tbl) => {
+                    const q = indexSearchQuery.trim().toLowerCase();
+                    return !tbl.indexes.some(
+                      (idx) =>
+                        idx.name.toLowerCase().includes(q) ||
+                        idx.type.toLowerCase().includes(q) ||
+                        idx.columns.some((c) => c.toLowerCase().includes(q)) ||
+                        tbl.name.toLowerCase().includes(q) ||
+                        (tbl.entityName && tbl.entityName.toLowerCase().includes(q)) ||
+                        (idx.targetTable && idx.targetTable.toLowerCase().includes(q))
+                    );
+                  }) && (
+                  <div className="p-8 text-center bg-zinc-50 border border-dashed border-zinc-300 rounded-xl space-y-2 animate-fadeIn">
+                    <p className="text-xs text-zinc-500">
+                      No indexes found matching name or target table &ldquo;<span className="font-mono text-zinc-800 font-bold">{indexSearchQuery}</span>&rdquo; in the selected filter.
+                    </p>
+                    <button
+                      type="button"
+                      id="btn-empty-clear-filter"
+                      data-testid="btn-empty-clear-filter"
+                      onClick={() => {
+                        setIndexSearchQuery('');
+                        setIndexCategoryFilter('all');
+                      }}
+                      className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold cursor-pointer shadow-xs"
+                    >
+                      Clear Filter &amp; Show All Indexes
+                    </button>
                   </div>
-                </div>
-              ))}
+                )}
             </div>
           </div>
 
@@ -1061,6 +1564,32 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Real-time Index Filter Input Field */}
+          <div className="relative flex items-center">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 text-zinc-400 pointer-events-none" />
+            <input
+              type="text"
+              id="filter-indexes-input-header"
+              name="filter-indexes-input-header"
+              data-testid="filter-indexes-input-header"
+              value={indexSearchQuery}
+              onChange={(e) => setIndexSearchQuery(e.target.value)}
+              placeholder="Filter indexes by name or target table..."
+              aria-label="Filter indexes by name or target table"
+              className="pl-8 pr-7 py-1.5 text-xs bg-white border border-zinc-300 rounded-lg text-zinc-800 placeholder-zinc-400 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-48 sm:w-64 shadow-2xs font-mono"
+            />
+            {indexSearchQuery && (
+              <button
+                type="button"
+                onClick={() => setIndexSearchQuery('')}
+                className="absolute right-2 text-zinc-400 hover:text-zinc-600 p-0.5 rounded cursor-pointer"
+                title="Clear filter"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
           <label
             htmlFor="toggle-compare-baseline"
             id="lbl-compare-baseline"
@@ -1235,6 +1764,28 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            id="btn-export-schema-state"
+            data-testid="btn-export-schema-state"
+            onClick={handleExportSchemaState}
+            disabled={isExportingState}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 disabled:opacity-60 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+            title="Generate a JSON snapshot of the current index configuration, allowing users to save their optimized state"
+          >
+            {isExportingState ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                <span>Exporting Schema State...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Schema State</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={handleDownloadSchemaReport}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
             title="Download JSON report of current schema diagnostic findings"
@@ -1264,6 +1815,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           )}
         </div>
       </div>
+
+      {/* Export Schema State Success Feedback Notification */}
+      {exportSuccessNotice && (
+        <div
+          id="export-schema-state-success-alert"
+          data-testid="export-schema-state-success-alert"
+          className="bg-emerald-50 border-b border-emerald-200 px-6 py-2.5 text-xs text-emerald-950 flex items-center justify-between gap-3 animate-fadeIn shadow-2xs"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{exportSuccessNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setExportSuccessNotice(null)}
+            className="text-emerald-700 hover:text-emerald-950 text-[11px] font-bold cursor-pointer hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* View Mode Tabs: Schema Explorer vs Dependency Chain */}
       <div className="px-6 py-2.5 bg-zinc-100/90 border-b border-zinc-200 flex items-center gap-2">
@@ -1960,7 +2532,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               ))}
             </div>
 
-            <div className="pt-2 flex justify-end">
+            <div className="pt-3 border-t border-zinc-200 flex items-center justify-between">
+              <button
+                type="button"
+                id="btn-modal-export-schema-state"
+                data-testid="btn-modal-export-schema-state"
+                onClick={handleExportSchemaState}
+                disabled={isExportingState}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Schema State</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setShowSnapshotsModal(false)}

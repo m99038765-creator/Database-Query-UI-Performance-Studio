@@ -6,17 +6,29 @@ import { fileURLToPath } from "url";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var app = express();
-var port = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
 app.use(express.json());
 app.get(["/healthz", "/_health", "/health", "/_ready"], (_req, res) => {
   res.status(200).send("OK");
 });
-var distDir = fs.existsSync(path.join(__dirname, "dist")) ? path.join(__dirname, "dist") : path.join(__dirname, "build");
+var possibleDirs = [
+  path.join(process.cwd(), "dist"),
+  path.join(process.cwd(), "build"),
+  path.join(__dirname, "dist"),
+  path.join(__dirname, "build"),
+  "/dist",
+  "/build"
+];
+var distDir = possibleDirs.find((dir) => fs.existsSync(dir)) || path.join(__dirname, "dist");
 var indexHtmlPath = path.join(distDir, "index.html");
+console.log(`Resolved static directory: ${distDir} (exists: ${fs.existsSync(distDir)})`);
+console.log(`Resolved index.html path: ${indexHtmlPath} (exists: ${fs.existsSync(indexHtmlPath)})`);
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
 }
-app.get("*", (_req, res) => {
+app.use((req, res, next) => {
+  if (req.method !== "GET") {
+    return next();
+  }
   if (fs.existsSync(indexHtmlPath)) {
     res.sendFile(indexHtmlPath);
   } else {
@@ -38,23 +50,42 @@ app.get("*", (_req, res) => {
 </html>`);
   }
 });
-var server = app.listen(port, "0.0.0.0", () => {
-  console.log(`Server listening on http://0.0.0.0:${port}`);
-});
-server.on("error", (err) => {
-  console.error("Server error:", err);
-  process.exit(1);
-});
+var portsToListen = /* @__PURE__ */ new Set();
+if (process.env.PORT) {
+  const envPort = parseInt(process.env.PORT, 10);
+  if (!isNaN(envPort)) portsToListen.add(envPort);
+}
+portsToListen.add(8080);
+portsToListen.add(3e3);
+var activeServers = [];
+for (const port of portsToListen) {
+  try {
+    const s = app.listen(port, "0.0.0.0", () => {
+      console.log(`Server successfully listening on http://0.0.0.0:${port}`);
+    });
+    s.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        console.log(`Port ${port} is already in use (e.g. by Nginx proxy bridge), skipping.`);
+      } else {
+        console.error(`Server error on port ${port}:`, err);
+      }
+    });
+    activeServers.push(s);
+  } catch (err) {
+    console.log(`Could not bind to port ${port}:`, err);
+  }
+}
 var gracefulShutdown = (signal) => {
   console.log(`Received ${signal}. Shutting down gracefully...`);
-  server.close(() => {
-    console.log("HTTP server closed.");
-    process.exit(0);
-  });
+  for (const s of activeServers) {
+    try {
+      s.close();
+    } catch (_) {
+    }
+  }
   setTimeout(() => {
-    console.error("Could not close connections in time, forcefully shutting down");
-    process.exit(1);
-  }, 1e4);
+    process.exit(0);
+  }, 1e3);
 };
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
