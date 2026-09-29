@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -14,6 +14,18 @@ export interface SchemaSnapshot {
   timestamp: string;
   flags: OptimizationFlags;
   customIndexes: string[];
+  createdCompositeIndexes?: string[];
+  removedIndexes?: string[];
+  importedCustomIndices?: Array<{
+    name: string;
+    type: string;
+    columns: string[];
+    targetTable: string;
+    targetEntity?: string;
+    active: boolean;
+  }>;
+  activeSchemaPrototypeName?: string;
+  totalIndexesCount?: number;
 }
 
 export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProps> = ({
@@ -57,6 +69,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
   const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
   const [copiedDdlIndex, setCopiedDdlIndex] = useState<string | null>(null);
+  const [showBulkImportModal, setShowBulkImportModal] = useState<boolean>(false);
+  const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
+  const [importedCustomIndices, setImportedCustomIndices] = useState<Array<{
+    name: string;
+    type: string;
+    columns: string[];
+    targetTable: string;
+    targetEntity?: string;
+    active: boolean;
+  }>>([]);
+  const [activeSchemaPrototypeName, setActiveSchemaPrototypeName] = useState<string>('Standard Workload Schema');
+  const [bulkImportActiveTab, setBulkImportActiveTab] = useState<'upload' | 'presets' | 'schema-spec'>('upload');
+  const [importJsonInput, setImportJsonInput] = useState<string>('');
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [importSnapshotBeforeApply, setImportSnapshotBeforeApply] = useState<boolean>(true);
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Automatically expand the selected table category when selectedTable changes
@@ -731,6 +760,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     setCreatedCompositeIndexes([]);
     setConsolidatedIndexes([]);
     setRemovedIndexes([]);
+    setImportedCustomIndices([]);
+    setActiveSchemaPrototypeName('Standard Workload Schema');
     setCleanupScanCompleted(false);
     setAutoOptimizedCompleted(false);
   };
@@ -739,29 +770,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     {
       id: 'snapshot-default',
       name: 'Default Baseline State',
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       flags: { batchEagerLoading: false, btreeIndexing: false, queryCaching: false, virtualizedDOM: false, deferredRendering: false },
-      customIndexes: []
+      customIndexes: [],
+      createdCompositeIndexes: [],
+      removedIndexes: [],
+      importedCustomIndices: [],
+      activeSchemaPrototypeName: 'Default Baseline State',
+      totalIndexesCount: 6
     }
   ]);
+  const [selectedCheckpointId, setSelectedCheckpointId] = useState<string>('snapshot-default');
+  const [showNamedSnapshotModal, setShowNamedSnapshotModal] = useState<boolean>(false);
+  const [newSnapshotName, setNewSnapshotName] = useState<string>('');
   const [showSnapshotsModal, setShowSnapshotsModal] = useState<boolean>(false);
-
-  const handleTakeSnapshot = () => {
-    const newSnapshot: SchemaSnapshot = {
-      id: `snapshot-${Date.now()}`,
-      name: `Schema Snapshot #${snapshots.length + 1}`,
-      timestamp: new Date().toLocaleTimeString(),
-      flags: { ...flags },
-      customIndexes: [...createdCustomIndexes]
-    };
-    setSnapshots([...snapshots, newSnapshot]);
-    setShowSnapshotsModal(true);
-  };
-
-  const handleRestoreSnapshot = (snap: SchemaSnapshot) => {
-    setCreatedCustomIndexes([...snap.customIndexes]);
-    setShowSnapshotsModal(false);
-  };
 
   const handleBulkApplyAllIndexes = () => {
     if (!flags.btreeIndexing) {
@@ -804,6 +826,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') },
         { name: 'idx_transactions_email_status', type: 'Composite B-Tree (AI Recommended)', columns: ['customer_email', 'status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCompositeIndexes.includes('email_status') && !removedIndexes.includes('idx_transactions_email_status') },
         { name: 'idx_transactions_category_amount', type: 'Composite B-Tree (AI Recommended)', columns: ['category', 'amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCompositeIndexes.includes('category_amount') && !removedIndexes.includes('idx_transactions_category_amount') },
+        ...importedCustomIndices.filter((idx) => idx.targetTable === 'transactions' && !removedIndexes.includes(idx.name)),
       ],
       relationships: [
         { targetTable: 'line_items', type: 'One-to-Many', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -825,7 +848,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       indexes: [
         { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: true },
         { name: 'idx_line_items_tx', type: 'B-Tree (Foreign Key)', columns: ['transaction_id'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: flags.batchEagerLoading },
-        { name: 'idx_line_items_tx_price', type: 'Composite B-Tree (AI Recommended)', columns: ['transaction_id', 'unit_price'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: createdCompositeIndexes.includes('tx_price') && !removedIndexes.includes('idx_line_items_tx_price') }
+        { name: 'idx_line_items_tx_price', type: 'Composite B-Tree (AI Recommended)', columns: ['transaction_id', 'unit_price'], targetTable: 'line_items', targetEntity: 'Order Items Entity', active: createdCompositeIndexes.includes('tx_price') && !removedIndexes.includes('idx_line_items_tx_price') },
+        ...importedCustomIndices.filter((idx) => idx.targetTable === 'line_items' && !removedIndexes.includes(idx.name)),
       ],
       relationships: [
         { targetTable: 'transactions', type: 'Many-to-One', foreignKey: 'line_items.transaction_id -> transactions.id', optimized: flags.batchEagerLoading }
@@ -847,10 +871,34 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       indexes: [
         { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true },
         { name: 'idx_customers_email', type: 'B-Tree Unique', columns: ['email'], targetTable: 'customers', targetEntity: 'Customers Entity', active: true },
-        { name: 'idx_customers_tier_created', type: 'Composite B-Tree (AI Recommended)', columns: ['tier', 'created_at'], targetTable: 'customers', targetEntity: 'Customers Entity', active: createdCompositeIndexes.includes('tier_created') && !removedIndexes.includes('idx_customers_tier_created') }
+        { name: 'idx_customers_tier_created', type: 'Composite B-Tree (AI Recommended)', columns: ['tier', 'created_at'], targetTable: 'customers', targetEntity: 'Customers Entity', active: createdCompositeIndexes.includes('tier_created') && !removedIndexes.includes('idx_customers_tier_created') },
+        ...importedCustomIndices.filter((idx) => idx.targetTable === 'customers' && !removedIndexes.includes(idx.name)),
       ],
       relationships: []
-    }
+    },
+    ...Array.from(new Set<string>(importedCustomIndices.map((i) => i.targetTable)))
+      .filter((tableName: string) => !['transactions', 'line_items', 'customers'].includes(tableName))
+      .map((tableName: string) => ({
+        name: tableName,
+        entityName: `${tableName.charAt(0).toUpperCase() + tableName.slice(1)} Entity`,
+        entityBadge: 'Prototyped Entity',
+        entityRole: 'Custom Imported Table',
+        description: 'Prototyped database table schema imported from JSON index configuration.',
+        columns: [
+          { name: 'id', type: 'VARCHAR(36)', isPk: true, isFk: false, indexed: true },
+          ...Array.from(
+            new Set<string>(importedCustomIndices.filter((i) => i.targetTable === tableName).flatMap((i) => i.columns))
+          ).map((colName: string) => ({
+            name: colName,
+            type: 'VARCHAR(128)',
+            isPk: false,
+            isFk: false,
+            indexed: true
+          }))
+        ],
+        indexes: importedCustomIndices.filter((i) => i.targetTable === tableName && !removedIndexes.includes(i.name)),
+        relationships: []
+      }))
   ];
 
   const currentTableData = tables.find((t) => t.name === selectedTable) || tables[0];
@@ -865,6 +913,494 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     if (createdCustomIndexes.length > 0) score += createdCustomIndexes.length * 5;
     return Math.min(100, score);
   }, [flags, createdCustomIndexes]);
+
+  // Sample index configuration presets for instant schema prototyping
+  const samplePresets = useMemo(() => [
+    {
+      id: 'preset-ecommerce-high-throughput',
+      name: 'E-Commerce Peak Workload (Full Composite)',
+      badge: 'High Throughput',
+      description: 'Co-locates multi-column filter predicates (email + status, category + amount, tx + price) to eliminate 99.4% of table heap lookups.',
+      speedup: '253x Faster (482ms → 1.9ms)',
+      tableCount: 3,
+      indexCount: 6,
+      jsonContent: JSON.stringify({
+        name: "E-Commerce Peak Workload (Full Composite)",
+        description: "Composite B-Tree coverage for customer verification, order category aggregations, and item joins.",
+        optimizationFlags: {
+          btreeIndexing: true,
+          batchEagerLoading: true,
+          queryCaching: true
+        },
+        indexConfiguration: {
+          createdCompositeIndexes: ["email_status", "category_amount", "tx_price", "tier_created"],
+          createdCustomIndexes: ["customer_email", "amount"],
+          removedOrPrunedIndexes: ["idx_transactions_date"]
+        },
+        indices: [
+          {
+            name: "idx_transactions_status_amount",
+            targetTable: "transactions",
+            columns: ["status", "amount"],
+            type: "Composite B-Tree",
+            active: true
+          },
+          {
+            name: "idx_line_items_sku_qty",
+            targetTable: "line_items",
+            columns: ["sku", "quantity"],
+            type: "B-Tree (Covering)",
+            active: true
+          }
+        ]
+      }, null, 2)
+    },
+    {
+      id: 'preset-analytics-aggregations',
+      name: 'Analytics & Reporting Aggregations (OLAP)',
+      badge: 'OLAP / Reporting',
+      description: 'Optimized for heavy GROUP BY queries and date-range reporting without disk workmem spillover.',
+      speedup: '180x Faster (320ms → 1.8ms)',
+      tableCount: 3,
+      indexCount: 4,
+      jsonContent: JSON.stringify({
+        name: "Analytics & Reporting Aggregations (OLAP)",
+        description: "Pre-grouped range aggregates eliminating disk sorts and temporary RAM workmem spills.",
+        optimizationFlags: {
+          btreeIndexing: true,
+          batchEagerLoading: true,
+          queryCaching: false
+        },
+        indexConfiguration: {
+          createdCompositeIndexes: ["category_amount", "tier_created"],
+          createdCustomIndexes: ["amount"],
+          removedOrPrunedIndexes: []
+        },
+        indices: [
+          {
+            name: "idx_transactions_cat_date",
+            targetTable: "transactions",
+            columns: ["category", "created_at"],
+            type: "Composite B-Tree",
+            active: true
+          }
+        ]
+      }, null, 2)
+    },
+    {
+      id: 'preset-write-heavy-lean',
+      name: 'Write-Heavy Ingestion (Low Amplification)',
+      badge: 'Write-Optimized',
+      description: 'Prunes redundant single-column indexes to minimize WAL log write overhead and write lock latency during bulk ETL.',
+      speedup: '+18% Write Throughput Saved',
+      tableCount: 3,
+      indexCount: 2,
+      jsonContent: JSON.stringify({
+        name: "Write-Heavy Ingestion (Low Amplification)",
+        description: "Lean indexing strategy minimizing B-Tree leaf write amplification and buffer cache churn.",
+        optimizationFlags: {
+          btreeIndexing: false,
+          batchEagerLoading: true,
+          queryCaching: false
+        },
+        indexConfiguration: {
+          createdCompositeIndexes: ["tx_price"],
+          createdCustomIndexes: [],
+          removedOrPrunedIndexes: ["idx_transactions_date", "idx_transactions_email_missing", "idx_transactions_amount_missing"]
+        },
+        indices: []
+      }, null, 2)
+    },
+    {
+      id: 'preset-3nf-baseline',
+      name: '3NF Normalized Baseline (FK Only)',
+      badge: 'Integrity Baseline',
+      description: 'Standard relational primary keys and foreign key join anchors only. Useful as a baseline benchmark.',
+      speedup: '1.0x (Unoptimized Baseline)',
+      tableCount: 3,
+      indexCount: 3,
+      jsonContent: JSON.stringify({
+        name: "3NF Normalized Baseline (FK Only)",
+        description: "Relational integrity baseline without custom composite indexes for comparison.",
+        optimizationFlags: {
+          btreeIndexing: false,
+          batchEagerLoading: false,
+          queryCaching: false
+        },
+        indexConfiguration: {
+          createdCompositeIndexes: [],
+          createdCustomIndexes: [],
+          removedOrPrunedIndexes: []
+        },
+        indices: []
+      }, null, 2)
+    }
+  ], []);
+
+  // Real-time JSON validation and schema parsing engine for Bulk Import
+  const parsedImportResult = useMemo(() => {
+    const raw = importJsonInput.trim();
+    if (!raw) {
+      return {
+        isValid: false,
+        error: null,
+        config: null
+      };
+    }
+
+    try {
+      const data = JSON.parse(raw);
+      let stateName = 'Custom Imported Schema State';
+      let stateDescription = 'Imported index configurations for schema state prototyping.';
+      const targetTables = new Set<string>();
+      let compositeKeys: string[] = [];
+      let customKeys: string[] = [];
+      let prunedKeys: string[] = [];
+      const flagOverrides: Partial<OptimizationFlags> = {};
+      const customIndexList: Array<{
+        name: string;
+        type: string;
+        columns: string[];
+        targetTable: string;
+        targetEntity?: string;
+        active: boolean;
+      }> = [];
+
+      // Format 1: Direct snapshot or config object
+      if (typeof data === 'object' && !Array.isArray(data)) {
+        if (data.name) stateName = data.name;
+        if (data.snapshotMetadata?.stateDescription) stateName = data.snapshotMetadata.stateDescription;
+        if (data.description) stateDescription = data.description;
+
+        // Flags
+        const flagsObj = data.optimizationFlags || data.flags;
+        if (flagsObj && typeof flagsObj === 'object') {
+          if (typeof flagsObj.btreeIndexing === 'boolean') flagOverrides.btreeIndexing = flagsObj.btreeIndexing;
+          if (typeof flagsObj.batchEagerLoading === 'boolean') flagOverrides.batchEagerLoading = flagsObj.batchEagerLoading;
+          if (typeof flagsObj.queryCaching === 'boolean') flagOverrides.queryCaching = flagsObj.queryCaching;
+        }
+
+        // Index configurations
+        const indexConfig = data.indexConfiguration || data.indexConfig || data;
+        if (Array.isArray(indexConfig.createdCompositeIndexes)) {
+          compositeKeys = indexConfig.createdCompositeIndexes;
+        }
+        if (Array.isArray(indexConfig.createdCustomIndexes)) {
+          customKeys = indexConfig.createdCustomIndexes;
+        }
+        if (Array.isArray(indexConfig.removedOrPrunedIndexes)) {
+          prunedKeys = indexConfig.removedOrPrunedIndexes;
+        } else if (Array.isArray(indexConfig.removedIndexes)) {
+          prunedKeys = indexConfig.removedIndexes;
+        }
+
+        // Extract custom index definitions if provided in indices / indexes array
+        const rawIndices = data.indices || data.indexes;
+        if (Array.isArray(rawIndices)) {
+          rawIndices.forEach((item: any) => {
+            if (item && typeof item === 'object' && item.name) {
+              const tbl = item.targetTable || item.table || 'transactions';
+              targetTables.add(tbl);
+              const cols = Array.isArray(item.columns) ? item.columns : (item.column ? [item.column] : ['id']);
+              customIndexList.push({
+                name: item.name,
+                type: item.type || (cols.length > 1 ? 'Composite B-Tree' : 'B-Tree'),
+                columns: cols,
+                targetTable: tbl,
+                targetEntity: item.targetEntity || `${tbl.charAt(0).toUpperCase() + tbl.slice(1)} Entity`,
+                active: item.active !== false
+              });
+            }
+          });
+        }
+
+        if (Array.isArray(data.tablesAndEntities)) {
+          data.tablesAndEntities.forEach((t: any) => {
+            if (t.tableName) targetTables.add(t.tableName);
+          });
+        }
+      } else if (Array.isArray(data)) {
+        // Format 2: Direct array of index objects
+        stateName = `Custom Index Array (${data.length} indices)`;
+        data.forEach((item: any, idx: number) => {
+          if (item && typeof item === 'object') {
+            const tbl = item.targetTable || item.table || 'transactions';
+            targetTables.add(tbl);
+            const cols = Array.isArray(item.columns) ? item.columns : (item.column ? [item.column] : [`col_${idx}`]);
+            const idxName = item.name || `idx_${tbl}_${cols.join('_')}`;
+            customIndexList.push({
+              name: idxName,
+              type: item.type || (cols.length > 1 ? 'Composite B-Tree (Imported)' : 'B-Tree (Imported)'),
+              columns: cols,
+              targetTable: tbl,
+              targetEntity: item.targetEntity || `${tbl.charAt(0).toUpperCase() + tbl.slice(1)} Entity`,
+              active: item.active !== false
+            });
+            // Auto-detect composite shortcuts
+            if (cols.includes('customer_email') && cols.includes('status')) compositeKeys.push('email_status');
+            if (cols.includes('category') && cols.includes('amount')) compositeKeys.push('category_amount');
+            if (cols.includes('transaction_id') && cols.includes('unit_price')) compositeKeys.push('tx_price');
+            if (cols.includes('tier') && cols.includes('created_at')) compositeKeys.push('tier_created');
+            if (cols.length === 1 && cols[0] === 'customer_email') customKeys.push('customer_email');
+            if (cols.length === 1 && cols[0] === 'amount') customKeys.push('amount');
+          }
+        });
+      }
+
+      if (compositeKeys.length > 0) {
+        compositeKeys.forEach(k => {
+          if (['email_status', 'category_amount'].includes(k)) targetTables.add('transactions');
+          if (k === 'tx_price') targetTables.add('line_items');
+          if (k === 'tier_created') targetTables.add('customers');
+        });
+      }
+      if (customKeys.length > 0) targetTables.add('transactions');
+      if (targetTables.size === 0) {
+        targetTables.add('transactions');
+        targetTables.add('line_items');
+        targetTables.add('customers');
+      }
+
+      const totalIndices = compositeKeys.length + customKeys.length + customIndexList.length;
+
+      return {
+        isValid: true,
+        error: null,
+        config: {
+          name: stateName,
+          description: stateDescription,
+          targetTables: Array.from(targetTables),
+          flags: flagOverrides,
+          createdCompositeIndexes: Array.from(new Set(compositeKeys)),
+          createdCustomIndexes: Array.from(new Set(customKeys)),
+          removedIndexes: Array.from(new Set(prunedKeys)),
+          customIndices: customIndexList,
+          totalIndicesCount: totalIndices,
+          targetTablesCount: targetTables.size
+        }
+      };
+    } catch (err: any) {
+      return {
+        isValid: false,
+        error: err.message || 'Invalid JSON syntax',
+        config: null
+      };
+    }
+  }, [importJsonInput]);
+
+  const handleFileUpload = (file: File) => {
+    if (!file) return;
+    setUploadedFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      if (text) {
+        setImportJsonInput(text);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleDownloadSampleJsonTemplate = () => {
+    const template = {
+      $schema: "https://aistudio.google.com/schemas/database-index-config.v1.json",
+      name: "Custom E-Commerce Prototype Schema",
+      description: "Composite and single-column index configurations for prototyping schema throughput.",
+      optimizationFlags: {
+        btreeIndexing: true,
+        batchEagerLoading: true,
+        queryCaching: true
+      },
+      indexConfiguration: {
+        createdCompositeIndexes: ["email_status", "category_amount", "tx_price", "tier_created"],
+        createdCustomIndexes: ["customer_email", "amount"],
+        removedOrPrunedIndexes: ["idx_transactions_date"]
+      },
+      indices: [
+        {
+          name: "idx_transactions_status_amount",
+          targetTable: "transactions",
+          columns: ["status", "amount"],
+          type: "Composite B-Tree",
+          active: true
+        },
+        {
+          name: "idx_line_items_sku_qty",
+          targetTable: "line_items",
+          columns: ["sku", "quantity"],
+          type: "B-Tree (Covering)",
+          active: true
+        }
+      ]
+    };
+    const jsonBlob = new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' });
+    const downloadUrl = URL.createObjectURL(jsonBlob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = "sample-index-configuration-template.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(downloadUrl);
+  };
+
+  const handleApplyImportedIndices = () => {
+    if (!parsedImportResult.isValid || !parsedImportResult.config) return;
+    const config = parsedImportResult.config;
+
+    // 1. Snapshot current schema state if user requested
+    if (importSnapshotBeforeApply) {
+      const activeCount = tables.reduce((acc, t) => acc + t.indexes.filter((i) => i.active && !removedIndexes.includes(i.name)).length, 0);
+      const autoSnap: SchemaSnapshot = {
+        id: `snapshot-pre-import-${Date.now()}`,
+        name: `Pre-Import Baseline (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        flags: { ...flags },
+        customIndexes: [...createdCustomIndexes],
+        createdCompositeIndexes: [...createdCompositeIndexes],
+        removedIndexes: [...removedIndexes],
+        importedCustomIndices: [...importedCustomIndices],
+        activeSchemaPrototypeName: activeSchemaPrototypeName,
+        totalIndexesCount: activeCount
+      };
+      setSnapshots(prev => [...prev, autoSnap]);
+      setSelectedCheckpointId(autoSnap.id);
+    }
+
+    // 2. Apply flags if defined
+    if (config.flags) {
+      if (config.flags.btreeIndexing !== undefined && config.flags.btreeIndexing !== flags.btreeIndexing) {
+        onToggleFlag('btreeIndexing');
+      }
+      if (config.flags.batchEagerLoading !== undefined && config.flags.batchEagerLoading !== flags.batchEagerLoading) {
+        onToggleFlag('batchEagerLoading');
+      }
+      if (config.flags.queryCaching !== undefined && config.flags.queryCaching !== flags.queryCaching) {
+        onToggleFlag('queryCaching');
+      }
+    }
+
+    // 3. Apply composite indices
+    if (config.createdCompositeIndexes) {
+      setCreatedCompositeIndexes(config.createdCompositeIndexes);
+    }
+
+    // 4. Apply custom indices
+    if (config.createdCustomIndexes) {
+      setCreatedCustomIndexes(config.createdCustomIndexes);
+    }
+
+    // 5. Apply removed/pruned indices
+    if (config.removedIndexes) {
+      setRemovedIndexes(config.removedIndexes);
+    }
+
+    // 6. Apply custom imported table indices
+    if (config.customIndices) {
+      setImportedCustomIndices(config.customIndices);
+    }
+
+    // 7. Update active prototype state name
+    setActiveSchemaPrototypeName(config.name);
+
+    // 8. Close modal and show notification
+    setShowBulkImportModal(false);
+    setImportSuccessNotice(`Successfully imported & activated index configuration: "${config.name}" (${config.totalIndicesCount} indices across ${config.targetTablesCount} tables)`);
+    setTimeout(() => {
+      setImportSuccessNotice(null);
+    }, 6000);
+  };
+
+  const handleSelectCheckpoint = (checkpointId: string) => {
+    const snap = snapshots.find((s) => s.id === checkpointId);
+    if (!snap) return;
+
+    setSelectedCheckpointId(checkpointId);
+
+    // 1. Restore flags if defined
+    if (snap.flags) {
+      if (snap.flags.btreeIndexing !== undefined && snap.flags.btreeIndexing !== flags.btreeIndexing) {
+        onToggleFlag('btreeIndexing');
+      }
+      if (snap.flags.batchEagerLoading !== undefined && snap.flags.batchEagerLoading !== flags.batchEagerLoading) {
+        onToggleFlag('batchEagerLoading');
+      }
+      if (snap.flags.queryCaching !== undefined && snap.flags.queryCaching !== flags.queryCaching) {
+        onToggleFlag('queryCaching');
+      }
+    }
+
+    // 2. Restore custom indexes
+    setCreatedCustomIndexes([...snap.customIndexes]);
+
+    // 3. Restore composite indexes
+    setCreatedCompositeIndexes(snap.createdCompositeIndexes ? [...snap.createdCompositeIndexes] : []);
+
+    // 4. Restore removed indexes
+    setRemovedIndexes(snap.removedIndexes ? [...snap.removedIndexes] : []);
+
+    // 5. Restore imported custom table indices
+    setImportedCustomIndices(snap.importedCustomIndices ? [...snap.importedCustomIndices] : []);
+
+    // 6. Restore prototype name
+    if (snap.activeSchemaPrototypeName) {
+      setActiveSchemaPrototypeName(snap.activeSchemaPrototypeName);
+    } else {
+      setActiveSchemaPrototypeName(snap.name);
+    }
+
+    // 7. Show user notification
+    const totalCount = snap.totalIndexesCount ?? (snap.customIndexes.length + (snap.createdCompositeIndexes?.length ?? 0));
+    setImportSuccessNotice(`Switched to checkpoint: "${snap.name}" (${totalCount} active indexes)`);
+    setTimeout(() => {
+      setImportSuccessNotice(null);
+    }, 5000);
+  };
+
+  const handleOpenSnapshotModal = () => {
+    const activeCount = tables.reduce(
+      (acc, t) => acc + t.indexes.filter((i) => i.active && !removedIndexes.includes(i.name)).length,
+      0
+    );
+    const defaultName = `Checkpoint #${snapshots.length + 1} (${activeCount} Indexes)`;
+    setNewSnapshotName(defaultName);
+    setShowNamedSnapshotModal(true);
+  };
+
+  const handleCreateNamedSnapshot = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const activeCount = tables.reduce(
+      (acc, t) => acc + t.indexes.filter((i) => i.active && !removedIndexes.includes(i.name)).length,
+      0
+    );
+    const finalName = newSnapshotName.trim() || `Checkpoint #${snapshots.length + 1}`;
+    const newSnapshot: SchemaSnapshot = {
+      id: `checkpoint-${Date.now()}`,
+      name: finalName,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      flags: { ...flags },
+      customIndexes: [...createdCustomIndexes],
+      createdCompositeIndexes: [...createdCompositeIndexes],
+      removedIndexes: [...removedIndexes],
+      importedCustomIndices: [...importedCustomIndices],
+      activeSchemaPrototypeName: finalName,
+      totalIndexesCount: activeCount
+    };
+
+    setSnapshots((prev) => [...prev, newSnapshot]);
+    setSelectedCheckpointId(newSnapshot.id);
+    setActiveSchemaPrototypeName(finalName);
+    setShowNamedSnapshotModal(false);
+    setImportSuccessNotice(`Created checkpoint: "${finalName}" with current index configuration (${activeCount} indexes)`);
+    setTimeout(() => {
+      setImportSuccessNotice(null);
+    }, 5000);
+  };
+
+  const handleRestoreSnapshot = (snap: SchemaSnapshot) => {
+    handleSelectCheckpoint(snap.id);
+    setShowSnapshotsModal(false);
+  };
 
   const getIndexImpactSummary = (indexName: string) => {
     if (indexName.includes('PRIMARY KEY')) {
@@ -2229,6 +2765,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 <span>Full Diagnostics Modal</span>
                 <ArrowRight className="w-3 h-3 text-zinc-400" />
               </button>
+              <button
+                type="button"
+                id="btn-sidebar-bulk-import-indices"
+                data-testid="btn-sidebar-bulk-import-indices"
+                onClick={() => {
+                  setShowBulkImportModal(true);
+                  setBulkImportActiveTab('upload');
+                }}
+                className="w-full py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-900 font-semibold rounded-lg text-[11px] cursor-pointer transition-colors shadow-2xs flex items-center justify-center gap-1.5"
+                title="Accept a JSON file of index configurations to quickly prototype different database schema states"
+              >
+                <UploadCloud className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Bulk Import Indices (JSON)</span>
+              </button>
             </div>
           </div>
         </div>
@@ -2513,8 +3063,51 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     {showAiSuggestionsSidePanel ? 'OPEN' : '4'}
                   </span>
                 </button>
+
+                {/* Bulk Import Indices Quick Button */}
+                <button
+                  type="button"
+                  id="btn-quick-bulk-import-indices"
+                  data-testid="btn-quick-bulk-import-indices"
+                  onClick={() => {
+                    setShowBulkImportModal(true);
+                    setBulkImportActiveTab('upload');
+                  }}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all bg-white hover:bg-zinc-50 border border-zinc-200 text-zinc-700"
+                  title="Bulk import indices from a JSON configuration file to prototype database schema states"
+                >
+                  <UploadCloud className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Bulk Import Indices</span>
+                </button>
               </div>
             </div>
+
+            {/* Bulk Import Indices Success Notification Banner */}
+            {importSuccessNotice && (
+              <div
+                id="bulk-import-success-notification"
+                data-testid="bulk-import-success-notification"
+                className="p-3.5 bg-gradient-to-r from-purple-50 via-indigo-50 to-white border border-purple-300 rounded-xl flex items-center justify-between gap-3 text-xs text-purple-950 animate-fadeIn shadow-xs"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="p-1.5 bg-purple-600 text-white rounded-lg">
+                    <CheckCircle2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <strong className="font-bold text-purple-950">Index Configuration Prototyped Successfully!</strong>
+                    <p className="text-[11px] text-purple-900 mt-0.5">{importSuccessNotice}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setImportSuccessNotice(null)}
+                  className="text-purple-700 hover:text-purple-950 p-1 rounded cursor-pointer"
+                  title="Dismiss notice"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* Bulk Optimize Success Notification Banner */}
             {bulkOptimizeSuccessNotice && (
@@ -3878,15 +4471,55 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             )}
           </label>
 
-          <button
-            type="button"
-            onClick={handleTakeSnapshot}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
-            title="Snapshot current index configurations and switch between states"
-          >
-            <History className="w-3.5 h-3.5" />
-            <span>Snapshot Schema ({snapshots.length})</span>
-          </button>
+          {/* 'Snapshot State' button and corresponding checkpoints dropdown to switch between multiple saved checkpoints instantly */}
+          <div className="flex items-center gap-1.5 bg-zinc-50 border border-zinc-200 rounded-lg p-1 shadow-2xs">
+            <button
+              type="button"
+              id="btn-snapshot-state"
+              data-testid="btn-snapshot-state"
+              onClick={handleOpenSnapshotModal}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-md text-xs font-bold transition-all cursor-pointer shadow-xs"
+              title="Create a named checkpoint of the current index configuration"
+            >
+              <History className="w-3.5 h-3.5 text-amber-300" />
+              <span>Snapshot State</span>
+            </button>
+
+            <div className="flex items-center gap-1.5 pl-1.5 border-l border-zinc-200">
+              <label htmlFor="select-checkpoint-dropdown" className="text-[11px] text-zinc-500 font-semibold hidden md:inline select-none">
+                Checkpoints:
+              </label>
+              <div className="relative">
+                <select
+                  id="select-checkpoint-dropdown"
+                  data-testid="select-checkpoint-dropdown"
+                  value={selectedCheckpointId}
+                  onChange={(e) => handleSelectCheckpoint(e.target.value)}
+                  className="text-xs bg-white border border-zinc-300 rounded-md py-1.5 pl-2.5 pr-8 text-zinc-900 font-medium focus:outline-hidden focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer shadow-2xs appearance-none font-sans"
+                  aria-label="Switch between saved checkpoints instantly"
+                  title="Switch between saved checkpoints instantly"
+                >
+                  {snapshots.map((snap) => (
+                    <option key={snap.id} value={snap.id}>
+                      {snap.name} ({snap.totalIndexesCount ?? snap.customIndexes.length} idx • {snap.timestamp})
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-zinc-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+
+              <button
+                type="button"
+                id="btn-open-snapshots-manager"
+                data-testid="btn-open-snapshots-manager"
+                onClick={() => setShowSnapshotsModal(true)}
+                className="p-1.5 text-zinc-500 hover:text-indigo-600 hover:bg-zinc-200/60 rounded-md cursor-pointer transition-colors"
+                title="Manage all checkpoints & snapshots"
+              >
+                <Layers className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
 
           <button
             id="btn-quick-index-check"
@@ -4101,6 +4734,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
           <button
             type="button"
+            id="btn-bulk-import-indices"
+            data-testid="btn-bulk-import-indices"
+            onClick={() => {
+              setShowBulkImportModal(true);
+              setBulkImportActiveTab('upload');
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+            title="Accept a JSON file of index configurations to quickly prototype different database schema states"
+          >
+            <UploadCloud className="w-3.5 h-3.5 text-amber-300" />
+            <span>Bulk Import Indices</span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleDownloadSchemaReport}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-2xs"
             title="Download JSON report of current schema diagnostic findings"
@@ -4146,6 +4794,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             type="button"
             onClick={() => setExportSuccessNotice(null)}
             className="text-emerald-700 hover:text-emerald-950 text-[11px] font-bold cursor-pointer hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Bulk Import Indices Success Feedback Notification */}
+      {importSuccessNotice && (
+        <div
+          id="bulk-import-schema-state-success-alert"
+          data-testid="bulk-import-schema-state-success-alert"
+          className="bg-purple-50 border-b border-purple-200 px-6 py-2.5 text-xs text-purple-950 flex items-center justify-between gap-3 animate-fadeIn shadow-2xs"
+        >
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
+            <span className="font-semibold">{importSuccessNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setImportSuccessNotice(null)}
+            className="text-purple-700 hover:text-purple-950 text-[11px] font-bold cursor-pointer hover:underline"
           >
             Dismiss
           </button>
@@ -5254,6 +5923,516 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         </div>
       )}
 
+      {/* Bulk Import Indices & Schema Prototyper Modal */}
+      {showBulkImportModal && (
+        <div
+          id="bulk-import-indices-modal"
+          data-testid="bulk-import-indices-modal"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 animate-fadeIn"
+        >
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden text-zinc-900 relative">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-zinc-200 bg-gradient-to-r from-indigo-50/90 via-purple-50/40 to-white flex items-center justify-between gap-4 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-br from-indigo-600 to-purple-600 text-white rounded-xl shadow-xs">
+                  <UploadCloud className="w-5 h-5 text-amber-300" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-zinc-900 tracking-tight">
+                      Bulk Import Indices &amp; Schema Prototyper
+                    </h3>
+                    <span className="font-mono text-[10px] bg-purple-100 text-purple-800 font-bold px-2 py-0.5 rounded-full border border-purple-200">
+                      JSON Prototyping Engine
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-500 mt-0.5">
+                    Import or paste a JSON file of index configurations to quickly prototype and benchmark alternative database schema states.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="btn-close-bulk-import-modal"
+                data-testid="btn-close-bulk-import-modal"
+                onClick={() => setShowBulkImportModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1.5 rounded-lg hover:bg-zinc-100 cursor-pointer transition-colors"
+                title="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Current Active Schema State Indicator Bar */}
+            <div className="px-5 py-2.5 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+              <div className="flex items-center gap-2">
+                <span className="text-zinc-500 font-medium">Currently Active State:</span>
+                <span className="font-bold text-zinc-800 bg-white px-2 py-0.5 rounded border border-zinc-200 shadow-2xs font-mono">
+                  {activeSchemaPrototypeName}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 font-mono text-[11px] text-zinc-600">
+                <span>Active Indexes: <strong className="text-indigo-700">{tables.reduce((acc, t) => acc + t.indexes.filter(i => i.active && !removedIndexes.includes(i.name)).length, 0)}</strong></span>
+                <span>•</span>
+                <span>Speedup: <strong className="text-emerald-700">{speedUpPercent}%</strong></span>
+              </div>
+            </div>
+
+            {/* Modal Body with Tabs */}
+            <div className="p-5 overflow-y-auto flex-1 space-y-4">
+              {/* Navigation Tabs */}
+              <div className="flex items-center gap-2 border-b border-zinc-200 pb-3 flex-wrap">
+                <button
+                  type="button"
+                  id="tab-import-upload"
+                  data-testid="tab-import-upload"
+                  onClick={() => setBulkImportActiveTab('upload')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    bulkImportActiveTab === 'upload'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
+                  }`}
+                >
+                  <UploadCloud className="w-3.5 h-3.5" />
+                  <span>Upload / Paste JSON File</span>
+                </button>
+                <button
+                  type="button"
+                  id="tab-import-presets"
+                  data-testid="tab-import-presets"
+                  onClick={() => setBulkImportActiveTab('presets')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    bulkImportActiveTab === 'presets'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Preset Schema Prototypes (4)</span>
+                </button>
+                <button
+                  type="button"
+                  id="tab-import-spec"
+                  data-testid="tab-import-spec"
+                  onClick={() => setBulkImportActiveTab('schema-spec')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    bulkImportActiveTab === 'schema-spec'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-700'
+                  }`}
+                >
+                  <FileCode className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>JSON Specification &amp; Sample Template</span>
+                </button>
+              </div>
+
+              {/* TAB 1: Upload / Paste JSON */}
+              {bulkImportActiveTab === 'upload' && (
+                <div className="space-y-4">
+                  {/* Drag and Drop Zone */}
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setIsDraggingFile(true);
+                    }}
+                    onDragLeave={() => setIsDraggingFile(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setIsDraggingFile(false);
+                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        handleFileUpload(e.dataTransfer.files[0]);
+                      }
+                    }}
+                    onClick={() => fileInputRef.current?.click()}
+                    className={`border-2 border-dashed rounded-xl p-6 text-center transition-all cursor-pointer ${
+                      isDraggingFile
+                        ? 'border-indigo-500 bg-indigo-50/80 scale-[1.01]'
+                        : 'border-zinc-300 hover:border-indigo-400 bg-zinc-50/60 hover:bg-indigo-50/20'
+                    }`}
+                  >
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          handleFileUpload(e.target.files[0]);
+                        }
+                      }}
+                    />
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <div className="p-3 bg-white text-indigo-600 rounded-full shadow-xs border border-zinc-200">
+                        <UploadCloud className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-zinc-800">
+                          {uploadedFileName ? (
+                            <span className="text-indigo-600 font-mono">Loaded File: {uploadedFileName}</span>
+                          ) : (
+                            'Choose a .json index configuration file or drag & drop here'
+                          )}
+                        </div>
+                        <p className="text-[11px] text-zinc-500 mt-0.5">
+                          Accepts exported schema snapshots, index arrays, or custom configuration payloads (.json)
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Direct JSON Paste & Syntax Editor */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                      <label htmlFor="import-json-textarea" className="font-bold text-zinc-700 flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>JSON Index Configuration Payload</span>
+                      </label>
+                      <div className="flex items-center gap-2">
+                        {parsedImportResult.isValid ? (
+                          <span className="font-mono text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Valid JSON ({parsedImportResult.config?.totalIndicesCount} indices, {parsedImportResult.config?.targetTablesCount} tables)</span>
+                          </span>
+                        ) : parsedImportResult.error ? (
+                          <span className="font-mono text-[11px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-rose-600" />
+                            <span>Syntax Error</span>
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-zinc-400">Paste JSON or select a file above</span>
+                        )}
+                        {importJsonInput && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImportJsonInput('');
+                              setUploadedFileName(null);
+                            }}
+                            className="text-[11px] text-zinc-500 hover:text-zinc-800 underline cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <textarea
+                      id="import-json-textarea"
+                      data-testid="import-json-textarea"
+                      rows={9}
+                      value={importJsonInput}
+                      onChange={(e) => setImportJsonInput(e.target.value)}
+                      placeholder={`{\n  "name": "Custom E-Commerce Prototype Schema",\n  "optimizationFlags": { "btreeIndexing": true, "batchEagerLoading": true },\n  "indexConfiguration": {\n    "createdCompositeIndexes": ["email_status", "category_amount", "tx_price"],\n    "createdCustomIndexes": ["customer_email", "amount"],\n    "removedOrPrunedIndexes": ["idx_transactions_date"]\n  }\n}`}
+                      className="w-full font-mono text-xs p-3 bg-zinc-900 text-zinc-100 rounded-xl border border-zinc-700 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 shadow-inner"
+                    />
+                    {parsedImportResult.error && (
+                      <p className="text-[11px] text-rose-600 font-mono mt-1">
+                        ⚠️ Parse Error: {parsedImportResult.error}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: Preset Schema Prototypes */}
+              {bulkImportActiveTab === 'presets' && (
+                <div className="space-y-3">
+                  <p className="text-xs text-zinc-500">
+                    Select a pre-configured realistic database schema index state to instantly test workload behavior and latency transformations:
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {samplePresets.map((preset) => (
+                      <div
+                        key={preset.id}
+                        id={`preset-card-${preset.id}`}
+                        data-testid={`preset-card-${preset.id}`}
+                        className="p-4 rounded-xl border border-zinc-200 hover:border-indigo-400 hover:shadow-sm bg-white transition-all space-y-3 flex flex-col justify-between"
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-2">
+                            <h4 className="text-xs font-bold text-zinc-900">
+                              {preset.name}
+                            </h4>
+                            <span className="font-mono text-[9px] bg-indigo-50 text-indigo-800 font-bold px-1.5 py-0.5 rounded border border-indigo-200 shrink-0">
+                              {preset.badge}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-zinc-600 mt-1 leading-snug">
+                            {preset.description}
+                          </p>
+                        </div>
+
+                        <div className="pt-2 border-t border-zinc-100 flex items-center justify-between text-xs">
+                          <div className="font-mono text-[11px] text-emerald-700 font-bold">
+                            {preset.speedup}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImportJsonInput(preset.jsonContent);
+                              setUploadedFileName(`${preset.id}.json`);
+                              setBulkImportActiveTab('upload');
+                            }}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg text-xs cursor-pointer shadow-2xs transition-colors flex items-center gap-1"
+                          >
+                            <span>Load into Prototyper</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: Specification & Sample Template */}
+              {bulkImportActiveTab === 'schema-spec' && (
+                <div className="space-y-3 text-xs">
+                  <div className="p-3.5 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-2 text-zinc-800">
+                    <h4 className="font-bold text-indigo-950 flex items-center gap-1.5">
+                      <Info className="w-4 h-4 text-indigo-600" />
+                      <span>Supported JSON Schema Configurations</span>
+                    </h4>
+                    <p className="text-[11px] text-zinc-700 leading-relaxed">
+                      The Bulk Importer accepts full schema snapshots exported from this viewer, custom array lists of indexes, or high-level index configuration files with optimization flags.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10.5px]">
+                      <div className="p-2 bg-white rounded border border-indigo-100">
+                        <strong className="text-indigo-900 block font-sans">createdCompositeIndexes</strong>
+                        <span className="text-zinc-600">e.g. [&quot;email_status&quot;, &quot;category_amount&quot;, &quot;tx_price&quot;, &quot;tier_created&quot;]</span>
+                      </div>
+                      <div className="p-2 bg-white rounded border border-indigo-100">
+                        <strong className="text-indigo-900 block font-sans">createdCustomIndexes</strong>
+                        <span className="text-zinc-600">e.g. [&quot;customer_email&quot;, &quot;amount&quot;]</span>
+                      </div>
+                      <div className="p-2 bg-white rounded border border-indigo-100">
+                        <strong className="text-indigo-900 block font-sans">removedOrPrunedIndexes</strong>
+                        <span className="text-zinc-600">e.g. [&quot;idx_transactions_date&quot;]</span>
+                      </div>
+                      <div className="p-2 bg-white rounded border border-indigo-100">
+                        <strong className="text-indigo-900 block font-sans">indices (Custom list)</strong>
+                        <span className="text-zinc-600">e.g. [&#123; name, targetTable, columns, type, active &#125;]</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <span className="text-zinc-500 text-[11px]">Need a starting JSON file?</span>
+                    <button
+                      type="button"
+                      id="btn-download-sample-index-template"
+                      data-testid="btn-download-sample-index-template"
+                      onClick={handleDownloadSampleJsonTemplate}
+                      className="px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 text-zinc-800 font-semibold rounded-lg text-xs cursor-pointer shadow-2xs flex items-center gap-1.5 transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Download Sample Template (.json)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* LIVE PROTOTYPE PREVIEW CARD (Shown when valid JSON is loaded) */}
+              {parsedImportResult.isValid && parsedImportResult.config && (
+                <div
+                  id="import-prototype-preview-card"
+                  data-testid="import-prototype-preview-card"
+                  className="p-4 bg-gradient-to-r from-emerald-50/80 via-white to-indigo-50/80 rounded-xl border border-emerald-300 shadow-xs space-y-3 animate-fadeIn"
+                >
+                  <div className="flex items-center justify-between border-b border-emerald-200/60 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="p-1 bg-emerald-600 text-white rounded-md">
+                        <Check className="w-3.5 h-3.5" />
+                      </span>
+                      <div>
+                        <div className="text-xs font-bold text-zinc-900 flex items-center gap-1.5">
+                          <span>Prototype State Preview:</span>
+                          <strong className="text-indigo-900 font-mono">{parsedImportResult.config.name}</strong>
+                        </div>
+                        <p className="text-[11px] text-zinc-500 mt-0.5">
+                          {parsedImportResult.config.description}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="font-mono text-xs font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-200">
+                      Ready to Apply
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                    <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                      <span className="text-[10px] text-zinc-500">Affected Tables</span>
+                      <div className="font-mono font-bold text-zinc-800 mt-0.5">
+                        {parsedImportResult.config.targetTables.join(', ')}
+                      </div>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                      <span className="text-[10px] text-zinc-500">Composite Indexes</span>
+                      <div className="font-mono font-bold text-purple-700 mt-0.5">
+                        {parsedImportResult.config.createdCompositeIndexes.length} active
+                      </div>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                      <span className="text-[10px] text-zinc-500">Custom Indexes</span>
+                      <div className="font-mono font-bold text-indigo-700 mt-0.5">
+                        {parsedImportResult.config.createdCustomIndexes.length + parsedImportResult.config.customIndices.length} active
+                      </div>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-zinc-200">
+                      <span className="text-[10px] text-zinc-500">Pruned Unutilized</span>
+                      <div className="font-mono font-bold text-rose-700 mt-0.5">
+                        {parsedImportResult.config.removedIndexes.length} removed
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-zinc-200 bg-zinc-50/90 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
+              <label className="flex items-center gap-2 text-xs text-zinc-700 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={importSnapshotBeforeApply}
+                  onChange={(e) => setImportSnapshotBeforeApply(e.target.checked)}
+                  className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                />
+                <span>Automatically snapshot current schema state before applying prototype</span>
+              </label>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkImportModal(false)}
+                  className="px-3.5 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 font-semibold rounded-lg text-xs cursor-pointer transition-colors shadow-2xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  id="btn-apply-bulk-imported-indices"
+                  data-testid="btn-apply-bulk-imported-indices"
+                  disabled={!parsedImportResult.isValid || !parsedImportResult.config}
+                  onClick={handleApplyImportedIndices}
+                  className="px-4 py-2 bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-700 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-all flex items-center gap-1.5"
+                >
+                  <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                  <span>Apply Index Configuration &amp; Prototype State</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Named Checkpoint / Snapshot State Modal */}
+      {showNamedSnapshotModal && (
+        <div
+          id="modal-snapshot-state"
+          data-testid="modal-snapshot-state"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+        >
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-md w-full p-6 space-y-4 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-gradient-to-br from-indigo-600 to-purple-600 text-white rounded-xl shadow-xs">
+                  <History className="w-5 h-5 text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">
+                    Snapshot Schema State
+                  </h3>
+                  <p className="text-xs text-zinc-500">
+                    Create a named checkpoint of the current index configuration.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                id="btn-close-snapshot-modal"
+                data-testid="btn-close-snapshot-modal"
+                onClick={() => setShowNamedSnapshotModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1.5 rounded-lg hover:bg-zinc-100 cursor-pointer transition-colors"
+                title="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNamedSnapshot} className="space-y-4">
+              <div>
+                <label htmlFor="input-checkpoint-name" className="block text-xs font-bold text-zinc-700 mb-1">
+                  Checkpoint Name
+                </label>
+                <input
+                  type="text"
+                  id="input-checkpoint-name"
+                  data-testid="input-checkpoint-name"
+                  autoFocus
+                  value={newSnapshotName}
+                  onChange={(e) => setNewSnapshotName(e.target.value)}
+                  placeholder="e.g. Composite Index Experiment, Post-Optimization State..."
+                  className="w-full text-xs px-3 py-2 bg-white border border-zinc-300 rounded-lg text-zinc-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 font-medium"
+                />
+              </div>
+
+              {/* State Summary to be captured */}
+              <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2 text-xs">
+                <div className="font-semibold text-zinc-700 text-[11px] uppercase tracking-wider">
+                  Configuration Captured in Checkpoint
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="bg-white p-2 rounded-lg border border-zinc-200 shadow-2xs">
+                    <span className="text-zinc-500 block text-[10px]">Total Active Indexes</span>
+                    <strong className="text-indigo-700 font-mono">
+                      {tables.reduce((acc, t) => acc + t.indexes.filter((i) => i.active && !removedIndexes.includes(i.name)).length, 0)} active
+                    </strong>
+                  </div>
+                  <div className="bg-white p-2 rounded-lg border border-zinc-200 shadow-2xs">
+                    <span className="text-zinc-500 block text-[10px]">Composite Indexes</span>
+                    <strong className="text-purple-700 font-mono">
+                      {createdCompositeIndexes.length} active
+                    </strong>
+                  </div>
+                  <div className="bg-white p-2 rounded-lg border border-zinc-200 shadow-2xs">
+                    <span className="text-zinc-500 block text-[10px]">Custom &amp; Imported</span>
+                    <strong className="text-emerald-700 font-mono">
+                      {createdCustomIndexes.length + importedCustomIndices.length} active
+                    </strong>
+                  </div>
+                  <div className="bg-white p-2 rounded-lg border border-zinc-200 shadow-2xs">
+                    <span className="text-zinc-500 block text-[10px]">Pruned Unutilized</span>
+                    <strong className="text-rose-700 font-mono">
+                      {removedIndexes.length} removed
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNamedSnapshotModal(false)}
+                  className="px-3.5 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 font-semibold rounded-lg text-xs cursor-pointer transition-colors shadow-2xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  id="btn-save-checkpoint"
+                  data-testid="btn-save-checkpoint"
+                  className="px-4 py-2 bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-700 hover:from-indigo-500 hover:to-purple-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-all flex items-center gap-1.5"
+                >
+                  <History className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Save Checkpoint</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Schema Snapshots Manager Modal */}
       {showSnapshotsModal && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
@@ -5265,10 +6444,10 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-zinc-900">
-                    Schema Snapshots Manager
+                    Schema Snapshots &amp; Checkpoints Manager
                   </h3>
                   <p className="text-xs text-zinc-500">
-                    Switch between saved index configuration states to compare performance.
+                    Switch between saved index configuration checkpoints to compare schema performance.
                   </p>
                 </div>
               </div>
@@ -5283,19 +6462,37 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
             <div className="space-y-3 max-h-64 overflow-y-auto text-xs">
               {snapshots.map((snap) => (
-                <div key={snap.id} className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 flex items-center justify-between">
+                <div
+                  key={snap.id}
+                  className={`p-3 rounded-xl border flex items-center justify-between transition-colors ${
+                    selectedCheckpointId === snap.id
+                      ? 'bg-indigo-50/70 border-indigo-300 ring-1 ring-indigo-200'
+                      : 'bg-zinc-50 border-zinc-200'
+                  }`}
+                >
                   <div>
-                    <div className="font-bold text-zinc-900">{snap.name}</div>
-                    <div className="text-[11px] text-zinc-500">
-                      Saved at {snap.timestamp} • Custom Indexes: {snap.customIndexes.length}
+                    <div className="font-bold text-zinc-900 flex items-center gap-2">
+                      <span>{snap.name}</span>
+                      {selectedCheckpointId === snap.id && (
+                        <span className="text-[10px] font-mono bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-bold">
+                          Active Checkpoint
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">
+                      Saved at {snap.timestamp} • Active Indexes: {snap.totalIndexesCount ?? snap.customIndexes.length}
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => handleRestoreSnapshot(snap)}
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-lg text-xs cursor-pointer transition-colors shadow-2xs"
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs ${
+                      selectedCheckpointId === snap.id
+                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                        : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                    }`}
                   >
-                    Restore State
+                    {selectedCheckpointId === snap.id ? 'Active' : 'Restore State'}
                   </button>
                 </div>
               ))}
