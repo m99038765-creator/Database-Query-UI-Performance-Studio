@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -75,6 +75,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [dryRunPreviewList, setDryRunPreviewList] = useState<Array<{ name: string; impact: string; projectedHealth: number }> | null>(null);
   const [bulkOptimizeSuccessNotice, setBulkOptimizeSuccessNotice] = useState<string | null>(null);
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
+  const [animatingBulkIndexName, setAnimatingBulkIndexName] = useState<string | null>(null);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
   const [disabledImpactEdges, setDisabledImpactEdges] = useState<Record<string, boolean>>({});
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
@@ -82,6 +83,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [aiSuggestionSortBy, setAiSuggestionSortBy] = useState<'gain' | 'risk' | 'complexity'>('gain');
   const [copiedDdlIndex, setCopiedDdlIndex] = useState<string | null>(null);
   const [showBulkImportModal, setShowBulkImportModal] = useState<boolean>(false);
+  const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
+  const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
   const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
   const [importedCustomIndices, setImportedCustomIndices] = useState<Array<{
     name: string;
@@ -2196,64 +2199,74 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     };
   }, [tables, removedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, lockedIndexes]);
 
-  // Single button handler to apply all calculated optimal improvements at once
+  // Single button handler to apply all calculated optimal improvements at once with sequential transition animation
   const handleApplyBulkOptimize = () => {
     setIsApplyingBulkOptimize(true);
-    setTimeout(() => {
-      // 1. Enable primary B-Tree indexing flags (if related indexes are not locked)
-      if (!flags.btreeIndexing && !lockedIndexes.includes('idx_orders_status_cat')) {
-        onToggleFlag('btreeIndexing');
-      }
-      if (!flags.batchEagerLoading && !lockedIndexes.includes('idx_line_items_tx')) {
-        onToggleFlag('batchEagerLoading');
-      }
+    const pendingNames = bulkOptimizationPlan.pendingChanges.map((ch) => ch.indexName);
+    let step = 0;
+    const interval = setInterval(() => {
+      if (step < pendingNames.length) {
+        setAnimatingBulkIndexName(pendingNames[step]);
+        step++;
+      } else {
+        clearInterval(interval);
+        setAnimatingBulkIndexName(null);
 
-      // 2. Ensure composite indexes are activated (respecting locked indexes)
-      setCreatedCompositeIndexes((prev) => {
-        const next = new Set(['email_status', 'category_amount', 'tx_price', 'tier_created']);
-        if (lockedIndexes.includes('idx_transactions_email_status') && !prev.includes('email_status')) next.delete('email_status');
-        if (lockedIndexes.includes('idx_transactions_category_amount') && !prev.includes('category_amount')) next.delete('category_amount');
-        if (lockedIndexes.includes('idx_line_items_tx_price') && !prev.includes('tx_price')) next.delete('tx_price');
-        if (lockedIndexes.includes('idx_customers_tier_created') && !prev.includes('tier_created')) next.delete('tier_created');
-        return Array.from(next);
-      });
-
-      // 3. Ensure custom bottleneck indexes are created (respecting locked indexes)
-      setCreatedCustomIndexes((prev) => {
-        const additions: string[] = [];
-        if (!lockedIndexes.includes('idx_transactions_email_missing')) additions.push('customer_email');
-        if (!lockedIndexes.includes('idx_transactions_amount_missing')) additions.push('amount');
-        return Array.from(new Set([...prev, ...additions]));
-      });
-
-      // 4. Prune unutilized dead index (idx_transactions_date) to reclaim buffer cache & write latency ONLY if NOT locked
-      // and un-remove any essential indexes (while preserving user locks)
-      setRemovedIndexes((prev) => {
-        const withoutEssentials = prev.filter((name) =>
-          !name.includes('PRIMARY KEY') &&
-          !name.includes('orders_status_cat') &&
-          !name.includes('email_status') &&
-          !name.includes('category_amount') &&
-          !name.includes('tx_price') &&
-          !name.includes('tier_created') &&
-          !name.includes('line_items_tx') &&
-          !lockedIndexes.includes(name)
-        );
-        if (!lockedIndexes.includes('idx_transactions_date')) {
-          return Array.from(new Set([...withoutEssentials, 'idx_transactions_date']));
+        // 1. Enable primary B-Tree indexing flags (if related indexes are not locked)
+        if (!flags.btreeIndexing && !lockedIndexes.includes('idx_orders_status_cat')) {
+          onToggleFlag('btreeIndexing');
         }
-        return withoutEssentials;
-      });
+        if (!flags.batchEagerLoading && !lockedIndexes.includes('idx_line_items_tx')) {
+          onToggleFlag('batchEagerLoading');
+        }
 
-      setIsApplyingBulkOptimize(false);
-      setAutoOptimizedCompleted(true);
-      setBulkOptimizeSuccessNotice(
-        `Bulk Optimization Complete: Applied ${bulkOptimizationPlan.pendingChanges.length} optimal changes across all tables! All ${bulkOptimizationPlan.totalCount} indexes are now in their optimal state with average schema health increased to ${bulkOptimizationPlan.projectedAvgHealth}/100.`
-      );
-      setTimeout(() => {
-        setBulkOptimizeSuccessNotice(null);
-      }, 7000);
-    }, 450);
+        // 2. Ensure composite indexes are activated (respecting locked indexes)
+        setCreatedCompositeIndexes((prev) => {
+          const next = new Set(['email_status', 'category_amount', 'tx_price', 'tier_created']);
+          if (lockedIndexes.includes('idx_transactions_email_status') && !prev.includes('email_status')) next.delete('email_status');
+          if (lockedIndexes.includes('idx_transactions_category_amount') && !prev.includes('category_amount')) next.delete('category_amount');
+          if (lockedIndexes.includes('idx_line_items_tx_price') && !prev.includes('tx_price')) next.delete('tx_price');
+          if (lockedIndexes.includes('idx_customers_tier_created') && !prev.includes('tier_created')) next.delete('tier_created');
+          return Array.from(next);
+        });
+
+        // 3. Ensure custom bottleneck indexes are created (respecting locked indexes)
+        setCreatedCustomIndexes((prev) => {
+          const additions: string[] = [];
+          if (!lockedIndexes.includes('idx_transactions_email_missing')) additions.push('customer_email');
+          if (!lockedIndexes.includes('idx_transactions_amount_missing')) additions.push('amount');
+          return Array.from(new Set([...prev, ...additions]));
+        });
+
+        // 4. Prune unutilized dead index (idx_transactions_date) to reclaim buffer cache & write latency ONLY if NOT locked
+        // and un-remove any essential indexes (while preserving user locks)
+        setRemovedIndexes((prev) => {
+          const withoutEssentials = prev.filter((name) =>
+            !name.includes('PRIMARY KEY') &&
+            !name.includes('orders_status_cat') &&
+            !name.includes('email_status') &&
+            !name.includes('category_amount') &&
+            !name.includes('tx_price') &&
+            !name.includes('tier_created') &&
+            !name.includes('line_items_tx') &&
+            !lockedIndexes.includes(name)
+          );
+          if (!lockedIndexes.includes('idx_transactions_date')) {
+            return Array.from(new Set([...withoutEssentials, 'idx_transactions_date']));
+          }
+          return withoutEssentials;
+        });
+
+        setIsApplyingBulkOptimize(false);
+        setAutoOptimizedCompleted(true);
+        setBulkOptimizeSuccessNotice(
+          `Bulk Optimization Complete: Applied ${bulkOptimizationPlan.pendingChanges.length} optimal changes across all tables! All ${bulkOptimizationPlan.totalCount} indexes are now in their optimal state with average schema health increased to ${bulkOptimizationPlan.projectedAvgHealth}/100.`
+        );
+        setTimeout(() => {
+          setBulkOptimizeSuccessNotice(null);
+        }, 7000);
+      }
+    }, 280);
   };
 
   // Real-time index search metrics and table isolation calculation for header filter
@@ -3997,7 +4010,10 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   key={`idx-${tbl.name}-${i}`}
                                   onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
                                   onMouseLeave={() => setHoveredIndexWhatIf(null)}
-                                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all bg-white ${
+                                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all duration-300 bg-white ${
+                                     animatingBulkIndexName === idx.name
+                                       ? 'bg-emerald-50/90 border-emerald-500 ring-2 ring-emerald-400 scale-[1.01] shadow-md'
+                                       : 
                                     isLocked
                                       ? 'border-amber-300 ring-1 ring-amber-200/80 shadow-xs'
                                       : idx.active
@@ -4256,7 +4272,26 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
                                         <button
                                           type="button"
-                                          id={`btn-rebuild-${idx.name}`}
+                                          id={`btn-copy-sql-${idx.name}`}
+                                           data-testid={`btn-copy-sql-${idx.name}`}
+                                           onClick={(e) => {
+                                             e.stopPropagation();
+                                             const ddl = `CREATE INDEX CONCURRENTLY ${idx.name} ON ${tbl.name} (${idx.columns.join(', ')});`;
+                                             navigator.clipboard?.writeText(ddl);
+                                             setCopiedDdlIndex(idx.name);
+                                             setImportSuccessNotice(`[Copied to Clipboard] CREATE SQL syntax for index "${idx.name}" copied.`);
+                                             setTimeout(() => setImportSuccessNotice(null), 4000);
+                                           }}
+                                           className="px-2.5 py-1 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 font-bold rounded text-[10px] shadow-2xs cursor-pointer transition-colors flex items-center gap-1 shrink-0"
+                                           title="Copy CREATE/DROP SQL syntax for this index to clipboard"
+                                         >
+                                           <Copy className="w-3 h-3 text-indigo-600" />
+                                           <span>{copiedDdlIndex === idx.name ? 'Copied SQL!' : 'Copy SQL'}</span>
+                                         </button>
+
+                                         <button
+                                           type="button"
+                                           id={`btn-rebuild-${idx.name}`}
                                           data-testid={`btn-rebuild-${idx.name}`}
                                           disabled={rebuildingIndexes.includes(idx.name)}
                                           onClick={(e) => {
@@ -4715,6 +4750,45 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   <div className="font-mono font-bold text-xs text-indigo-700 mt-0.5">
                     253x Faster
                   </div>
+                </div>
+              </div>
+
+              {/* Suggestion History Trend Chart */}
+              <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2 mt-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[11px] font-bold text-zinc-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <TrendingUp className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>AI Suggestion History &amp; Evolution</span>
+                  </h4>
+                  <span className="text-[10px] font-mono text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                    Last 5 Epochs
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-500">
+                  Visualizes how AI recommendations evolved as query workloads and table join patterns shifted over time.
+                </p>
+                <div className="space-y-1.5 pt-1">
+                  {[
+                    { epoch: 'Epoch 1 (24h ago)', count: 1, confidence: '68%', focus: 'Single-column filter scans', color: 'bg-amber-400' },
+                    { epoch: 'Epoch 2 (18h ago)', count: 2, confidence: '79%', focus: 'Initial multi-column join checks', color: 'bg-purple-400' },
+                    { epoch: 'Epoch 3 (12h ago)', count: 3, confidence: '88%', focus: 'Composite filtering on orders & tx', color: 'bg-indigo-500' },
+                    { epoch: 'Epoch 4 (6h ago)', count: 4, confidence: '94%', focus: 'Advanced covering index inclusion', color: 'bg-teal-500' },
+                    { epoch: 'Epoch 5 (Current)', count: compositeIndexOpportunities.length, confidence: '99.4%', focus: 'Optimal multi-table composite set', color: 'bg-emerald-600' }
+                  ].map((item, idx) => (
+                    <div key={idx} className="p-2 bg-white rounded-lg border border-zinc-200/80 space-y-1">
+                      <div className="flex items-center justify-between text-[10px] font-mono font-bold text-zinc-800">
+                        <span>{item.epoch}</span>
+                        <span className="text-indigo-700">{item.confidence} AI Confidence</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 bg-zinc-200 h-1.5 rounded-full overflow-hidden">
+                          <div className={`h-full ${item.color} transition-all`} style={{ width: `${Math.min(100, (item.count / 4) * 100)}%` }} />
+                        </div>
+                        <span className="text-[10px] font-mono font-semibold text-zinc-600 shrink-0">{item.count} Active Recs</span>
+                      </div>
+                      <div className="text-[10px] text-zinc-500 italic">Focus: {item.focus}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -5275,40 +5349,81 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             </span>
           </button>
 
-          <button
-            type="button"
-            id="btn-bulk-optimize"
-            data-testid="btn-bulk-optimize"
-            onClick={handleApplyBulkOptimize}
-            disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs ${
-              bulkOptimizationPlan.isFullyOptimized
-                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white'
-            }`}
-            title="Calculates optimal set of changes for all listed indexes and applies all recommended improvements at once"
+          <div
+            className="relative inline-block"
+            onMouseEnter={() => setShowBulkOptimizePopover(true)}
+            onMouseLeave={() => setShowBulkOptimizePopover(false)}
           >
-            {isApplyingBulkOptimize ? (
-              <>
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-200" />
-                <span>Optimizing Schema...</span>
-              </>
-            ) : (
-              <>
-                <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
-                <span>Bulk Optimize</span>
-                {bulkOptimizationPlan.isFullyOptimized ? (
-                  <span className="ml-1 px-1.5 py-0.2 bg-emerald-800 text-emerald-100 rounded-full text-[10px] font-bold">
-                    Optimal (96/100)
+            <button
+              type="button"
+              id="btn-bulk-optimize"
+              data-testid="btn-bulk-optimize"
+              onClick={handleApplyBulkOptimize}
+              disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs ${
+                bulkOptimizationPlan.isFullyOptimized
+                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                  : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white'
+              }`}
+              title="Calculates optimal set of changes for all listed indexes and applies all recommended improvements at once"
+            >
+              {isApplyingBulkOptimize ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-200" />
+                  <span>Optimizing Schema...</span>
+                </>
+              ) : (
+                <>
+                  <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                  <span>Bulk Optimize</span>
+                  {bulkOptimizationPlan.isFullyOptimized ? (
+                    <span className="ml-1 px-1.5 py-0.2 bg-emerald-800 text-emerald-100 rounded-full text-[10px] font-bold">
+                      Optimal (96/100)
+                    </span>
+                  ) : (
+                    <span className="ml-1 px-1.5 py-0.2 bg-black/25 text-white rounded-full text-[10px] font-mono font-bold">
+                      {bulkOptimizationPlan.pendingChanges.length} Pending
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+
+            {/* Optimization Summary Hover Popover */}
+            {showBulkOptimizePopover && (
+              <div
+                id="bulk-optimize-summary-popover"
+                data-testid="bulk-optimize-summary-popover"
+                className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 bg-zinc-900 text-white p-3.5 rounded-xl shadow-2xl border border-emerald-500/50 z-50 text-xs animate-fadeIn font-sans"
+              >
+                <div className="flex items-center justify-between font-bold text-emerald-400 mb-2 border-b border-zinc-800 pb-1.5">
+                  <span className="flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
+                    <span>Bulk Optimization Summary</span>
                   </span>
-                ) : (
-                  <span className="ml-1 px-1.5 py-0.2 bg-black/25 text-white rounded-full text-[10px] font-mono font-bold">
-                    {bulkOptimizationPlan.pendingChanges.length} Pending
-                  </span>
-                )}
-              </>
+                  <span className="text-[10px] font-mono text-zinc-400">Ready to Apply</span>
+                </div>
+                <div className="space-y-1.5 text-zinc-300 text-[11px]">
+                  <div className="flex items-center justify-between">
+                    <span>🗑️ Indexes to be Removed:</span>
+                    <span className="font-mono font-bold text-rose-400">1 Unutilized</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>🔗 Indexes to be Merged:</span>
+                    <span className="font-mono font-bold text-amber-400">2 Overlapping</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>✨ Indexes to be Created:</span>
+                    <span className="font-mono font-bold text-emerald-400">4 Composite</span>
+                  </div>
+                  <div className="pt-2 border-t border-zinc-800 flex items-center justify-between text-[10px] text-zinc-400">
+                    <span>Projected Schema Health:</span>
+                    <span className="font-mono font-bold text-emerald-400">98 / 100 (+34 pts)</span>
+                  </div>
+                </div>
+              </div>
             )}
-          </button>
+          </div>
 
           <button
             type="button"
@@ -7335,6 +7450,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </button>
                 <button
                   type="button"
+                  id="btn-open-diff-viewer"
+                  data-testid="btn-open-diff-viewer"
+                  onClick={() => setShowIndexDiffViewerModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  title="Open animated side-by-side Index Property Diff viewer between selected schema versions"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Index Property Diff Viewer</span>
+                </button>
+                <button
+                  type="button"
                   id="btn-modal-export-schema-state"
                   data-testid="btn-modal-export-schema-state"
                   onClick={handleExportSchemaState}
@@ -8163,6 +8289,94 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
               >
                 Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Animated Index Property Diff Viewer Modal */}
+      {showIndexDiffViewerModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col text-zinc-900 relative">
+            <div className="p-5 border-b border-zinc-200 bg-teal-50 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-teal-700 text-white rounded-lg">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Side-by-Side Index Property Diff Viewer</h3>
+                  <p className="text-xs text-zinc-600">
+                    Comparing index property changes (fill-factor, index type, inclusion columns, and tuning flags) between <strong className="font-mono text-indigo-900">{snapshots.find(s => s.id === migrationVersion1Id)?.name || 'Version A'}</strong> and <strong className="font-mono text-indigo-900">{snapshots.find(s => s.id === migrationVersion2Id)?.name || 'Version B'}</strong>.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowIndexDiffViewerModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1.5 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto text-xs">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 font-mono">
+                  <div className="font-bold text-zinc-700 text-[11px] mb-2 uppercase tracking-wider border-b pb-1">
+                    Base Version ({snapshots.find(s => s.id === migrationVersion1Id)?.name || 'v1'})
+                  </div>
+                  <pre className="text-[11px] text-zinc-700 overflow-x-auto leading-relaxed">
+                    {`-- Base Schema Configuration
+CREATE INDEX idx_transactions_email ON transactions (email);
+-- Properties:
+--   fillfactor: 90
+--   index_type: BTREE
+--   include_cols: none
+--   buffering: auto`}
+                  </pre>
+                </div>
+
+                <div className="p-3 bg-emerald-50/70 rounded-xl border border-emerald-300 font-mono">
+                  <div className="font-bold text-emerald-900 text-[11px] mb-2 uppercase tracking-wider border-b border-emerald-200 pb-1">
+                    Target Version ({snapshots.find(s => s.id === migrationVersion2Id)?.name || 'v2'})
+                  </div>
+                  <pre className="text-[11px] text-emerald-950 overflow-x-auto leading-relaxed">
+                    {`-- Target Schema Configuration
+CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE (status);
+-- Properties:
+--   fillfactor: 100 (+10% density)
+--   index_type: BRIN / BTREE
+--   include_cols: (status) [ADDED]
+--   buffering: concurrent`}
+                  </pre>
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-2">
+                <h4 className="font-bold text-zinc-800 uppercase tracking-wider text-[11px]">Granular Property Diff Breakdown</h4>
+                {[
+                  { prop: 'Fill Factor Density', oldVal: '90 (Default)', newVal: '100 (Dense B-Tree)', status: 'Modified (+10% space saving)' },
+                  { prop: 'Inclusion Columns', oldVal: 'None', newVal: '(status)', status: 'Added (Covering Index optimization)' },
+                  { prop: 'Build Concurrency', oldVal: 'Standard LOCK', newVal: 'CONCURRENTLY', status: 'Modified (Zero-Downtime)' }
+                ].map((diff, idx) => (
+                  <div key={idx} className="p-3 bg-white rounded-xl border border-zinc-200 flex items-center justify-between text-xs">
+                    <div className="font-bold text-zinc-900 font-mono w-1/3">🔑 {diff.prop}</div>
+                    <div className="text-zinc-500 font-mono w-1/3 line-through">{diff.oldVal}</div>
+                    <div className="text-emerald-800 font-mono font-bold w-1/3 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
+                      ➔ {diff.newVal} ({diff.status})
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-zinc-200 bg-zinc-50 flex justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowIndexDiffViewerModal(false)}
+                className="px-4 py-2 bg-teal-700 hover:bg-teal-600 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Close Diff Viewer
               </button>
             </div>
           </div>
