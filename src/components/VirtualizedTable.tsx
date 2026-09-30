@@ -44,7 +44,8 @@ import {
   Pause,
   SkipForward,
   SkipBack,
-  Monitor
+  Monitor,
+  Sparkles
 } from 'lucide-react';
 import {
   exportRecords,
@@ -148,6 +149,136 @@ const renderInlineSparkline = (points: number[], width = 52, height = 18, stroke
   );
 };
 
+export interface PlanNodeInsight {
+  id: string;
+  nodeType: string;
+  relationName: string;
+  latencyMs: number;
+  percentage: number;
+  explanation: string;
+  mechanics: string;
+  severity: 'critical' | 'warning' | 'optimal';
+  barColor: string;
+}
+
+export interface RecordQueryPlanInsight {
+  totalLatencyMs: number;
+  topNode: PlanNodeInsight;
+  nodes: PlanNodeInsight[];
+  summary: string;
+  recommendation: string;
+}
+
+export const getRecordQueryPlanInsight = (
+  rec: TransactionRecord,
+  flags: OptimizationFlags
+): RecordQueryPlanInsight => {
+  const itemCount = rec.items && rec.items.length > 0 ? rec.items.length : (rec.itemCount || 1);
+
+  // 1. Table Access Node (Seq Scan vs Index Scan)
+  const isIndexed = !!flags.btreeIndexing;
+  const seqScanMs = isIndexed ? 0.8 : 55.0;
+  const tableNode: PlanNodeInsight = {
+    id: 'table-access',
+    nodeType: isIndexed ? 'Index Scan (B-Tree)' : 'Seq Scan (Full Table Scan)',
+    relationName: 'transactions',
+    latencyMs: seqScanMs,
+    percentage: 0,
+    explanation: isIndexed
+      ? 'B-Tree index seek on (status, category) directly traversed index leaf nodes without scanning heap.'
+      : 'Unindexed table structure forced full sequential scan across 50,000 heap pages on disk.',
+    mechanics: isIndexed ? 'O(log N) B-Tree binary search' : 'O(N) sequential heap traversal (50,000 rows)',
+    severity: isIndexed ? 'optimal' : 'critical',
+    barColor: isIndexed ? 'bg-emerald-500' : 'bg-rose-500'
+  };
+
+  // 2. Join / Relation Node (Nested Loop vs Hash Join)
+  const isBatched = !!flags.batchEagerLoading;
+  const joinMs = isBatched ? +(0.8 + itemCount * 0.25).toFixed(1) : +(itemCount * 42.0).toFixed(1);
+  const joinNode: PlanNodeInsight = {
+    id: 'relation-join',
+    nodeType: isBatched ? 'Hash Join (Batch Eager)' : 'Nested Loop (N+1 Query Storm)',
+    relationName: 'order_items',
+    latencyMs: joinMs,
+    percentage: 0,
+    explanation: isBatched
+      ? `Single eager roundtrip with WHERE order_id IN (...) resolved ${itemCount} child line items.`
+      : `Synchronous N+1 query storm: dispatched ${itemCount} separate roundtrip queries (SELECT * FROM order_items WHERE order_id = '${rec.id}').`,
+    mechanics: isBatched ? 'In-memory hash table lookup' : `O(N * M) synchronous roundtrips (${itemCount} subqueries)`,
+    severity: isBatched ? 'optimal' : 'critical',
+    barColor: isBatched ? 'bg-teal-500' : 'bg-rose-600'
+  };
+
+  // 3. Buffer Pool / Cache Node
+  const isCached = !!flags.queryCaching;
+  const cacheMs = isCached ? 0.2 : 3.6;
+  const cacheNode: PlanNodeInsight = {
+    id: 'buffer-cache',
+    nodeType: isCached ? 'LRU Cache Lookup' : 'Buffer Pool Disk I/O',
+    relationName: 'shared_buffers',
+    latencyMs: cacheMs,
+    percentage: 0,
+    explanation: isCached
+      ? 'Served from in-memory LRU query cache, bypassing disk I/O and query re-planning.'
+      : 'Cache bypassed; required reading raw database blocks from storage subsystem.',
+    mechanics: isCached ? 'O(1) in-memory key lookup' : 'Random disk page read',
+    severity: isCached ? 'optimal' : 'warning',
+    barColor: isCached ? 'bg-indigo-400' : 'bg-amber-500'
+  };
+
+  // 4. Sort / Materialization Node
+  const sortMs = +(0.6 + (rec.orderNumber.length % 3) * 0.2).toFixed(1);
+  const sortNode: PlanNodeInsight = {
+    id: 'sort-materialize',
+    nodeType: 'Sort (Top-N Heapsort)',
+    relationName: 'work_mem',
+    latencyMs: sortMs,
+    percentage: 0,
+    explanation: 'In-memory sort on created_at DESC within allocated work_mem.',
+    mechanics: 'Top-N heap sort in memory',
+    severity: 'optimal',
+    barColor: 'bg-blue-400'
+  };
+
+  const rawNodes = [tableNode, joinNode, cacheNode, sortNode];
+  const totalLatencyMs = Number(rawNodes.reduce((sum, n) => sum + n.latencyMs, 0).toFixed(1));
+
+  // Compute percentages & sort descending by latencyMs
+  const nodes = rawNodes
+    .map((n) => ({
+      ...n,
+      percentage: Number(((n.latencyMs / totalLatencyMs) * 100).toFixed(1))
+    }))
+    .sort((a, b) => b.latencyMs - a.latencyMs);
+
+  const topNode = nodes[0];
+
+  let summary = '';
+  let recommendation = '';
+
+  if (!isBatched && topNode.id === 'relation-join') {
+    summary = `N+1 query storm on line items is the primary latency culprit, contributing ${topNode.percentage.toFixed(0)}% (${topNode.latencyMs.toFixed(1)}ms) of this record's fetch time.`;
+    recommendation = `Enable Batch Eager Loading to replace ${itemCount} roundtrip queries with a single batched Hash Join.`;
+  } else if (!isIndexed && topNode.id === 'table-access') {
+    summary = `Full sequential table scan is the primary latency culprit, contributing ${topNode.percentage.toFixed(0)}% (${topNode.latencyMs.toFixed(1)}ms) by scanning 50,000 unindexed rows.`;
+    recommendation = `Enable B-Tree Indexing to allow logarithmic index seeking directly to this record.`;
+  } else if (isIndexed && isBatched) {
+    summary = `Optimal query execution plan. All plan nodes operating within sub-millisecond B-Tree and hash join thresholds.`;
+    recommendation = `Execution plan is fully tuned and optimized.`;
+  } else {
+    summary = `${topNode.nodeType} contributed the most to execution latency (${topNode.latencyMs.toFixed(1)}ms, ${topNode.percentage.toFixed(0)}%).`;
+    recommendation = `Tune memory buffers and enable composite indexing for further acceleration.`;
+  }
+
+  return {
+    totalLatencyMs,
+    topNode,
+    nodes,
+    summary,
+    recommendation
+  };
+};
+
 const ROW_HEIGHT = 56;
 const CONTAINER_HEIGHT = 520;
 
@@ -230,6 +361,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
   const [scrollTop, setScrollTop] = useState(0);
   const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
+  const [hoveredInsightRowId, setHoveredInsightRowId] = useState<string | null>(null);
+  const [pinnedInsightRowId, setPinnedInsightRowId] = useState<string | null>(null);
   const [exportStats, setExportStats] = useState<ExportPerformanceResult | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2368,8 +2501,15 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </span>
           )}
         </div>
-        <div className="col-span-2 flex items-center gap-2">
+        <div className="col-span-2 flex items-center gap-1.5 flex-wrap">
           <span>Order ID</span>
+          <span
+            className="text-[9px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.2 rounded font-normal hidden sm:inline-flex items-center gap-0.5 select-none"
+            title="Hover or click 'Insight' on any row to reveal specific query plan node latency contributions"
+          >
+            <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
+            <span>Plan Insights</span>
+          </span>
           {showSelectedOnly && (
             <span
               id="header-selected-only-indicator"
@@ -2531,6 +2671,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 const actualIndex = safeFlags.virtualizedDOM ? startIndex + index + 1 : index + 1;
                 const isExpanded = expandedRowId === rec.id;
                 const isSelected = selectedRowIds.has(rec.id);
+                const planInsight = getRecordQueryPlanInsight(rec, safeFlags);
+                const isInsightActive = hoveredInsightRowId === rec.id || pinnedInsightRowId === rec.id;
 
                 const anomalyData = anomalyMap.get(rec.id);
                 const isStatisticalOutlier = anomalyData ? anomalyData.isOutlier : false;
@@ -2673,18 +2815,219 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                         </span>
                       </div>
 
-                      {/* Order Number */}
-                      <div className="col-span-2">
-                        <span
-                          className={`font-mono font-medium ${
-                            isSelected ? 'text-emerald-950 font-semibold' : 'text-zinc-900'
-                          }`}
-                        >
-                          {rec.orderNumber}
-                        </span>
+                      {/* Order Number & Query Plan Insight */}
+                      <div className="col-span-2 relative">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span
+                            className={`font-mono font-medium ${
+                              isSelected ? 'text-emerald-950 font-semibold' : 'text-zinc-900'
+                            }`}
+                          >
+                            {rec.orderNumber}
+                          </span>
+
+                          {/* Small 'Insight' Tooltip Trigger Badge */}
+                          <div className="relative inline-flex items-center" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              id={`btn-row-insight-${rec.id}`}
+                              data-testid={`btn-row-insight-${rec.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPinnedInsightRowId((prev) => (prev === rec.id ? null : rec.id));
+                              }}
+                              onMouseEnter={() => setHoveredInsightRowId(rec.id)}
+                              onMouseLeave={() => setHoveredInsightRowId(null)}
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer border select-none ${
+                                isInsightActive
+                                  ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs ring-2 ring-indigo-400/40'
+                                  : planInsight.topNode.severity === 'critical'
+                                  ? 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-300 hover:border-rose-400'
+                                  : planInsight.topNode.severity === 'warning'
+                                  ? 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-300 hover:border-amber-400'
+                                  : 'bg-indigo-50/80 hover:bg-indigo-100 text-indigo-700 border-indigo-200 hover:border-indigo-300'
+                              }`}
+                              title={`Query Plan Insight: Top contributor is ${planInsight.topNode.nodeType} (${planInsight.topNode.percentage.toFixed(0)}% of latency)`}
+                              aria-label={`View Query Plan Latency Insight for ${rec.orderNumber}`}
+                            >
+                              <Sparkles className="w-2.5 h-2.5 text-indigo-500 shrink-0" />
+                              <span>Insight</span>
+                              <span
+                                className={`text-[9px] px-1 py-0.2 rounded font-mono ${
+                                  isInsightActive
+                                    ? 'bg-indigo-700 text-white'
+                                    : planInsight.topNode.severity === 'critical'
+                                    ? 'bg-rose-100 text-rose-900'
+                                    : planInsight.topNode.severity === 'warning'
+                                    ? 'bg-amber-100 text-amber-900'
+                                    : 'bg-indigo-100 text-indigo-900'
+                                }`}
+                              >
+                                {planInsight.topNode.latencyMs.toFixed(0)}ms
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+
                         <div className={`text-[10px] ${isSelected ? 'text-emerald-700/70' : 'text-zinc-400'}`}>
                           {rec.createdAt}
                         </div>
+
+                        {/* Small 'Insight' Tooltip revealing specific query plan nodes contributing most to record's latency */}
+                        {isInsightActive && (
+                          <div
+                            id={`tooltip-plan-insight-${rec.id}`}
+                            data-testid={`tooltip-plan-insight-${rec.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`absolute left-0 z-50 w-80 sm:w-96 p-4 bg-zinc-950/98 text-white rounded-xl shadow-2xl border border-zinc-700/90 text-xs backdrop-blur-md animate-fadeIn cursor-default select-text ring-1 ring-white/10 ${
+                              index >= visibleRecords.length - 2 && visibleRecords.length > 3
+                                ? 'bottom-full mb-1.5'
+                                : 'top-full mt-1.5'
+                            }`}
+                          >
+                            {/* Tooltip Header */}
+                            <div className="flex items-center justify-between pb-2.5 border-b border-zinc-800 mb-3">
+                              <div className="flex items-center gap-2">
+                                <div className="p-1 rounded-lg bg-indigo-950 border border-indigo-800 text-indigo-300">
+                                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-1.5">
+                                    <h4 className="font-bold text-zinc-100 text-xs">Query Plan Latency Breakdown</h4>
+                                    <span className="font-mono text-[10px] text-indigo-300 bg-indigo-950/80 px-1.5 py-0.2 rounded border border-indigo-800">
+                                      {rec.orderNumber}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-zinc-400 mt-0.5">
+                                    Total record fetch latency: <strong className="text-zinc-200 font-mono">{planInsight.totalLatencyMs.toFixed(1)}ms</strong>
+                                  </p>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                id={`btn-close-insight-${rec.id}`}
+                                data-testid={`btn-close-insight-${rec.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPinnedInsightRowId(null);
+                                  setHoveredInsightRowId(null);
+                                }}
+                                className="text-zinc-400 hover:text-white p-1 rounded-md hover:bg-zinc-800 cursor-pointer transition-colors"
+                                title="Close insight tooltip"
+                                aria-label="Close insight tooltip"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+
+                            {/* Dominant Plan Node Bottleneck Callout */}
+                            <div
+                              className={`p-2.5 rounded-lg border mb-3 flex items-start gap-2.5 ${
+                                planInsight.topNode.severity === 'critical'
+                                  ? 'bg-rose-950/40 border-rose-800/80 text-rose-200'
+                                  : planInsight.topNode.severity === 'warning'
+                                  ? 'bg-amber-950/40 border-amber-800/80 text-amber-200'
+                                  : 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200'
+                              }`}
+                            >
+                              <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${
+                                planInsight.topNode.severity === 'critical'
+                                  ? 'text-rose-400'
+                                  : planInsight.topNode.severity === 'warning'
+                                  ? 'text-amber-400'
+                                  : 'text-emerald-400'
+                              }`} />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between gap-1 flex-wrap">
+                                  <span className="font-bold text-[11px] uppercase tracking-wide">
+                                    Top Contributor ({planInsight.topNode.percentage.toFixed(0)}%)
+                                  </span>
+                                  <span className="font-mono font-bold text-xs">
+                                    +{planInsight.topNode.latencyMs.toFixed(1)} ms
+                                  </span>
+                                </div>
+                                <div className="font-mono text-[11px] font-semibold text-white mt-0.5">
+                                  {planInsight.topNode.nodeType}
+                                </div>
+                                <p className="text-[10px] text-zinc-300 mt-1 leading-snug">
+                                  {planInsight.topNode.explanation}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Stacked Latency Contribution Visual Bar */}
+                            <div className="mb-3 space-y-1">
+                              <div className="flex items-center justify-between text-[10px] text-zinc-400 font-mono">
+                                <span>Plan Node Cost Distribution</span>
+                                <span>100% of execution</span>
+                              </div>
+                              <div className="h-2 rounded-full overflow-hidden flex bg-zinc-800 gap-0.5">
+                                {planInsight.nodes.map((node) => (
+                                  <div
+                                    key={node.id}
+                                    style={{ width: `${Math.max(node.percentage, 3)}%` }}
+                                    className={`h-full ${node.barColor} transition-all`}
+                                    title={`${node.nodeType}: ${node.latencyMs.toFixed(1)}ms (${node.percentage.toFixed(0)}%)`}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Contributing Plan Nodes List (Ranked) */}
+                            <div className="space-y-2 mb-3 max-h-48 overflow-y-auto pr-1">
+                              <div className="text-[10px] uppercase tracking-wider font-bold text-zinc-400 flex items-center justify-between">
+                                <span>Specific Plan Nodes</span>
+                                <span>Latency / Share</span>
+                              </div>
+                              {planInsight.nodes.map((node, nIdx) => (
+                                <div
+                                  key={node.id}
+                                  className={`p-2 rounded-lg border text-[11px] flex flex-col gap-1 transition-colors ${
+                                    node.severity === 'critical'
+                                      ? 'bg-rose-950/20 border-rose-900/60'
+                                      : node.severity === 'warning'
+                                      ? 'bg-amber-950/20 border-amber-900/60'
+                                      : 'bg-zinc-900/80 border-zinc-800'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-1">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${node.barColor}`} />
+                                      <span className="font-mono font-bold text-zinc-200 truncate">
+                                        #{nIdx + 1} {node.nodeType}
+                                      </span>
+                                    </div>
+                                    <div className="font-mono font-bold shrink-0 flex items-center gap-1.5">
+                                      <span className="text-zinc-100">{node.latencyMs.toFixed(1)}ms</span>
+                                      <span className={`px-1 py-0.2 rounded text-[9px] ${
+                                        node.severity === 'critical'
+                                          ? 'bg-rose-900/80 text-rose-200'
+                                          : node.severity === 'warning'
+                                          ? 'bg-amber-900/80 text-amber-200'
+                                          : 'bg-emerald-900/80 text-emerald-200'
+                                      }`}>
+                                        {node.percentage.toFixed(0)}%
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="text-[10px] text-zinc-400 flex items-center justify-between">
+                                    <span className="font-mono text-zinc-500">rel: {node.relationName}</span>
+                                    <span className="text-zinc-400 italic text-[10px]">{node.mechanics}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Optimization Insight Recommendation Footer */}
+                            <div className="pt-2 border-t border-zinc-800 text-[11px] flex items-start gap-1.5 text-zinc-300">
+                              <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                              <div>
+                                <span className="text-zinc-400 font-semibold">Tuning Guidance: </span>
+                                <span className="text-zinc-200">{planInsight.recommendation}</span>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       {/* Customer Info */}
