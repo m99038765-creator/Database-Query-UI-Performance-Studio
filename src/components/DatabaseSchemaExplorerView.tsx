@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 
 interface DatabaseSchemaExplorerViewProps {
@@ -51,10 +51,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [hoveredIndexWhatIf, setHoveredIndexWhatIf] = useState<string | null>(null);
   const [showClusterAnalysisModal, setShowClusterAnalysisModal] = useState<boolean>(false);
   const [showIndexCleanupModal, setShowIndexCleanupModal] = useState<boolean>(false);
+  const [showAutoCleanupPreviewModal, setShowAutoCleanupPreviewModal] = useState<boolean>(false);
   const [isScanningCleanup, setIsScanningCleanup] = useState<boolean>(false);
   const [cleanupScanCompleted, setCleanupScanCompleted] = useState<boolean>(false);
   const [removedIndexes, setRemovedIndexes] = useState<string[]>([]);
   const [reindexedIndexes, setReindexedIndexes] = useState<string[]>([]);
+  const [simulatedFailedIndexes, setSimulatedFailedIndexes] = useState<string[]>([]);
+  const [rebuildingIndexes, setRebuildingIndexes] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain'>('explorer');
   const [showWorkloadOptimizationModal, setShowWorkloadOptimizationModal] = useState<boolean>(false);
   const [isAutoOptimizingWorkload, setIsAutoOptimizingWorkload] = useState<boolean>(false);
@@ -67,11 +70,16 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string>('idx_transactions_email_status');
   const [suggestionFilterTab, setSuggestionFilterTab] = useState<'all' | 'filter' | 'join' | 'composite'>('all');
   const [showBulkOptimizeModal, setShowBulkOptimizeModal] = useState<boolean>(false);
+  const [showCrossReferenceReportModal, setShowCrossReferenceReportModal] = useState<boolean>(false);
+  const [bulkDryRunActive, setBulkDryRunActive] = useState<boolean>(false);
+  const [dryRunPreviewList, setDryRunPreviewList] = useState<Array<{ name: string; impact: string; projectedHealth: number }> | null>(null);
   const [bulkOptimizeSuccessNotice, setBulkOptimizeSuccessNotice] = useState<string | null>(null);
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
+  const [disabledImpactEdges, setDisabledImpactEdges] = useState<Record<string, boolean>>({});
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
   const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
+  const [aiSuggestionSortBy, setAiSuggestionSortBy] = useState<'gain' | 'risk' | 'complexity'>('gain');
   const [copiedDdlIndex, setCopiedDdlIndex] = useState<string | null>(null);
   const [showBulkImportModal, setShowBulkImportModal] = useState<boolean>(false);
   const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
@@ -870,6 +878,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showSnapshotsModal, setShowSnapshotsModal] = useState<boolean>(false);
   const [migrationVersion1Id, setMigrationVersion1Id] = useState<string>('snapshot-default');
   const [migrationVersion2Id, setMigrationVersion2Id] = useState<string>('snapshot-default');
+  const [showCompareSchemaOverlay, setShowCompareSchemaOverlay] = useState<boolean>(false);
+  const [compareSnapshotAId, setCompareSnapshotAId] = useState<string>('snapshot-default');
+  const [compareSnapshotBId, setCompareSnapshotBId] = useState<string>('snapshot-default');
 
   const handleExportMigrationSQL = () => {
     const v1 = snapshots.find((s) => s.id === migrationVersion1Id) || snapshots[0];
@@ -1616,6 +1627,33 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       setImportSuccessNotice(`Successfully executed REINDEX CONCURRENTLY on "${indexName}". Fragmentation reduced to 3% and index health score restored!`);
       setTimeout(() => setImportSuccessNotice(null), 4000);
     }
+  };
+
+  const handleToggleSimulateFailure = (indexName: string) => {
+    setSimulatedFailedIndexes((prev) => {
+      const next = prev.includes(indexName) ? prev.filter((n) => n !== indexName) : [...prev, indexName];
+      const isFailed = next.includes(indexName);
+      setImportSuccessNotice(
+        isFailed
+          ? `[Simulated Index Failure] Index "${indexName}" temporarily offline. Queries fall back to full table sequential scans (Latency: +700%, Cost: +900%).`
+          : `[Index Recovered] Index "${indexName}" back online. Query execution plans restored.`
+      );
+      setTimeout(() => setImportSuccessNotice(null), 5000);
+      return next;
+    });
+  };
+
+  const handleRebuildIndex = (indexName: string) => {
+    if (rebuildingIndexes.includes(indexName)) return;
+    setRebuildingIndexes((prev) => [...prev, indexName]);
+    setImportSuccessNotice(`[Maintenance Started] Rebuilding index "${indexName}" (performing VACUUM & REINDEX)...`);
+
+    setTimeout(() => {
+      setRebuildingIndexes((prev) => prev.filter((n) => n !== indexName));
+      setReindexedIndexes((prev) => (prev.includes(indexName) ? prev : [...prev, indexName]));
+      setImportSuccessNotice(`✓ Successfully completed maintenance rebuild on index "${indexName}". B-Tree pages defragmented and statistics updated.`);
+      setTimeout(() => setImportSuccessNotice(null), 5000);
+    }, 1500);
   };
 
   // Auto-Healing Effect: automatically re-index indexes with health < 50% when enabled
@@ -3005,12 +3043,35 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         <span>Directly Dependent Queries ({dep.dependentQueries.length})</span>
                       </h5>
                       <div className="space-y-1.5">
-                        {dep.dependentQueries.map((q, qi) => (
-                          <div key={qi} className="p-2.5 bg-zinc-50 rounded-lg border border-zinc-200/80 flex items-center justify-between text-xs font-mono">
-                            <span className="font-bold text-zinc-800">└─ {q.name}</span>
-                            <span className="text-[10px] text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">{q.impact}</span>
-                          </div>
-                        ))}
+                        {dep.dependentQueries.map((q, qi) => {
+                          const edgeKey = `${dep.indexName}-query-${qi}`;
+                          const isDisabled = !!disabledImpactEdges[edgeKey];
+                          return (
+                            <div key={qi} className={`p-2.5 rounded-lg border flex items-center justify-between text-xs font-mono transition-all ${isDisabled ? 'bg-zinc-200/50 border-zinc-300 opacity-60' : 'bg-zinc-50 border-zinc-200/80'}`}>
+                              <span className={`font-bold ${isDisabled ? 'line-through text-zinc-500' : 'text-zinc-800'}`}>└─ {q.name}</span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] px-2 py-0.5 rounded border ${isDisabled ? 'text-zinc-500 bg-zinc-200 border-zinc-300' : 'text-rose-700 bg-rose-50 border-rose-200'}`}>
+                                  {isDisabled ? 'Edge Bypassed (0ms impact)' : q.impact}
+                                </span>
+                                <label className="relative inline-flex items-center cursor-pointer" title="Toggle index relation edge">
+                                  <input
+                                    type="checkbox"
+                                    id={`toggle-edge-${dep.indexName}-q-${qi}`}
+                                    data-testid={`toggle-edge-${dep.indexName}-q-${qi}`}
+                                    checked={!isDisabled}
+                                    onChange={() => {
+                                      setDisabledImpactEdges((prev) => ({ ...prev, [edgeKey]: !isDisabled }));
+                                      setImportSuccessNotice(isDisabled ? `Enabled edge relation for query "${q.name}".` : `Disabled edge relation for query "${q.name}". Impact recalculated.`);
+                                      setTimeout(() => setImportSuccessNotice(null), 4000);
+                                    }}
+                                    className="sr-only peer"
+                                  />
+                                  <div className="w-7 h-4 bg-zinc-300 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -3020,12 +3081,35 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         <span>Dependent Enterprise Reports ({dep.dependentReports.length})</span>
                       </h5>
                       <div className="space-y-1.5">
-                        {dep.dependentReports.map((r, ri) => (
-                          <div key={ri} className="p-2.5 bg-zinc-50 rounded-lg border border-zinc-200/80 flex items-center justify-between text-xs">
-                            <span className="font-medium text-zinc-800">└─ 📊 {r.name}</span>
-                            <span className="text-[10px] text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-mono">{r.impact}</span>
-                          </div>
-                        ))}
+                        {dep.dependentReports.map((r, ri) => {
+                          const edgeKey = `${dep.indexName}-report-${ri}`;
+                          const isDisabled = !!disabledImpactEdges[edgeKey];
+                          return (
+                            <div key={ri} className={`p-2.5 rounded-lg border flex items-center justify-between text-xs transition-all ${isDisabled ? 'bg-zinc-200/50 border-zinc-300 opacity-60' : 'bg-zinc-50 border-zinc-200/80'}`}>
+                              <span className={`font-medium ${isDisabled ? 'line-through text-zinc-500' : 'text-zinc-800'}`}>└─ 📊 {r.name}</span>
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] px-2 py-0.5 rounded border font-mono ${isDisabled ? 'text-zinc-500 bg-zinc-200 border-zinc-300' : 'text-amber-800 bg-amber-50 border-amber-200'}`}>
+                                  {isDisabled ? 'Edge Bypassed (Lock Contention Cleared)' : r.impact}
+                                </span>
+                                <label className="relative inline-flex items-center cursor-pointer" title="Toggle index relation edge">
+                                  <input
+                                    type="checkbox"
+                                    id={`toggle-edge-${dep.indexName}-r-${ri}`}
+                                    data-testid={`toggle-edge-${dep.indexName}-r-${ri}`}
+                                    checked={!isDisabled}
+                                    onChange={() => {
+                                      setDisabledImpactEdges((prev) => ({ ...prev, [edgeKey]: !isDisabled }));
+                                      setImportSuccessNotice(isDisabled ? `Enabled report edge "${r.name}".` : `Disabled report edge "${r.name}". Impact recalculated.`);
+                                      setTimeout(() => setImportSuccessNotice(null), 4000);
+                                    }}
+                                    className="sr-only peer"
+                                  />
+                                  <div className="w-7 h-4 bg-zinc-300 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+                                </label>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
@@ -3932,6 +4016,35 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         <span className="font-mono text-[10px] bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded border border-indigo-800">
                                           Top 5 Frequent Slow Queries
                                         </span>
+                                         <div
+                                           id={`usage-heatmap-${idx.name}`}
+                                           data-testid={`usage-heatmap-${idx.name}`}
+                                           className="inline-flex items-center gap-1 bg-zinc-100 hover:bg-zinc-200/70 px-2 py-0.5 rounded-md border border-zinc-200 text-[10px] font-mono text-zinc-700 shadow-2xs"
+                                           title="24-Hour Query Usage Heatmap: Visualizes query utilization intensity over 6 x 4-hour blocks across the last 24 hours"
+                                         >
+                                           <Activity className="w-3 h-3 text-indigo-600 shrink-0" />
+                                           <span className="text-[9px] font-semibold text-zinc-600">24h Heatmap:</span>
+                                           <div className="flex items-center gap-0.5">
+                                             {[80, 45, 90, 65, 30, 95].map((val, hi) => {
+                                               const intensity = (idx.name.length * (hi + 3) * 17) % 100;
+                                               const bgClass =
+                                                 intensity > 75
+                                                   ? 'bg-emerald-600'
+                                                   : intensity > 40
+                                                   ? 'bg-teal-500'
+                                                   : intensity > 20
+                                                   ? 'bg-amber-400'
+                                                   : 'bg-zinc-300';
+                                               return (
+                                                 <div
+                                                   key={hi}
+                                                   className={`w-1.5 h-3 rounded-xs ${bgClass}`}
+                                                   title={`Block -${(6 - hi) * 4}h: ${intensity}% utilization`}
+                                                 />
+                                               );
+                                             })}
+                                           </div>
+                                         </div>
                                       </div>
                                       <div className="space-y-2">
                                         {getWhatIfTop5Queries(idx.name).map((q, qi) => (
@@ -4117,10 +4230,73 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       </div>
                                     </div>
 
-                                    <div className="text-[11px] text-zinc-500 font-mono mb-2">
-                                      Type: {idx.type} • Columns: ({idx.columns.join(', ')})
+                                    <div className="flex items-center justify-between gap-2 flex-wrap pt-1 pb-2">
+                                      <div className="text-[11px] text-zinc-500 font-mono">
+                                        Type: {idx.type} • Columns: ({idx.columns.join(', ')})
+                                      </div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <button
+                                          type="button"
+                                          id={`btn-simulate-fail-${idx.name}`}
+                                          data-testid={`btn-simulate-fail-${idx.name}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleToggleSimulateFailure(idx.name);
+                                          }}
+                                          className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 shadow-2xs ${
+                                            simulatedFailedIndexes.includes(idx.name)
+                                              ? 'bg-rose-600 text-white border-rose-700 animate-pulse'
+                                              : 'bg-white hover:bg-zinc-100 text-zinc-700 border-zinc-300'
+                                          }`}
+                                          title="Temporarily disable this index's effect on queries to observe the immediate performance impact on execution plans in real-time."
+                                        >
+                                          <AlertTriangle className="w-3 h-3" />
+                                          <span>{simulatedFailedIndexes.includes(idx.name) ? 'Simulating Failure (Offline)' : 'Simulate Index Failure'}</span>
+                                        </button>
+
+                                        <button
+                                          type="button"
+                                          id={`btn-rebuild-${idx.name}`}
+                                          data-testid={`btn-rebuild-${idx.name}`}
+                                          disabled={rebuildingIndexes.includes(idx.name)}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleRebuildIndex(idx.name);
+                                          }}
+                                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-bold rounded text-[10px] shadow-2xs cursor-pointer transition-colors flex items-center gap-1 shrink-0"
+                                          title="Trigger an immediate index maintenance rebuild operation (VACUUM & REINDEX)"
+                                        >
+                                          {rebuildingIndexes.includes(idx.name) ? (
+                                            <>
+                                              <RefreshCw className="w-3 h-3 animate-spin" />
+                                              <span>Rebuilding...</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <RefreshCw className="w-3 h-3" />
+                                              <span>Rebuild Index</span>
+                                            </>
+                                          )}
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
+
+                                  {simulatedFailedIndexes.includes(idx.name) && (
+                                    <div
+                                      id={`simulate-fail-banner-${idx.name}`}
+                                      data-testid={`simulate-fail-banner-${idx.name}`}
+                                      className="my-2 p-2.5 bg-rose-100 border border-rose-400 rounded-lg flex items-center justify-between text-[11px] text-rose-950 shadow-xs animate-fadeIn"
+                                    >
+                                      <div className="flex items-center gap-2 font-semibold">
+                                        <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 animate-bounce" />
+                                        <div>
+                                          <div>⚠️ [Simulated Failure Active] Index Offline</div>
+                                          <div className="text-[10px] text-rose-800 font-normal">Execution plans falling back to full table sequential scan (Latency spiked from 1.2ms to 680ms; cost +900%).</div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
 
                                   {/* Calculated Index Health Score Breakdown (Frequency, Read-Write Ratio, Scan Efficiency) */}
                                   <div
@@ -4620,10 +4796,39 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               </button>
             </div>
 
+            {/* Sorting Dropdown */}
+            <div className="flex items-center justify-between gap-2 pt-1 pb-1 border-t border-zinc-200/60 mt-2">
+              <span className="text-[11px] font-bold text-zinc-700 uppercase tracking-wider">Rank Suggestions:</span>
+              <select
+                id="select-ai-suggestion-sort"
+                data-testid="select-ai-suggestion-sort"
+                value={aiSuggestionSortBy}
+                onChange={(e) => setAiSuggestionSortBy(e.target.value as any)}
+                className="text-xs bg-white border border-zinc-300 rounded-md py-1 px-2.5 text-zinc-900 font-medium focus:outline-hidden focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer shadow-2xs font-sans"
+                aria-label="Sort AI Index Suggestions"
+              >
+                <option value="gain">Expected Performance Gain</option>
+                <option value="risk">Risk Level</option>
+                <option value="complexity">Complexity</option>
+              </select>
+            </div>
+
             {/* List of Composite Index Opportunities */}
             <div className="space-y-3 flex-1 overflow-y-auto pr-0.5">
               {compositeIndexOpportunities
                 .filter(opp => compositePatternFilter === 'all' || opp.targetTable === compositePatternFilter)
+                .sort((a, b) => {
+                  if (aiSuggestionSortBy === 'gain') {
+                    const speedA = parseInt(a.speedup?.replace(/\D/g, '') || '0', 10);
+                    const speedB = parseInt(b.speedup?.replace(/\D/g, '') || '0', 10);
+                    return speedB - speedA;
+                  } else if (aiSuggestionSortBy === 'risk') {
+                    const rank = (r?: string) => r?.includes('Critical') ? 3 : r?.includes('High') ? 2 : r?.includes('Medium') ? 1 : 0;
+                    return rank(b.riskLevel) - rank(a.riskLevel);
+                  } else {
+                    return b.columns.length - a.columns.length;
+                  }
+                })
                 .map((opp) => {
                   const isSelected = selectedCompositeSuggestionId === opp.id;
                   return (
@@ -5174,6 +5379,30 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           >
             <Layers className="w-3.5 h-3.5" />
             <span>Cluster Analysis</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-cross-reference-report"
+            data-testid="btn-cross-reference-report"
+            onClick={() => setShowCrossReferenceReportModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-teal-700 hover:bg-teal-600 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Maps selected indexes against historical query performance data to identify zombie indexes that provide no measurable performance gain"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Cross-Reference Report</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-analyze-consolidation"
+            data-testid="btn-analyze-consolidation"
+            onClick={() => setShowClusterAnalysisModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-xs font-semibold transition-colors cursor-pointer shadow-xs"
+            title="Uses AI integration to analyze query execution patterns and suggest merging redundant or overlapping indexes into a single multi-column index"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Analyze for Consolidation</span>
           </button>
 
           <button
@@ -6197,26 +6426,53 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700 cursor-pointer bg-white px-2.5 py-1.5 rounded-lg border border-zinc-300 shadow-2xs">
+                  <input
+                    type="checkbox"
+                    id="checkbox-bulk-dry-run"
+                    data-testid="checkbox-bulk-dry-run"
+                    checked={bulkDryRunActive}
+                    onChange={(e) => setBulkDryRunActive(e.target.checked)}
+                    className="rounded border-zinc-300 text-teal-600 focus:ring-teal-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Dry Run (Preview Only)</span>
+                </label>
                 <button
                   type="button"
                   id="btn-modal-apply-bulk-optimize"
                   data-testid="btn-modal-apply-bulk-optimize"
                   onClick={() => {
-                    handleApplyBulkOptimize();
-                    setShowBulkOptimizeModal(false);
+                    if (bulkDryRunActive) {
+                      const projected = bulkOptimizationPlan.pendingChanges.map((ch) => ({
+                        name: ch.indexName,
+                        impact: ch.description,
+                        projectedHealth: 96
+                      }));
+                      setDryRunPreviewList(projected);
+                      setShowBulkOptimizeModal(false);
+                      setImportSuccessNotice('[Dry Run Mode] Schema left untouched. Projected performance improvements generated for preview.');
+                      setTimeout(() => setImportSuccessNotice(null), 5000);
+                    } else {
+                      handleApplyBulkOptimize();
+                      setShowBulkOptimizeModal(false);
+                    }
                   }}
                   disabled={isApplyingBulkOptimize || bulkOptimizationPlan.isFullyOptimized}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs ${
-                    bulkOptimizationPlan.isFullyOptimized
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs ${
+                    bulkDryRunActive
+                      ? 'bg-teal-700 hover:bg-teal-600 text-white'
+                      : bulkOptimizationPlan.isFullyOptimized
                       ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default opacity-90'
                       : 'bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white shadow-sm'
                   }`}
-                  title="Apply all recommended improvements across all listed indexes in a single batch"
+                  title="Apply all recommended improvements or simulate a dry run preview"
                 >
                   <Zap className="w-3.5 h-3.5 fill-amber-300 text-amber-300" />
                   <span>
-                    {bulkOptimizationPlan.isFullyOptimized
+                    {bulkDryRunActive
+                      ? `Run Dry Run Preview (${bulkOptimizationPlan.pendingChanges.length})`
+                      : bulkOptimizationPlan.isFullyOptimized
                       ? '✓ All Optimal'
                       : `Apply All (${bulkOptimizationPlan.pendingChanges.length} Improvements)`}
                   </span>
@@ -7065,17 +7321,30 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             </div>
 
             <div className="pt-3 border-t border-zinc-200 flex items-center justify-between">
-              <button
-                type="button"
-                id="btn-modal-export-schema-state"
-                data-testid="btn-modal-export-schema-state"
-                onClick={handleExportSchemaState}
-                disabled={isExportingState}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Export Schema State</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  id="btn-open-compare-schema-overlay"
+                  data-testid="btn-open-compare-schema-overlay"
+                  onClick={() => setShowCompareSchemaOverlay(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  title="Open Compare Schema overlay to highlight added, removed, or modified indexes between snapshots"
+                >
+                  <Sliders className="w-3.5 h-3.5" />
+                  <span>Compare Schema</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-modal-export-schema-state"
+                  data-testid="btn-modal-export-schema-state"
+                  onClick={handleExportSchemaState}
+                  disabled={isExportingState}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export Schema State</span>
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => setShowSnapshotsModal(false)}
@@ -7084,6 +7353,169 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Compare Schema Overlay Modal */}
+      {showCompareSchemaOverlay && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-purple-100 text-purple-700 rounded-lg">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Compare Schema Overlay</h3>
+                  <p className="text-xs text-zinc-500">
+                    Visually highlights added, removed, or modified indexes between two selected snapshots.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCompareSchemaOverlay(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block text-[10px] font-bold text-zinc-600 mb-1">Snapshot A (Base)</label>
+                <select
+                  value={compareSnapshotAId}
+                  onChange={(e) => setCompareSnapshotAId(e.target.value)}
+                  className="w-full p-2 rounded-lg border border-zinc-300 bg-white text-xs font-mono"
+                >
+                  {snapshots.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.timestamp})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-zinc-600 mb-1">Snapshot B (Target)</label>
+                <select
+                  value={compareSnapshotBId}
+                  onChange={(e) => setCompareSnapshotBId(e.target.value)}
+                  className="w-full p-2 rounded-lg border border-zinc-300 bg-white text-xs font-mono"
+                >
+                  {snapshots.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.timestamp})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {(() => {
+              const snapA = snapshots.find((s) => s.id === compareSnapshotAId) || snapshots[0];
+              const snapB = snapshots.find((s) => s.id === compareSnapshotBId) || snapshots[snapshots.length - 1];
+              if (!snapA || !snapB) return null;
+
+              const setACustom = new Set(snapA.customIndexes || []);
+              const setBCustom = new Set(snapB.customIndexes || []);
+              const setAComp = new Set(snapA.createdCompositeIndexes || []);
+              const setBComp = new Set(snapB.createdCompositeIndexes || []);
+
+              const added = [...setBCustom].filter((x) => !setACustom.has(x)).concat([...setBComp].filter((x) => !setAComp.has(x)));
+              const removed = [...setACustom].filter((x) => !setBCustom.has(x)).concat([...setAComp].filter((x) => !setBComp.has(x)));
+              const modified = snapA.flags?.btreeIndexing !== snapB.flags?.btreeIndexing ? ['btreeIndexing optimization flag'] : [];
+
+              return (
+                <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-1">
+                  <div className="grid grid-cols-3 gap-2.5">
+                    <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200 text-center">
+                      <div className="text-[10px] uppercase font-bold text-emerald-700">Added Indexes</div>
+                      <div className="text-base font-extrabold text-emerald-800 font-mono mt-0.5">+{added.length}</div>
+                    </div>
+                    <div className="p-3 bg-rose-50/80 rounded-xl border border-rose-200 text-center">
+                      <div className="text-[10px] uppercase font-bold text-rose-700">Removed Indexes</div>
+                      <div className="text-base font-extrabold text-rose-800 font-mono mt-0.5">-{removed.length}</div>
+                    </div>
+                    <div className="p-3 bg-amber-50/80 rounded-xl border border-amber-200 text-center">
+                      <div className="text-[10px] uppercase font-bold text-amber-700">Modified Deltas</div>
+                      <div className="text-base font-extrabold text-amber-800 font-mono mt-0.5">{modified.length}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <h4 className="font-bold text-zinc-800 uppercase tracking-wider text-[11px]">Visual Web Map Diff Highlights</h4>
+                    {added.map((item, idx) => (
+                      <div key={`add-${idx}`} className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between font-mono">
+                        <span className="text-emerald-950 font-bold">🟢 [Added] idx_{item}</span>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-sans">New B-Tree Leaf Node</span>
+                      </div>
+                    ))}
+                    {removed.map((item, idx) => (
+                      <div key={`rem-${idx}`} className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg flex items-center justify-between font-mono">
+                        <span className="text-rose-950 font-bold">🔴 [Removed] idx_{item}</span>
+                        <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-sans">Pruned / Dropped Index</span>
+                      </div>
+                    ))}
+                    {modified.map((item, idx) => (
+                      <div key={`mod-${idx}`} className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between">
+                        <span className="text-amber-950 font-bold">🟡 [Modified] {item}</span>
+                        <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-mono">Flag Configuration Delta</span>
+                      </div>
+                    ))}
+                    {added.length === 0 && removed.length === 0 && modified.length === 0 && (
+                      <div className="p-6 text-center text-zinc-500 bg-zinc-50 rounded-xl border border-zinc-200">
+                        No structural differences detected between "{snapA.name}" and "{snapB.name}".
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCompareSchemaOverlay(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Close Comparison
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dry Run Preview Banner */}
+      {dryRunPreviewList && (
+        <div className="mx-6 mt-4 p-4 bg-teal-50 border border-teal-300 rounded-2xl shadow-md text-teal-950 space-y-3 animate-fadeIn">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-teal-600 text-white rounded-xl">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-teal-950">Bulk Optimization Dry Run — Projected Performance Preview</h4>
+                <p className="text-xs text-teal-800">
+                  Simulated execution plan preview. Schema state was NOT modified.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDryRunPreviewList(null)}
+              className="text-teal-700 hover:text-teal-900 p-1 rounded-lg hover:bg-teal-100 cursor-pointer"
+              title="Dismiss preview"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            {dryRunPreviewList.map((item, idx) => (
+              <div key={idx} className="p-2.5 bg-white rounded-xl border border-teal-200 shadow-2xs flex items-center justify-between font-mono">
+                <span className="font-bold text-teal-900">{item.name}</span>
+                <span className="text-[10px] bg-teal-100 text-teal-800 px-2 py-0.5 rounded font-sans font-semibold">
+                  {item.impact}
+                </span>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -7274,15 +7706,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       </p>
                     </div>
                   </div>
-                  {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].some(name => !removedIndexes.includes(name)) && (
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
                       type="button"
-                      onClick={handleRemoveAllUnutilized}
-                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs whitespace-nowrap cursor-pointer transition-colors shadow-xs"
+                      id="btn-preview-auto-cleanup"
+                      data-testid="btn-preview-auto-cleanup"
+                      onClick={() => setShowAutoCleanupPreviewModal(true)}
+                      className="px-3 py-1.5 bg-white hover:bg-zinc-100 border border-rose-300 text-rose-800 font-bold rounded-lg text-xs whitespace-nowrap cursor-pointer transition-colors shadow-2xs flex items-center gap-1"
                     >
-                      Remove All Unutilized (Save 6.8 MB)
+                      <Sparkles className="w-3.5 h-3.5 text-rose-600" />
+                      <span>Preview Auto-Cleanup</span>
                     </button>
-                  )}
+                    {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].some(name => !removedIndexes.includes(name)) && (
+                      <button
+                        type="button"
+                        onClick={handleRemoveAllUnutilized}
+                        className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs whitespace-nowrap cursor-pointer transition-colors shadow-xs"
+                      >
+                        Remove All Unutilized (Save 6.8 MB)
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* List of unutilized indexes */}
@@ -7558,6 +8002,168 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   Keep Optimal Configuration
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Cross-Reference Report Modal */}
+      {showCrossReferenceReportModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-hidden flex flex-col text-zinc-900 relative">
+            <div className="p-5 border-b border-zinc-200 bg-teal-50 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-teal-600 text-white rounded-lg">
+                  <Activity className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Historical Query Cross-Reference Report</h3>
+                  <p className="text-xs text-zinc-600">
+                    Maps active and custom indexes against 24-hour historical query execution logs to detect 'zombie' indexes with 0 hits and zero performance gain.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCrossReferenceReportModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1.5 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto text-xs">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3.5 bg-zinc-50 rounded-xl border border-zinc-200 text-center">
+                  <span className="text-[10px] font-bold text-zinc-500 uppercase">Analyzed Indexes</span>
+                  <div className="text-lg font-extrabold text-zinc-900 font-mono mt-0.5">
+                    {tables.reduce((acc, t) => acc + t.indexes.length, 0)}
+                  </div>
+                </div>
+                <div className="p-3.5 bg-emerald-50 rounded-xl border border-emerald-200 text-center">
+                  <span className="text-[10px] font-bold text-emerald-700 uppercase">High-Utility Indexes</span>
+                  <div className="text-lg font-extrabold text-emerald-800 font-mono mt-0.5">
+                    {tables.reduce((acc, t) => acc + t.indexes.filter((i) => i.active).length, 0)}
+                  </div>
+                </div>
+                <div className="p-3.5 bg-rose-50 rounded-xl border border-rose-200 text-center">
+                  <span className="text-[10px] font-bold text-rose-700 uppercase">Zombie Indexes Detected</span>
+                  <div className="text-lg font-extrabold text-rose-800 font-mono mt-0.5">2</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h4 className="font-bold text-zinc-800 uppercase tracking-wider text-[11px]">Detected Zombie Indexes (Zero Query Hits &amp; Write Overhead)</h4>
+                {[
+                  { name: 'idx_legacy_audit_log_backup', table: 'transactions', writes: '14,250 writes/hr', reads: '0 reads', overhead: '18% disk write bloat' },
+                  { name: 'idx_temp_staging_token', table: 'customers', writes: '4,100 writes/hr', reads: '0 reads', overhead: '7% write amplification' }
+                ].map((zombie, idx) => (
+                  <div key={idx} className="p-3 bg-rose-50/80 border border-rose-300 rounded-xl flex items-center justify-between">
+                    <div>
+                      <div className="font-mono font-bold text-rose-950 flex items-center gap-2">
+                        <span>🧟 {zombie.name}</span>
+                        <span className="text-[10px] font-sans bg-rose-200 text-rose-900 px-2 py-0.5 rounded font-bold">ZOMBIE INDEX</span>
+                      </div>
+                      <div className="text-[11px] text-rose-800 mt-0.5">
+                        Table: <span className="font-mono font-bold">{zombie.table}</span> • {zombie.writes} • <strong className="text-rose-950">{zombie.reads}</strong> • Impact: {zombie.overhead}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      id={`btn-prune-zombie-${idx}`}
+                      data-testid={`btn-prune-zombie-${idx}`}
+                      onClick={() => {
+                        setImportSuccessNotice(`Successfully pruned zombie index "${zombie.name}". Eliminating ${zombie.overhead} and reclaiming disk storage!`);
+                        setTimeout(() => setImportSuccessNotice(null), 5000);
+                      }}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors shrink-0"
+                    >
+                      Prune Zombie Index
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-zinc-200 bg-zinc-50 flex justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowCrossReferenceReportModal(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Close Report
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Preview Auto-Cleanup Modal */}
+      {showAutoCleanupPreviewModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Preview: Next Maintenance Auto-Cleanup Cycle</h3>
+                  <p className="text-xs text-zinc-500">
+                    Lists exactly which unused or low-priority indexes are scheduled for pruning in the next automated maintenance window.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAutoCleanupPreviewModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto text-xs">
+              <div className="p-3 bg-teal-50 border border-teal-200 rounded-xl text-teal-900 font-medium">
+                💡 <strong>Dry Run Guarantee:</strong> This is a projected preview list. No schema modifications or index drops will occur until execution is explicitly confirmed.
+              </div>
+
+              <div className="space-y-2">
+                {unutilizedDiagnostics
+                  .filter((diag) => !removedIndexes.includes(diag.name))
+                  .map((diag, idx) => (
+                    <div key={idx} className="p-3.5 bg-zinc-50 rounded-xl border border-zinc-200 flex items-center justify-between">
+                      <div>
+                        <div className="font-mono font-bold text-zinc-900 flex items-center gap-2">
+                          <span>🗑️ {diag.name}</span>
+                          <span className="text-[10px] font-mono bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-bold">
+                            0 Hits
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-zinc-500 mt-0.5">
+                          Target Entity: <span className="font-mono">{diag.table}</span> • Footprint: <span className="font-mono font-bold text-zinc-700">{diag.size}</span> • Reason: {diag.writeImpact}
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg">
+                        Queued for Pruning
+                      </span>
+                    </div>
+                  ))}
+                {unutilizedDiagnostics.filter((diag) => !removedIndexes.includes(diag.name)).length === 0 && (
+                  <div className="p-8 text-center text-zinc-500 bg-zinc-50 rounded-xl border border-zinc-200">
+                    No unutilized indexes currently queued for auto-cleanup. Schema is fully optimized!
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-zinc-200 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-500 font-mono">Next Maintenance Run: Tonight at 02:00 UTC</span>
+              <button
+                type="button"
+                onClick={() => setShowAutoCleanupPreviewModal(false)}
+                className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors"
+              >
+                Close Preview
+              </button>
             </div>
           </div>
         </div>
