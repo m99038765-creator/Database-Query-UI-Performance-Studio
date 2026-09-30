@@ -36,7 +36,9 @@ import {
   Bell,
   Mail,
   AlertTriangle,
-  BarChart2
+  BarChart2,
+  History,
+  RotateCcw
 } from 'lucide-react';
 import {
   exportRecords,
@@ -52,6 +54,7 @@ import { CpuPerformanceGlowBadge } from './CpuPerformanceGlowBadge';
 import { DeleteConfirmationOverlay } from './DeleteConfirmationOverlay';
 import { CompareLatencyModal } from './CompareLatencyModal';
 import { LatencyDistributionModal } from './LatencyDistributionModal';
+import { SearchHistoryDrawer } from './SearchHistoryDrawer';
 
 interface VirtualizedTableProps {
   records: TransactionRecord[];
@@ -133,6 +136,34 @@ const renderInlineSparkline = (points: number[], width = 52, height = 18, stroke
 
 const ROW_HEIGHT = 56;
 const CONTAINER_HEIGHT = 520;
+
+// Search History Constants and Helper
+const SEARCH_HISTORY_STORAGE_KEY = 'perf_table_search_history_v1';
+const INITIAL_SEARCH_HISTORY: string[] = [
+  'Enterprise License',
+  'ORD-9824',
+  'completed',
+  'acme.com',
+  'Database Cluster'
+];
+
+const getStoredSearchHistory = (): string[] => {
+  if (typeof window === 'undefined') return INITIAL_SEARCH_HISTORY;
+  try {
+    const raw = localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed
+          .filter((item) => typeof item === 'string' && item.trim().length > 0)
+          .slice(0, 10);
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading search history from localStorage:', err);
+  }
+  return INITIAL_SEARCH_HISTORY;
+};
 
 export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   records = [],
@@ -243,6 +274,55 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   const [alertEmail, setAlertEmail] = useState<string>('db-admin@enterprise-db.io');
   const [hasSentAlertEmail, setHasSentAlertEmail] = useState<boolean>(false);
   const [emailToast, setEmailToast] = useState<string | null>(null);
+
+  // Search History State & Drawer Management (Maintains last 10 unique searches)
+  const [searchHistory, setSearchHistory] = useState<string[]>(getStoredSearchHistory);
+  const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(searchHistory));
+    } catch (err) {
+      console.warn('Error saving search history to localStorage:', err);
+    }
+  }, [searchHistory]);
+
+  const handleRecordSearchQuery = (query: string) => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setSearchHistory((prev) => {
+      // Deduplicate case-insensitively to ensure uniqueness
+      const remaining = prev.filter((item) => item.toLowerCase() !== trimmed.toLowerCase());
+      // Prepend newest query and enforce maximum 10 unique entries
+      return [trimmed, ...remaining].slice(0, 10);
+    });
+  };
+
+  const handleApplySearchHistory = (query: string) => {
+    // Single-click re-run: Promotes query to top of unique history and triggers search
+    handleRecordSearchQuery(query);
+    onSearchChange?.(query);
+  };
+
+  const handleRemoveSearchHistory = (queryToRemove: string) => {
+    setSearchHistory((prev) =>
+      prev.filter((item) => item.toLowerCase() !== queryToRemove.toLowerCase())
+    );
+  };
+
+  const handleClearSearchHistory = () => {
+    setSearchHistory([]);
+  };
+
+  // Automatically record search queries when user finishes typing (debounced 1200ms)
+  useEffect(() => {
+    const term = currentSearchTerm.trim();
+    if (!term || term.length < 2) return;
+    const timeoutId = setTimeout(() => {
+      handleRecordSearchQuery(term);
+    }, 1200);
+    return () => clearTimeout(timeoutId);
+  }, [currentSearchTerm]);
 
   // 'Show Selected Only' toggle state for reviewing batch selections
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
@@ -767,22 +847,71 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
       {/* Search & Filter Toolbar */}
       <div className="p-4 border-b border-zinc-200 bg-zinc-50/50 flex flex-col md:flex-row md:items-center justify-between gap-3">
-        {/* Search Input */}
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            id="search-transactions"
-            type="text"
-            value={currentSearchTerm}
-            onChange={handleInputChange}
-            placeholder="Search by order #, customer, or email..."
-            className="w-full pl-9 pr-4 py-1.5 text-sm bg-white border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all placeholder:text-zinc-400"
-          />
-          {!safeFlags.deferredRendering && (
-            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded font-medium">
-              Sync Blocking
+        {/* Search Input & Search History Trigger */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1 max-w-xl">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              id="search-transactions"
+              type="text"
+              value={currentSearchTerm}
+              onChange={handleInputChange}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleRecordSearchQuery(currentSearchTerm);
+                }
+              }}
+              onBlur={() => {
+                if (currentSearchTerm.trim()) {
+                  handleRecordSearchQuery(currentSearchTerm);
+                }
+              }}
+              placeholder="Search by order #, customer, or email..."
+              className="w-full pl-9 pr-14 py-1.5 text-sm bg-white border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all placeholder:text-zinc-400"
+            />
+            {currentSearchTerm && (
+              <button
+                type="button"
+                id="btn-clear-search-term"
+                onClick={() => onSearchChange?.('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 p-0.5 rounded cursor-pointer transition-colors"
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {!safeFlags.deferredRendering && !currentSearchTerm && (
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded font-medium">
+                Sync Blocking
+              </span>
+            )}
+          </div>
+
+          {/* Search History Drawer Trigger Button */}
+          <button
+            type="button"
+            id="btn-open-search-history-drawer"
+            data-testid="btn-open-search-history-drawer"
+            onClick={() => setIsHistoryDrawerOpen(true)}
+            className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer shadow-2xs whitespace-nowrap ${
+              isHistoryDrawerOpen
+                ? 'bg-emerald-50 border-emerald-300 text-emerald-800 ring-2 ring-emerald-500/20'
+                : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700 hover:text-zinc-900'
+            }`}
+            title="Open Search History (last 10 unique searches, re-run with 1 click)"
+            aria-label="Search History"
+          >
+            <History className="w-3.5 h-3.5 text-zinc-500" />
+            <span>Search History</span>
+            <span
+              id="search-history-badge-count"
+              data-testid="search-history-badge-count"
+              className="bg-zinc-100 text-zinc-700 font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-full border border-zinc-200"
+            >
+              {searchHistory.length}
             </span>
-          )}
+          </button>
         </div>
 
         {/* Filter Dropdowns */}
@@ -1193,6 +1322,52 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Quick Search History Recent Chips Bar */}
+      {searchHistory.length > 0 && (
+        <div
+          id="search-history-quick-chips-bar"
+          className="px-4 py-1.5 bg-zinc-50/80 border-b border-zinc-200/80 flex items-center justify-between text-xs gap-2"
+        >
+          <div className="flex items-center gap-1.5 overflow-x-auto min-w-0 py-0.5">
+            <span className="text-[11px] font-semibold text-zinc-500 flex items-center gap-1 shrink-0">
+              <History className="w-3 h-3 text-zinc-400" />
+              <span>Recent Searches:</span>
+            </span>
+            {searchHistory.slice(0, 5).map((q, idx) => {
+              const isMatch = q.toLowerCase() === currentSearchTerm.trim().toLowerCase();
+              return (
+                <button
+                  key={`${q}-${idx}`}
+                  type="button"
+                  id={`pill-search-recent-${idx}`}
+                  data-testid={`pill-search-recent-${idx}`}
+                  onClick={() => handleApplySearchHistory(q)}
+                  className={`text-[11px] font-mono px-2 py-0.5 rounded transition-all cursor-pointer truncate max-w-[160px] border shadow-3xs ${
+                    isMatch
+                      ? 'bg-emerald-100 text-emerald-800 border-emerald-300 font-bold ring-1 ring-emerald-400/40'
+                      : 'bg-white hover:bg-emerald-50 text-zinc-700 hover:text-emerald-800 border-zinc-200 hover:border-emerald-300'
+                  }`}
+                  title={`1-click re-run: "${q}"`}
+                >
+                  {q}
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            id="btn-view-all-search-history"
+            onClick={() => setIsHistoryDrawerOpen(true)}
+            className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 hover:underline shrink-0 flex items-center gap-0.5 cursor-pointer ml-auto"
+            title="Open complete Search History drawer"
+          >
+            <span>History Drawer ({searchHistory.length})</span>
+            <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
       {/* Export Performance Metric Telemetry */}
       {exportStats && (
@@ -2292,6 +2467,18 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         onClose={() => setIsLatencyDistModalOpen(false)}
         records={records}
         flags={safeFlags}
+      />
+
+      {/* Search History Drawer (Records last 10 unique searches, single-click re-run) */}
+      <SearchHistoryDrawer
+        isOpen={isHistoryDrawerOpen}
+        onClose={() => setIsHistoryDrawerOpen(false)}
+        searchHistory={searchHistory}
+        currentSearch={currentSearchTerm}
+        onSelectQuery={handleApplySearchHistory}
+        onRemoveQuery={handleRemoveSearchHistory}
+        onClearHistory={handleClearSearchHistory}
+        onSaveCurrentQuery={handleRecordSearchQuery}
       />
     </div>
   );
