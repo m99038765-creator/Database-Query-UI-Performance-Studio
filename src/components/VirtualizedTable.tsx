@@ -38,7 +38,13 @@ import {
   AlertTriangle,
   BarChart2,
   History,
-  RotateCcw
+  RotateCcw,
+  PlayCircle,
+  Play,
+  Pause,
+  SkipForward,
+  SkipBack,
+  Monitor
 } from 'lucide-react';
 import {
   exportRecords,
@@ -55,6 +61,14 @@ import { DeleteConfirmationOverlay } from './DeleteConfirmationOverlay';
 import { CompareLatencyModal } from './CompareLatencyModal';
 import { LatencyDistributionModal } from './LatencyDistributionModal';
 import { SearchHistoryDrawer } from './SearchHistoryDrawer';
+import {
+  QueryReplayDrawer,
+  PRESET_REPLAY_SEQUENCES,
+  getStoredReplaySequences,
+  REPLAY_SEQUENCES_STORAGE_KEY
+} from './QueryReplayDrawer';
+import { QueryReplayInlineBar } from './QueryReplayInlineBar';
+import { QueryReplayStep, QueryReplaySequence } from '../types';
 
 interface VirtualizedTableProps {
   records: TransactionRecord[];
@@ -323,6 +337,236 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     }, 1200);
     return () => clearTimeout(timeoutId);
   }, [currentSearchTerm]);
+
+  // Helper to calculate realistic step telemetry based on query string & active optimization flags
+  const calculateDynamicStepMetrics = (
+    queryText: string,
+    stepNum: number,
+    allRecords: TransactionRecord[],
+    activeFlags: OptimizationFlags
+  ): QueryReplayStep => {
+    const q = queryText.toLowerCase().trim();
+    const matches = allRecords.filter((r) => {
+      if (!q) return true;
+      return (
+        r.orderNumber.toLowerCase().includes(q) ||
+        r.customerName.toLowerCase().includes(q) ||
+        r.customerEmail.toLowerCase().includes(q) ||
+        r.category.toLowerCase().includes(q) ||
+        r.status.toLowerCase().includes(q)
+      );
+    });
+
+    const baseMs = 1.2;
+    const isIndexed = activeFlags.btreeIndexing;
+    const isVirt = activeFlags.virtualizedDOM;
+    const isDeferred = activeFlags.deferredRendering;
+    const isBatch = activeFlags.batchEagerLoading;
+
+    let queryLatency = isIndexed ? 1.4 : 45.0;
+    if (q.length === 1) queryLatency *= 6.5; // Single letter regex wildcard
+    if (q.includes('failed') || q.includes('corp.com') || q.includes('>')) queryLatency *= 3.8;
+    if (!isBatch) queryLatency += 120.0;
+    if (!isIndexed) queryLatency += (matches.length / 500) * 8.0;
+
+    const domTime = isVirt ? 1.2 : Math.min(180, 15.0 + (matches.length / 250) * 1.5);
+    const fps = isVirt ? 60 : Math.max(8, Math.round(60 - (domTime / 3.0)));
+
+    const severity: 'none' | 'moderate' | 'critical' =
+      queryLatency > 150 || fps < 20
+        ? 'critical'
+        : queryLatency > 50 || fps < 45
+        ? 'moderate'
+        : 'none';
+
+    return {
+      id: `step-rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      stepNumber: stepNum,
+      query: queryText,
+      timestamp: Date.now(),
+      timeOffsetMs: stepNum * 2500,
+      executionLatencyMs: +queryLatency.toFixed(1),
+      baselineLatencyMs: baseMs,
+      latencyDeltaPercent: Math.max(0, Math.round(((queryLatency - baseMs) / baseMs) * 100)),
+      rowsMatched: matches.length,
+      totalRowsScanned: allRecords.length || 50000,
+      memoryUsageMb: +(2.0 + (matches.length / 50000) * 75).toFixed(1),
+      cpuContentionPercent: Math.min(96, Math.round(8 + (queryLatency / 400) * 85)),
+      indexUsed: isIndexed,
+      indexName: isIndexed ? 'idx_transactions_search' : undefined,
+      domRenderTimeMs: +domTime.toFixed(1),
+      fps,
+      virtualizationActive: isVirt,
+      deferredRenderingActive: isDeferred,
+      renderMode: isVirt ? 'virtualized' : isDeferred ? 'deferred_concurrent' : 'synchronous_blocking',
+      uiResponsiveness: fps >= 50 ? 'fluid' : fps >= 25 ? 'sluggish' : 'frozen',
+      degradationSeverity: severity,
+      degradationCause: !isIndexed
+        ? 'Unindexed table scan forced full heap record traversal across 50,000 rows.'
+        : !isVirt
+        ? 'Full DOM rendering without virtualization flooded React node tree, causing frame drops.'
+        : severity === 'none'
+        ? 'Optimal execution: B-Tree seek with virtualized windowing maintain 60 FPS.'
+        : 'High result volume increased memory allocation and serialization delay.'
+    };
+  };
+
+  // Query Replay & Degradation Analyzer State
+  const [isQueryReplayDrawerOpen, setIsQueryReplayDrawerOpen] = useState(false);
+  const [isReplayRecording, setIsReplayRecording] = useState(false);
+  const [recordedReplaySteps, setRecordedReplaySteps] = useState<QueryReplayStep[]>([]);
+  const [availableSequences, setAvailableSequences] = useState<QueryReplaySequence[]>(getStoredReplaySequences);
+  const [activeReplaySequence, setActiveReplaySequence] = useState<QueryReplaySequence | null>(
+    PRESET_REPLAY_SEQUENCES[0]
+  );
+  const [replayPlaybackIndex, setReplayPlaybackIndex] = useState<number>(0);
+  const [isReplayPlaying, setIsReplayPlaying] = useState<boolean>(false);
+  const [replaySpeed, setReplaySpeed] = useState<number>(1.0);
+  const [isReplayLooping, setIsReplayLooping] = useState<boolean>(true);
+  const [showReplayInlineBar, setShowReplayInlineBar] = useState<boolean>(true);
+
+  // Sync available sequences with localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(REPLAY_SEQUENCES_STORAGE_KEY, JSON.stringify(availableSequences));
+    } catch (e) {
+      console.warn('Failed to save replay sequences to localStorage', e);
+    }
+  }, [availableSequences]);
+
+  const currentReplaySteps = useMemo(() => {
+    if (isReplayRecording && recordedReplaySteps.length > 0) {
+      return recordedReplaySteps;
+    }
+    return activeReplaySequence?.steps || [];
+  }, [isReplayRecording, recordedReplaySteps, activeReplaySequence]);
+
+  const currentActiveReplayStep = useMemo(() => {
+    if (currentReplaySteps.length === 0) return null;
+    const idx = Math.min(Math.max(0, replayPlaybackIndex), currentReplaySteps.length - 1);
+    return currentReplaySteps[idx] || null;
+  }, [currentReplaySteps, replayPlaybackIndex]);
+
+  const handleSeekReplayStep = (newIndex: number) => {
+    const steps = currentReplaySteps;
+    if (steps.length === 0) return;
+    const clamped = Math.max(0, Math.min(newIndex, steps.length - 1));
+    setReplayPlaybackIndex(clamped);
+    const step = steps[clamped];
+    if (step && onSearchChange) {
+      onSearchChange(step.query);
+    }
+  };
+
+  const handleNextReplayStep = () => {
+    const steps = currentReplaySteps;
+    if (steps.length === 0) return;
+    if (replayPlaybackIndex < steps.length - 1) {
+      handleSeekReplayStep(replayPlaybackIndex + 1);
+    } else if (isReplayLooping) {
+      handleSeekReplayStep(0);
+    } else {
+      setIsReplayPlaying(false);
+    }
+  };
+
+  const handlePrevReplayStep = () => {
+    if (replayPlaybackIndex > 0) {
+      handleSeekReplayStep(replayPlaybackIndex - 1);
+    }
+  };
+
+  const handleResetReplayStep = () => {
+    handleSeekReplayStep(0);
+  };
+
+  const handleToggleReplayPlay = () => {
+    if (!isReplayPlaying && replayPlaybackIndex >= currentReplaySteps.length - 1) {
+      handleSeekReplayStep(0);
+    }
+    setIsReplayPlaying((prev) => !prev);
+  };
+
+  // Auto-play timer for Query Replay step-by-step playback
+  useEffect(() => {
+    if (!isReplayPlaying || !activeReplaySequence || activeReplaySequence.steps.length === 0) return;
+    const intervalMs = Math.round(1800 / replaySpeed);
+    const timer = setInterval(() => {
+      setReplayPlaybackIndex((prev) => {
+        let next = prev + 1;
+        if (next >= activeReplaySequence.steps.length) {
+          if (isReplayLooping) {
+            next = 0;
+          } else {
+            setIsReplayPlaying(false);
+            return prev;
+          }
+        }
+        const step = activeReplaySequence.steps[next];
+        if (step) {
+          onSearchChange?.(step.query);
+        }
+        return next;
+      });
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [isReplayPlaying, activeReplaySequence, replaySpeed, isReplayLooping, onSearchChange]);
+
+  const handleStartReplayRecording = () => {
+    setIsReplayRecording(true);
+    setRecordedReplaySteps([]);
+    setIsReplayPlaying(false);
+  };
+
+  const handleStopReplayRecording = () => {
+    setIsReplayRecording(false);
+  };
+
+  const handleAddRecordedStep = (queryText: string) => {
+    const trimmed = queryText.trim();
+    if (!trimmed) return;
+    const stepNum = recordedReplaySteps.length + 1;
+    const newStep = calculateDynamicStepMetrics(trimmed, stepNum, records, safeFlags);
+    setRecordedReplaySteps((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1].query.toLowerCase() === trimmed.toLowerCase()) {
+        return prev;
+      }
+      return [...prev, newStep];
+    });
+  };
+
+  // When live recording, capture typed/applied searches automatically (debounced)
+  useEffect(() => {
+    if (!isReplayRecording) return;
+    const term = currentSearchTerm.trim();
+    if (!term || term.length < 2) return;
+    const timeoutId = setTimeout(() => {
+      handleAddRecordedStep(term);
+    }, 800);
+    return () => clearTimeout(timeoutId);
+  }, [currentSearchTerm, isReplayRecording]);
+
+  const handleSaveInlineRecordedSequence = (title: string) => {
+    if (recordedReplaySteps.length === 0) return;
+    const seqTitle = title.trim() || `Recorded Replay ${new Date().toLocaleTimeString()}`;
+    const newSeq: QueryReplaySequence = {
+      id: `seq-custom-${Date.now()}`,
+      title: seqTitle,
+      description: `Custom sequence of ${recordedReplaySteps.length} recorded searches capturing latency and rendering telemetry.`,
+      createdAt: Date.now(),
+      steps: [...recordedReplaySteps]
+    };
+    const updated = [newSeq, ...availableSequences];
+    setAvailableSequences(updated);
+    setActiveReplaySequence(newSeq);
+    setReplayPlaybackIndex(0);
+    setIsReplayRecording(false);
+    try {
+      localStorage.setItem(REPLAY_SEQUENCES_STORAGE_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.warn(e);
+    }
+  };
 
   // 'Show Selected Only' toggle state for reviewing batch selections
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
@@ -912,6 +1156,41 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               {searchHistory.length}
             </span>
           </button>
+
+          {/* Query Replay Trigger Button */}
+          <button
+            type="button"
+            id="btn-open-query-replay"
+            data-testid="btn-open-query-replay"
+            onClick={() => setIsQueryReplayDrawerOpen(true)}
+            className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer shadow-2xs whitespace-nowrap ${
+              isReplayRecording
+                ? 'bg-rose-50 border-rose-300 text-rose-800 ring-2 ring-rose-500/30'
+                : isReplayPlaying
+                ? 'bg-amber-50 border-amber-300 text-amber-800 ring-2 ring-amber-500/30'
+                : isQueryReplayDrawerOpen
+                ? 'bg-indigo-50 border-indigo-300 text-indigo-800 ring-2 ring-indigo-500/20'
+                : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700 hover:text-zinc-900'
+            }`}
+            title="Open Query Replay (record & playback search sequences to analyze degradation)"
+            aria-label="Query Replay"
+          >
+            {isReplayRecording ? (
+              <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping" />
+            ) : (
+              <PlayCircle className="w-3.5 h-3.5 text-indigo-600" />
+            )}
+            <span>Query Replay</span>
+            {isReplayRecording ? (
+              <span className="bg-rose-100 text-rose-800 font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-full border border-rose-200 animate-pulse">
+                REC ({recordedReplaySteps.length})
+              </span>
+            ) : (
+              <span className="bg-indigo-50 text-indigo-700 font-mono text-[10px] font-bold px-1.5 py-0.2 rounded-full border border-indigo-200">
+                {currentReplaySteps.length} steps
+              </span>
+            )}
+          </button>
         </div>
 
         {/* Filter Dropdowns */}
@@ -1368,6 +1647,52 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           </button>
         </div>
       )}
+
+      {/* Query Replay & Degradation Analyzer Bar */}
+      <QueryReplayInlineBar
+        sequences={availableSequences}
+        activeSequence={activeReplaySequence}
+        onSelectSequence={(seq) => {
+          setActiveReplaySequence(seq);
+          setReplayPlaybackIndex(0);
+          if (seq.steps[0] && onSearchChange) {
+            onSearchChange(seq.steps[0].query);
+          }
+        }}
+        currentSteps={currentReplaySteps}
+        activeStep={currentActiveReplayStep}
+        currentPlaybackIndex={replayPlaybackIndex}
+        onSeekStep={handleSeekReplayStep}
+        isPlaying={isReplayPlaying}
+        onTogglePlay={handleToggleReplayPlay}
+        onNextStep={handleNextReplayStep}
+        onPrevStep={handlePrevReplayStep}
+        onResetStep={handleResetReplayStep}
+        playbackSpeed={replaySpeed}
+        onChangeSpeed={setReplaySpeed}
+        isLooping={isReplayLooping}
+        onToggleLoop={() => setIsReplayLooping((prev) => !prev)}
+        isRecording={isReplayRecording}
+        onToggleRecord={() => {
+          if (isReplayRecording) {
+            handleStopReplayRecording();
+          } else {
+            handleStartReplayRecording();
+          }
+        }}
+        recordedCount={recordedReplaySteps.length}
+        onSaveRecording={handleSaveInlineRecordedSequence}
+        onClearRecording={() => setRecordedReplaySteps([])}
+        currentSearchTerm={currentSearchTerm}
+        onAddCurrentSearchToRecording={() => {
+          if (currentSearchTerm.trim()) {
+            handleAddRecordedStep(currentSearchTerm.trim());
+          }
+        }}
+        isCollapsed={!showReplayInlineBar}
+        onToggleCollapse={() => setShowReplayInlineBar((prev) => !prev)}
+        onOpenFullDrawer={() => setIsQueryReplayDrawerOpen(true)}
+      />
 
       {/* Export Performance Metric Telemetry */}
       {exportStats && (
@@ -2103,6 +2428,60 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         </div>
       )}
 
+      {/* Active Replay Step UI Rendering State Ribbon */}
+      {currentActiveReplayStep && (
+        <div
+          id="replay-active-rendering-ribbon"
+          data-testid="replay-active-rendering-ribbon"
+          className={`px-4 py-1.5 border-b text-xs flex items-center justify-between gap-3 shadow-3xs ${
+            currentActiveReplayStep.degradationSeverity === 'critical'
+              ? 'bg-rose-50/95 border-rose-300 text-rose-950 ring-1 ring-rose-400/30'
+              : currentActiveReplayStep.degradationSeverity === 'moderate'
+              ? 'bg-amber-50/95 border-amber-300 text-amber-950 ring-1 ring-amber-400/30'
+              : 'bg-emerald-50/95 border-emerald-300 text-emerald-950'
+          }`}
+        >
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-bold flex items-center gap-1">
+              <Monitor className="w-3.5 h-3.5 text-indigo-700" />
+              <span>UI Rendering State:</span>
+            </span>
+            <span className="font-semibold">
+              {currentActiveReplayStep.renderMode === 'virtualized'
+                ? 'Virtualized Viewport (Windowed O(1))'
+                : currentActiveReplayStep.renderMode === 'deferred_concurrent'
+                ? 'Concurrent Deferred Mode (React 19)'
+                : 'Synchronous Main-Thread Blocking Dump'}
+            </span>
+            <span
+              className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold border ${
+                currentActiveReplayStep.fps >= 50
+                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                  : currentActiveReplayStep.fps >= 25
+                  ? 'bg-amber-100 text-amber-800 border-amber-300'
+                  : 'bg-rose-100 text-rose-800 border-rose-300 animate-pulse'
+              }`}
+            >
+              {currentActiveReplayStep.fps} FPS ({currentActiveReplayStep.domRenderTimeMs}ms layout)
+            </span>
+            {currentActiveReplayStep.degradationSeverity !== 'none' && (
+              <span className="text-[10px] font-bold text-rose-700 bg-rose-100 border border-rose-300 rounded px-1.5 py-0.2">
+                Degradation Active
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 text-[11px] truncate">
+            <span className="truncate text-zinc-600 hidden md:inline max-w-md">
+              {currentActiveReplayStep.degradationCause}
+            </span>
+            <span className="font-mono font-bold shrink-0 text-indigo-900 bg-indigo-100/80 px-2 py-0.5 rounded border border-indigo-200">
+              Step {currentActiveReplayStep.stepNumber}/{currentReplaySteps.length}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Scrollable Table Viewport */}
       <div
         ref={containerRef}
@@ -2479,6 +2858,38 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         onRemoveQuery={handleRemoveSearchHistory}
         onClearHistory={handleClearSearchHistory}
         onSaveCurrentQuery={handleRecordSearchQuery}
+      />
+
+      {/* Query Replay Drawer (Records & playbacks searches to analyze degradation) */}
+      <QueryReplayDrawer
+        isOpen={isQueryReplayDrawerOpen}
+        onClose={() => setIsQueryReplayDrawerOpen(false)}
+        currentSearch={currentSearchTerm}
+        onApplyQuery={(q) => {
+          onSearchChange?.(q);
+        }}
+        flags={safeFlags}
+        records={records}
+        isRecording={isReplayRecording}
+        onStartRecording={handleStartReplayRecording}
+        onStopRecording={handleStopReplayRecording}
+        recordedSteps={recordedReplaySteps}
+        onClearRecording={() => setRecordedReplaySteps([])}
+        onAddRecordedStep={handleAddRecordedStep}
+        activeSequence={activeReplaySequence}
+        onSelectSequence={(seq) => {
+          setActiveReplaySequence(seq);
+          setReplayPlaybackIndex(0);
+          if (seq.steps[0] && onSearchChange) {
+            onSearchChange(seq.steps[0].query);
+          }
+        }}
+        currentPlaybackStepIndex={replayPlaybackIndex}
+        onSeekStepIndex={handleSeekReplayStep}
+        isPlaying={isReplayPlaying}
+        onTogglePlay={handleToggleReplayPlay}
+        playbackSpeed={replaySpeed}
+        onChangePlaybackSpeed={(spd) => setReplaySpeed(spd)}
       />
     </div>
   );

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { IndexEfficiencyTrendChart } from './IndexEfficiencyTrendChart';
+import { ComplexityHeatmapPanel } from './ComplexityHeatmapPanel';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -81,6 +82,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
   const [animatingBulkIndexName, setAnimatingBulkIndexName] = useState<string | null>(null);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
+  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap'>('complexity-heatmap');
   const [disabledImpactEdges, setDisabledImpactEdges] = useState<Record<string, boolean>>({});
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
   const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
@@ -90,6 +92,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
   const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
   const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
+  const [selectedIndexes, setSelectedIndexes] = useState<string[]>([]);
+  const [isBulkOperating, setIsBulkOperating] = useState<boolean>(false);
   const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'latency_desc' | 'latency_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name'>('impact_desc');
   const [showIndexImpactHeatmap, setShowIndexImpactHeatmap] = useState<boolean>(true);
   const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
@@ -687,6 +691,137 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       }, 4500);
       return nextLocked;
     });
+  };
+
+  const handleToggleSelectIndex = (indexName: string) => {
+    setSelectedIndexes((prev) =>
+      prev.includes(indexName) ? prev.filter((name) => name !== indexName) : [...prev, indexName]
+    );
+  };
+
+  const handleSelectAllVisible = (visibleNames: string[]) => {
+    const allSelected = visibleNames.length > 0 && visibleNames.every((name) => selectedIndexes.includes(name));
+    if (allSelected) {
+      setSelectedIndexes((prev) => prev.filter((name) => !visibleNames.includes(name)));
+    } else {
+      setSelectedIndexes((prev) => Array.from(new Set([...prev, ...visibleNames])));
+    }
+  };
+
+  const handleClearSelection = () => {
+    setSelectedIndexes([]);
+  };
+
+  const handleBulkToggleProtected = () => {
+    if (selectedIndexes.length === 0) return;
+    const allProtected = selectedIndexes.every((name) => lockedIndexes.includes(name));
+    if (allProtected) {
+      // Mass Unprotect
+      setLockedIndexes((prev) => prev.filter((name) => !selectedIndexes.includes(name)));
+      setImportSuccessNotice(`Unlocked (unprotected) ${selectedIndexes.length} selected index(es). They can now be modified or pruned by Auto-Optimize.`);
+    } else {
+      // Mass Protect
+      setLockedIndexes((prev) => Array.from(new Set([...prev, ...selectedIndexes])));
+      setImportSuccessNotice(`Locked (protected) ${selectedIndexes.length} selected index(es). Protected against Auto-Optimize and Index Cleanup.`);
+    }
+    setTimeout(() => setImportSuccessNotice(null), 4500);
+
+    const ev = new CustomEvent('optimization-lifecycle-event', {
+      detail: {
+        action: allProtected ? 'PRUNE' : 'RESTORE',
+        actionLabel: allProtected ? 'Bulk Unlock (Unprotect) Indexes' : 'Bulk Lock (Protect) Indexes',
+        triggerSource: 'Bulk Actions Bar',
+        targetIndex: selectedIndexes.join(', '),
+        targetTable: 'multiple',
+        columns: [],
+        rationale: allProtected
+          ? `Mass-unprotected ${selectedIndexes.length} indexes via Floating Bulk Actions bar.`
+          : `Mass-protected ${selectedIndexes.length} indexes with high-priority manual locks against automated cleanup.`,
+        executedDdl: selectedIndexes.map((idx) => `-- ${allProtected ? 'UNLOCK' : 'LOCK'} INDEX ${idx};`).join('\n'),
+        executionDurationMs: +(6 + Math.random() * 8).toFixed(1),
+        status: 'COMPLETED'
+      }
+    });
+    window.dispatchEvent(ev);
+  };
+
+  const handleBulkProtect = () => {
+    if (selectedIndexes.length === 0) return;
+    setLockedIndexes((prev) => Array.from(new Set([...prev, ...selectedIndexes])));
+    setImportSuccessNotice(`Marked ${selectedIndexes.length} selected index(es) as Protected against automated changes.`);
+    setTimeout(() => setImportSuccessNotice(null), 4500);
+
+    const ev = new CustomEvent('optimization-lifecycle-event', {
+      detail: {
+        action: 'RESTORE',
+        actionLabel: 'Bulk Protect Indexes',
+        triggerSource: 'Bulk Actions Bar',
+        targetIndex: selectedIndexes.join(', '),
+        targetTable: 'multiple',
+        columns: [],
+        rationale: `Protected ${selectedIndexes.length} indexes against automated cleanup.`,
+        executedDdl: selectedIndexes.map((idx) => `-- LOCK INDEX ${idx};`).join('\n'),
+        executionDurationMs: +(5 + Math.random() * 6).toFixed(1),
+        status: 'COMPLETED'
+      }
+    });
+    window.dispatchEvent(ev);
+  };
+
+  const handleBulkUnprotect = () => {
+    if (selectedIndexes.length === 0) return;
+    setLockedIndexes((prev) => prev.filter((name) => !selectedIndexes.includes(name)));
+    setImportSuccessNotice(`Removed protection from ${selectedIndexes.length} index(es). They can now be optimized.`);
+    setTimeout(() => setImportSuccessNotice(null), 4500);
+
+    const ev = new CustomEvent('optimization-lifecycle-event', {
+      detail: {
+        action: 'PRUNE',
+        actionLabel: 'Bulk Unprotect Indexes',
+        triggerSource: 'Bulk Actions Bar',
+        targetIndex: selectedIndexes.join(', '),
+        targetTable: 'multiple',
+        columns: [],
+        rationale: `Removed locks on ${selectedIndexes.length} indexes.`,
+        executedDdl: selectedIndexes.map((idx) => `-- UNLOCK INDEX ${idx};`).join('\n'),
+        executionDurationMs: +(5 + Math.random() * 6).toFixed(1),
+        status: 'COMPLETED'
+      }
+    });
+    window.dispatchEvent(ev);
+  };
+
+  const handleBulkReindex = () => {
+    if (selectedIndexes.length === 0) return;
+    setIsBulkOperating(true);
+    const count = selectedIndexes.length;
+    setImportSuccessNotice(`[Bulk Maintenance Started] Executing zero-downtime REINDEX CONCURRENTLY across ${count} selected index trees...`);
+
+    setTimeout(() => {
+      setReindexedIndexes((prev) => Array.from(new Set([...prev, ...selectedIndexes])));
+      setIsBulkOperating(false);
+      setImportSuccessNotice(`✓ Successfully completed bulk REINDEX CONCURRENTLY on ${count} indexes! Fragmentation reduced to 3% and health restored to 98/100.`);
+      setTimeout(() => setImportSuccessNotice(null), 5000);
+
+      const ev = new CustomEvent('optimization-lifecycle-event', {
+        detail: {
+          action: 'HEAL',
+          actionLabel: 'Bulk Concurrent Reindex',
+          triggerSource: 'Bulk Actions Bar',
+          targetIndex: selectedIndexes.slice(0, 4).join(', ') + (count > 4 ? ` (+${count - 4} more)` : ''),
+          targetTable: 'multiple',
+          columns: ['composite'],
+          rationale: `Executed mass zero-downtime concurrent reindex across ${count} selected index trees.`,
+          executedDdl: selectedIndexes.map((idx) => `REINDEX INDEX CONCURRENTLY ${idx};`).join('\n'),
+          executionDurationMs: +(32 + count * 9).toFixed(1),
+          healthDelta: { before: 44, after: 98, gain: 54 },
+          latencyImpact: { beforeMs: '138.0 ms', afterMs: '2.9 ms', speedup: '97.9% faster' },
+          writeOverheadDelta: 'Zero lock contention (Concurrent B-Tree rebuild)',
+          status: 'COMPLETED'
+        }
+      });
+      window.dispatchEvent(ev);
+    }, 1100);
   };
 
   const handleAutoOptimizeWorkload = () => {
@@ -3746,16 +3881,36 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             <div className="flex flex-col gap-1.5 pt-1">
               <button
                 type="button"
+                id="btn-sidebar-open-complexity-heatmap"
+                data-testid="btn-sidebar-open-complexity-heatmap"
+                onClick={() => {
+                  setShowAiSuggestionsSidePanel(true);
+                  setSidePanelViewMode('complexity-heatmap');
+                }}
+                className="w-full py-1.5 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-semibold rounded-lg text-[11px] cursor-pointer transition-all shadow-2xs flex items-center justify-center gap-1"
+                title="Display Complexity Heatmap in side panel"
+              >
+                <Flame className="w-3.5 h-3.5 text-amber-200 animate-pulse" />
+                <span>Complexity Heatmap</span>
+                <span className="font-mono text-[9px] bg-white/20 px-1 rounded ml-0.5">
+                  Tree
+                </span>
+              </button>
+              <button
+                type="button"
                 id="btn-sidebar-open-ai-side-panel"
                 data-testid="btn-sidebar-open-ai-side-panel"
-                onClick={() => setShowAiSuggestionsSidePanel(true)}
+                onClick={() => {
+                  setShowAiSuggestionsSidePanel(true);
+                  setSidePanelViewMode('suggestions');
+                }}
                 className="w-full py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-semibold rounded-lg text-[11px] cursor-pointer transition-all shadow-2xs flex items-center justify-center gap-1"
                 title="Display AI-Driven Index Suggestion side panel in Explorer view"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
                 <span>AI Suggestions Side Panel</span>
                 <span className="font-mono text-[9px] bg-white/20 px-1 rounded ml-0.5">
-                  {showAiSuggestionsSidePanel ? 'Active' : 'Open'}
+                  {showAiSuggestionsSidePanel && sidePanelViewMode === 'suggestions' ? 'Active' : 'Open'}
                 </span>
               </button>
               <button
@@ -4149,6 +4304,33 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   </span>
                 </button>
 
+                {/* Complexity Heatmap Side Panel Quick Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-toolbar-complexity-heatmap"
+                  data-testid="btn-toolbar-complexity-heatmap"
+                  onClick={() => {
+                    if (showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap') {
+                      setShowAiSuggestionsSidePanel(false);
+                    } else {
+                      setShowAiSuggestionsSidePanel(true);
+                      setSidePanelViewMode('complexity-heatmap');
+                    }
+                  }}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap'
+                      ? 'bg-rose-600 text-white border-rose-700 shadow-xs ring-1 ring-rose-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Open Complexity Heatmap in side panel to inspect dependency tree nodes and downstream query blast radius"
+                >
+                  <Flame className={`w-3.5 h-3.5 ${showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap' ? 'text-amber-200 animate-pulse' : 'text-rose-600'}`} />
+                  <span>Complexity Heatmap</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap' ? 'bg-white/20 text-white' : 'bg-rose-100 text-rose-800'}`}>
+                    Tree
+                  </span>
+                </button>
+
                 {/* AI Suggestions Side Panel Quick Toggle Button */}
                 <button
                   type="button"
@@ -4498,6 +4680,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   >
                     <thead className="bg-zinc-100/90 text-zinc-700 uppercase tracking-wider text-[10px] border-b border-zinc-200 select-none">
                       <tr>
+                        <th className="py-2.5 px-3 font-bold w-10 text-center select-none">
+                          <input
+                            type="checkbox"
+                            id="checkbox-select-all-indexes"
+                            data-testid="checkbox-select-all-indexes"
+                            checked={allRankedSchemaIndexes.length > 0 && allRankedSchemaIndexes.every((item) => selectedIndexes.includes(item.index.name))}
+                            ref={(el) => {
+                              if (el) {
+                                const hasSome = allRankedSchemaIndexes.some((item) => selectedIndexes.includes(item.index.name));
+                                const hasAll = allRankedSchemaIndexes.length > 0 && allRankedSchemaIndexes.every((item) => selectedIndexes.includes(item.index.name));
+                                el.indeterminate = hasSome && !hasAll;
+                              }
+                            }}
+                            onChange={() => {
+                              const visibleNames = allRankedSchemaIndexes.map((item) => item.index.name);
+                              handleSelectAllVisible(visibleNames);
+                            }}
+                            className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                            title="Select / deselect all visible indexes"
+                          />
+                        </th>
                         <th className="py-2.5 px-3 font-bold w-14 text-center">Rank</th>
                         <th className="py-2.5 px-3 font-bold">Index Name &amp; Entity</th>
                         <th className="py-2.5 px-3 font-bold">Type &amp; Columns</th>
@@ -4534,20 +4737,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <tbody className="divide-y divide-zinc-100">
                       {allRankedSchemaIndexes.length === 0 ? (
                         <tr>
-                          <td colSpan={showIndexImpactHeatmap ? 9 : 8} className="py-8 text-center text-zinc-500 font-sans">
+                          <td colSpan={showIndexImpactHeatmap ? 10 : 9} className="py-8 text-center text-zinc-500 font-sans">
                             No indexes matching &ldquo;{indexSearchQuery}&rdquo; found in the selected filter.
                           </td>
                         </tr>
                       ) : (
                         allRankedSchemaIndexes.map((item, idx) => {
                           const { index, table, entityBadge, health, impact, latencyHeat, isRemoved, isLocked } = item;
+                          const isSelected = selectedIndexes.includes(index.name);
                           return (
                             <tr
                               key={`table-row-${table}-${index.name}`}
                               id={`index-row-${index.name}`}
                               data-testid={`index-row-${index.name}`}
                               className={`transition-colors ${
-                                showIndexImpactHeatmap
+                                isSelected
+                                  ? 'bg-indigo-50/70 ring-1 ring-indigo-400'
+                                  : showIndexImpactHeatmap
                                   ? latencyHeat.rowBgClass
                                   : isRemoved
                                   ? 'bg-zinc-50/60 opacity-60 hover:bg-zinc-100/80'
@@ -4558,6 +4764,19 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   : 'hover:bg-zinc-50/80'
                               }`}
                             >
+                              {/* Row Selection Checkbox */}
+                              <td className="py-3 px-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  id={`checkbox-index-${index.name}`}
+                                  data-testid={`checkbox-index-${index.name}`}
+                                  checked={isSelected}
+                                  onChange={() => handleToggleSelectIndex(index.name)}
+                                  className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                                  title={`Select "${index.name}" for mass-toggling protection or re-indexing`}
+                                />
+                              </td>
+
                               {/* Rank Position */}
                               <td className="py-3 px-3 text-center font-bold text-zinc-500">
                                 <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold ${
@@ -4963,6 +5182,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               const isLocked = lockedIndexes.includes(idx.name);
                               const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
                               const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
+                              const isSelected = selectedIndexes.includes(idx.name);
 
                               return (
                                 <div
@@ -4970,7 +5190,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
                                   onMouseLeave={() => setHoveredIndexWhatIf(null)}
                                   className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all duration-300 ${
-                                    showIndexImpactHeatmap
+                                    isSelected
+                                      ? 'ring-2 ring-indigo-500 border-indigo-400 bg-indigo-50/40 shadow-sm'
+                                      : showIndexImpactHeatmap
                                       ? `${latencyHeat.cardBgClass} ${animatingBulkIndexName === idx.name ? 'scale-[1.01] ring-2 ring-emerald-400' : ''}`
                                       : animatingBulkIndexName === idx.name
                                       ? 'bg-emerald-50/90 border-emerald-500 ring-2 ring-emerald-400 scale-[1.01] shadow-md bg-white'
@@ -5161,6 +5383,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                     {/* Index Header Row with Name, Health Score Badge, and Status */}
                                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs font-bold text-zinc-900 mb-1.5">
                                       <div className="flex items-center gap-2 flex-wrap">
+                                        <input
+                                          type="checkbox"
+                                          id={`checkbox-card-index-${idx.name}`}
+                                          data-testid={`checkbox-card-index-${idx.name}`}
+                                          checked={selectedIndexes.includes(idx.name)}
+                                          onChange={(e) => {
+                                            e.stopPropagation();
+                                            handleToggleSelectIndex(idx.name);
+                                          }}
+                                          className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                                          title={`Select index "${idx.name}" for mass-toggling protection or re-indexing`}
+                                        />
                                         <span className="font-mono text-indigo-950 font-bold">{idx.name}</span>
                                         {isLocked && (
                                           <span
@@ -5681,23 +5915,39 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             data-testid="ai-driven-index-suggestion-side-panel"
             className="lg:col-span-4 xl:col-span-4 border-t lg:border-t-0 lg:border-l border-zinc-200 bg-gradient-to-b from-indigo-50/40 via-white to-zinc-50/50 p-4 sm:p-5 space-y-4 overflow-y-auto flex flex-col max-h-[750px] lg:max-h-none"
           >
-            {/* Side Panel Header */}
+            {/* Side Panel Header with Mode Switcher */}
             <div className="flex items-start justify-between gap-3 pb-3 border-b border-zinc-200">
               <div className="flex items-start gap-2.5">
-                <div className="p-2 bg-gradient-to-br from-indigo-600 via-purple-600 to-indigo-800 text-white rounded-xl shadow-xs shrink-0 mt-0.5">
-                  <Sparkles className="w-4 h-4 text-amber-300" />
+                <div className={`p-2 rounded-xl shadow-xs shrink-0 mt-0.5 text-white ${
+                  sidePanelViewMode === 'complexity-heatmap'
+                    ? 'bg-gradient-to-br from-rose-600 via-amber-600 to-rose-700'
+                    : 'bg-gradient-to-br from-indigo-600 via-purple-600 to-indigo-800'
+                }`}>
+                  {sidePanelViewMode === 'complexity-heatmap' ? (
+                    <Flame className="w-4 h-4 text-amber-200 animate-pulse" />
+                  ) : (
+                    <Sparkles className="w-4 h-4 text-amber-300" />
+                  )}
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <h3 className="text-sm font-bold text-zinc-900 tracking-tight">
-                      AI-Driven Index Suggestions
+                      {sidePanelViewMode === 'complexity-heatmap'
+                        ? 'Complexity Heatmap (Tree View)'
+                        : 'AI-Driven Index Suggestions'}
                     </h3>
-                    <span className="font-mono text-[9px] bg-purple-100 text-purple-800 font-bold px-1.5 py-0.2 rounded border border-purple-200">
-                      Query History AI
+                    <span className={`font-mono text-[9px] font-bold px-1.5 py-0.2 rounded border ${
+                      sidePanelViewMode === 'complexity-heatmap'
+                        ? 'bg-rose-100 text-rose-800 border-rose-200'
+                        : 'bg-purple-100 text-purple-800 border-purple-200'
+                    }`}>
+                      {sidePanelViewMode === 'complexity-heatmap' ? 'Downstream Blast Radius' : 'Query History AI'}
                     </span>
                   </div>
                   <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">
-                    Analyzed 14,200 user query patterns in history to uncover high-impact composite index opportunities.
+                    {sidePanelViewMode === 'complexity-heatmap'
+                      ? 'Color-codes dependency tree nodes by number of downstream queries affected to identify high-risk indexes.'
+                      : 'Analyzed 14,200 user query patterns in history to uncover high-impact composite index opportunities.'}
                   </p>
                 </div>
               </div>
@@ -5707,13 +5957,63 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 data-testid="btn-close-ai-side-panel"
                 onClick={() => setShowAiSuggestionsSidePanel(false)}
                 className="text-zinc-400 hover:text-zinc-700 p-1 rounded-md hover:bg-zinc-100 cursor-pointer transition-colors shrink-0"
-                title="Collapse AI-Driven Index Suggestion side panel"
+                title="Collapse side panel"
                 aria-label="Collapse side panel"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
+            {/* Side Panel View Mode Tabs */}
+            <div className="flex items-center gap-1 p-1 bg-zinc-100 rounded-xl border border-zinc-200/80">
+              <button
+                type="button"
+                id="btn-side-panel-tab-complexity-heatmap"
+                data-testid="btn-side-panel-tab-complexity-heatmap"
+                onClick={() => setSidePanelViewMode('complexity-heatmap')}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  sidePanelViewMode === 'complexity-heatmap'
+                    ? 'bg-gradient-to-r from-rose-600 to-amber-600 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/50'
+                }`}
+              >
+                <Flame className="w-3.5 h-3.5" />
+                <span>Complexity Heatmap</span>
+              </button>
+              <button
+                type="button"
+                id="btn-side-panel-tab-suggestions"
+                data-testid="btn-side-panel-tab-suggestions"
+                onClick={() => setSidePanelViewMode('suggestions')}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  sidePanelViewMode === 'suggestions'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/50'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI Suggestions</span>
+                <span className="font-mono text-[9px] bg-white/20 px-1 rounded">4</span>
+              </button>
+            </div>
+
+            {sidePanelViewMode === 'complexity-heatmap' ? (
+              <ComplexityHeatmapPanel
+                lockedIndexes={lockedIndexes}
+                onToggleLockIndex={handleToggleLockIndex}
+                removedIndexes={removedIndexes}
+                onRemoveIndex={handleRemoveUnutilizedIndex}
+                onRestoreIndex={handleRestoreRemovedIndex}
+                flags={flags}
+                createdCompositeIndexes={createdCompositeIndexes}
+                createdCustomIndexes={createdCustomIndexes}
+                importedCustomIndices={importedCustomIndices}
+                onSelectIndexDetail={(indexName) => {
+                  setSelectedCompositeSuggestionId(indexName);
+                }}
+              />
+            ) : (
+              <>
             {/* Query History Analytics Strip */}
             <div className="p-3 bg-white rounded-xl border border-indigo-100 shadow-2xs space-y-2.5">
               <div className="flex items-center justify-between text-[11px]">
@@ -6108,21 +6408,45 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   );
                 })}
             </div>
+            </>
+            )}
           </div>
         ) : (
           /* Docked Tab when Side Panel is Collapsed */
-          <div className="hidden lg:flex flex-col items-center justify-start border-l border-zinc-200 bg-zinc-50/80 p-2 shrink-0">
+          <div className="hidden lg:flex flex-col items-center justify-start border-l border-zinc-200 bg-zinc-50/80 p-2 shrink-0 space-y-2">
+            <button
+              type="button"
+              id="btn-reopen-complexity-heatmap-side-panel"
+              data-testid="btn-reopen-complexity-heatmap-side-panel"
+              onClick={() => {
+                setShowAiSuggestionsSidePanel(true);
+                setSidePanelViewMode('complexity-heatmap');
+              }}
+              className="py-4 px-2 bg-gradient-to-b from-rose-50 to-amber-50 hover:from-rose-100 hover:to-amber-100 border border-rose-300 text-rose-950 rounded-xl shadow-xs cursor-pointer flex flex-col items-center gap-2.5 transition-all hover:scale-105"
+              title="Open Complexity Heatmap side panel (Dependency tree & downstream query blast radius)"
+            >
+              <Flame className="w-4 h-4 text-rose-600 animate-pulse" />
+              <span className="[writing-mode:vertical-rl] text-[11px] font-extrabold tracking-wider uppercase text-rose-900">
+                Complexity Heatmap
+              </span>
+              <span className="font-mono text-[9px] bg-rose-200 text-rose-900 font-bold px-1 rounded-full">
+                Tree
+              </span>
+            </button>
             <button
               type="button"
               id="btn-reopen-ai-side-panel"
               data-testid="btn-reopen-ai-side-panel"
-              onClick={() => setShowAiSuggestionsSidePanel(true)}
+              onClick={() => {
+                setShowAiSuggestionsSidePanel(true);
+                setSidePanelViewMode('suggestions');
+              }}
               className="py-4 px-2 bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-xl shadow-xs cursor-pointer flex flex-col items-center gap-2.5 transition-all hover:scale-105"
               title="Open AI-Driven Index Suggestion side panel"
             >
               <Sparkles className="w-4 h-4 text-purple-600 animate-pulse" />
               <span className="[writing-mode:vertical-rl] text-[11px] font-bold tracking-wider uppercase text-zinc-700">
-                AI Suggestions Panel
+                AI Suggestions
               </span>
               <span className="font-mono text-[9px] bg-purple-100 text-purple-800 font-bold px-1 rounded-full">
                 4
@@ -6337,6 +6661,34 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           >
             <Target className="w-3.5 h-3.5" />
             <span>Quick Index Check</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-header-open-complexity-heatmap"
+            data-testid="btn-header-open-complexity-heatmap"
+            onClick={() => {
+              if (showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap') {
+                setShowAiSuggestionsSidePanel(false);
+              } else {
+                setShowAiSuggestionsSidePanel(true);
+                setSidePanelViewMode('complexity-heatmap');
+              }
+            }}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border ${
+              showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap'
+                ? 'bg-gradient-to-r from-rose-700 via-amber-700 to-rose-800 text-white border-rose-600 shadow-xs ring-1 ring-rose-300'
+                : 'bg-white hover:bg-rose-50 border-rose-200 text-rose-900'
+            }`}
+            title="Open Complexity Heatmap in side panel to color-code dependency tree nodes by downstream queries affected"
+          >
+            <Flame className={`w-3.5 h-3.5 ${showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap' ? 'text-amber-200 animate-pulse' : 'text-rose-600'}`} />
+            <span>Complexity Heatmap</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+              showAiSuggestionsSidePanel && sidePanelViewMode === 'complexity-heatmap' ? 'bg-rose-950 text-rose-200' : 'bg-rose-100 text-rose-800'
+            }`}>
+              Tree
+            </span>
           </button>
 
           <button
@@ -9517,6 +9869,144 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
             <div className="p-4 overflow-y-auto max-h-[calc(90vh-70px)]">
               <SerializationErrorLogPanel />
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating 'Bulk Actions' Bar */}
+      {selectedIndexes.length > 0 && (
+        <div
+          id="floating-bulk-actions-bar"
+          data-testid="floating-bulk-actions-bar"
+          role="region"
+          aria-label="Bulk Index Actions"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-zinc-950/95 text-white px-4 py-3 sm:px-5 sm:py-3.5 rounded-2xl shadow-2xl border border-zinc-700/80 flex items-center justify-between gap-3 sm:gap-6 flex-wrap max-w-[95vw] sm:max-w-4xl backdrop-blur-md transition-all animate-slideUp ring-1 ring-white/10"
+        >
+          {/* Selected Count & Breakdown Badges */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="flex items-center gap-1.5 bg-indigo-950/90 text-indigo-200 border border-indigo-700/60 px-2.5 py-1 rounded-xl text-xs font-bold shadow-xs">
+              <CheckSquare className="w-3.5 h-3.5 text-indigo-400" />
+              <span id="bulk-selected-count" data-testid="bulk-selected-count" className="font-mono text-white font-extrabold">
+                {selectedIndexes.length}
+              </span>
+              <span>{selectedIndexes.length === 1 ? 'index' : 'indexes'} selected</span>
+            </div>
+
+            {/* Quick breakdown metrics */}
+            <div className="hidden sm:flex items-center gap-1.5 text-[11px] font-mono text-zinc-400">
+              <span className="bg-amber-950/70 text-amber-300 border border-amber-800/60 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                <Lock className="w-3 h-3 text-amber-400" />
+                <span>{selectedIndexes.filter((name) => lockedIndexes.includes(name)).length} Protected</span>
+              </span>
+              <span className="bg-zinc-800 text-zinc-300 border border-zinc-700 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                <Unlock className="w-3 h-3 text-zinc-400" />
+                <span>{selectedIndexes.filter((name) => !lockedIndexes.includes(name)).length} Unprotected</span>
+              </span>
+              {selectedIndexes.filter((name) => reindexedIndexes.includes(name)).length > 0 && (
+                <span className="bg-emerald-950/70 text-emerald-300 border border-emerald-800/60 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  <span>{selectedIndexes.filter((name) => reindexedIndexes.includes(name)).length} Reindexed</span>
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Action Buttons Group */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Mass-Toggling 'Protected' Status */}
+            <button
+              type="button"
+              id="btn-bulk-toggle-protected"
+              data-testid="btn-bulk-toggle-protected"
+              onClick={handleBulkToggleProtected}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition-all shadow-xs border ${
+                selectedIndexes.every((name) => lockedIndexes.includes(name))
+                  ? 'bg-zinc-800 hover:bg-zinc-700 text-amber-300 border-amber-500/40'
+                  : 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border-amber-500/50'
+              }`}
+              title="Mass-toggle Protected status for all selected indexes"
+            >
+              {selectedIndexes.every((name) => lockedIndexes.includes(name)) ? (
+                <>
+                  <Unlock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Unprotect All ({selectedIndexes.length})</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Protect All ({selectedIndexes.length})</span>
+                </>
+              )}
+            </button>
+
+            {/* Protect / Unprotect Quick Actions */}
+            <div className="hidden md:inline-flex items-center rounded-xl bg-zinc-800/80 p-0.5 border border-zinc-700 text-xs">
+              <button
+                type="button"
+                id="btn-bulk-protect-indexes"
+                data-testid="btn-bulk-protect-indexes"
+                onClick={handleBulkProtect}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-amber-300 hover:text-white hover:bg-zinc-700 cursor-pointer transition-colors"
+                title="Mark all selected indexes as Protected (Locked against cleanup)"
+              >
+                <Lock className="w-3 h-3 text-amber-400" />
+                <span>Protect</span>
+              </button>
+              <span className="text-zinc-600">|</span>
+              <button
+                type="button"
+                id="btn-bulk-unprotect-indexes"
+                data-testid="btn-bulk-unprotect-indexes"
+                onClick={handleBulkUnprotect}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-zinc-300 hover:text-white hover:bg-zinc-700 cursor-pointer transition-colors"
+                title="Remove protection from all selected indexes"
+              >
+                <Unlock className="w-3 h-3 text-zinc-400" />
+                <span>Unprotect</span>
+              </button>
+            </div>
+
+            {/* Bulk Re-indexing Operation */}
+            <button
+              type="button"
+              id="btn-bulk-reindex-indexes"
+              data-testid="btn-bulk-reindex-indexes"
+              onClick={handleBulkReindex}
+              disabled={isBulkOperating}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-500 hover:to-teal-500 text-white cursor-pointer transition-all shadow-md hover:shadow-emerald-900/30 border border-emerald-400/40 disabled:opacity-50"
+              title="Mass-reindex all selected indexes using zero-downtime REINDEX CONCURRENTLY"
+            >
+              <Zap className={`w-3.5 h-3.5 text-amber-300 ${isBulkOperating ? 'animate-spin' : ''}`} />
+              <span>{isBulkOperating ? 'Reindexing...' : 'Bulk REINDEX CONCURRENTLY'}</span>
+            </button>
+
+            {/* Select All Visible toggle */}
+            <button
+              type="button"
+              id="btn-bulk-select-all"
+              data-testid="btn-bulk-select-all"
+              onClick={() => {
+                const visibleNames = allRankedSchemaIndexes.map((item) => item.index.name);
+                handleSelectAllVisible(visibleNames);
+              }}
+              className="text-[11px] text-zinc-400 hover:text-white hover:bg-zinc-800 px-2 py-1 rounded-lg cursor-pointer transition-colors hidden lg:inline-flex items-center gap-1"
+              title="Select all visible indexes"
+            >
+              <span>Select All</span>
+            </button>
+
+            {/* Clear Selection */}
+            <button
+              type="button"
+              id="btn-bulk-clear-selection"
+              data-testid="btn-bulk-clear-selection"
+              onClick={handleClearSelection}
+              className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl cursor-pointer transition-colors"
+              title="Clear Selection"
+              aria-label="Clear Selection"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         </div>
       )}

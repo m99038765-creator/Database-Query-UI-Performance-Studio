@@ -294,3 +294,38 @@ export interface ExportCpuCorrelationPoint {
   isHighFrequency: boolean;
   responsivenessImpact: 'minimal' | 'moderate' | 'elevated';
 }
+
+export interface QueryReplayStep {
+  id: string;
+  stepNumber: number;
+  query: string;
+  timestamp: number;
+  timeOffsetMs: number;
+  // Performance metrics
+  executionLatencyMs: number;
+  baselineLatencyMs: number;
+  latencyDeltaPercent: number;
+  rowsMatched: number;
+  totalRowsScanned: number;
+  memoryUsageMb: number;
+  cpuContentionPercent: number;
+  indexUsed: boolean;
+  indexName?: string;
+  // UI rendering states
+  domRenderTimeMs: number;
+  fps: number;
+  virtualizationActive: boolean;
+  deferredRenderingActive: boolean;
+  renderMode: 'virtualized' | 'synchronous_blocking' | 'deferred_concurrent';
+  uiResponsiveness: 'fluid' | 'sluggish' | 'frozen';
+  degradationSeverity: 'none' | 'moderate' | 'critical';
+  degradationCause?: string;
+}
+
+export interface QueryReplaySequence {
+  id: string;
+  title: string;
+  description: string;
+  createdAt: number;
+  steps: QueryReplayStep[];
+}
