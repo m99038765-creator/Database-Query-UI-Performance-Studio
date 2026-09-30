@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
+import { IndexEfficiencyTrendChart } from './IndexEfficiencyTrendChart';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -5809,6 +5810,12 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </span>
               </button>
             </div>
+
+            {/* 'Efficiency Trend' Chart in Index Side Panel */}
+            <IndexEfficiencyTrendChart
+              selectedIndexId={selectedCompositeSuggestionId}
+              onSelectIndexId={(id) => setSelectedCompositeSuggestionId(id)}
+            />
 
             {/* Table Filter Tabs */}
             <div className="flex items-center gap-1.5 flex-wrap">
