@@ -245,6 +245,38 @@ export interface SerializationLogEntry {
   };
 }
 
+export type LifecycleActionType = 'CREATE' | 'DELETE' | 'MERGE' | 'HEAL';
+export type LifecycleTriggerSource = 'Auto-Healing' | 'Consolidation' | 'Autonomous Optimizer';
+
+export interface OptimizationLifecycleEvent {
+  id: string;
+  timestamp: number;
+  timeFormatted: string;
+  action: LifecycleActionType;
+  actionLabel: string;
+  triggerSource: LifecycleTriggerSource;
+  targetIndex: string;
+  targetTable: string;
+  columns: string[];
+  previousState?: string;
+  newState?: string;
+  rationale: string;
+  executedDdl: string;
+  executionDurationMs: number;
+  healthDelta?: {
+    before: number;
+    after: number;
+    gain: number;
+  };
+  latencyImpact?: {
+    beforeMs: string;
+    afterMs: string;
+    speedup: string;
+  };
+  writeOverheadDelta?: string;
+  status: 'COMPLETED' | 'EXECUTED_CONCURRENTLY' | 'IN_PROGRESS';
+}
+
 export interface ExportCpuCorrelationPoint {
   id: string;
   bucketIndex: number;

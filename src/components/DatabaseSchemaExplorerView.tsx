@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp } from 'lucide-react';
 import { OptimizationFlags } from '../types';
+import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -67,6 +68,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [indexCategoryFilter, setIndexCategoryFilter] = useState<string>('all');
   const [exportSuccessNotice, setExportSuccessNotice] = useState<string | null>(null);
   const [isExportingState, setIsExportingState] = useState<boolean>(false);
+  const [isExportingImpactReport, setIsExportingImpactReport] = useState<boolean>(false);
+  const [showLifecycleLogModal, setShowLifecycleLogModal] = useState<boolean>(false);
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string>('idx_transactions_email_status');
   const [suggestionFilterTab, setSuggestionFilterTab] = useState<'all' | 'filter' | 'join' | 'composite'>('all');
   const [showBulkOptimizeModal, setShowBulkOptimizeModal] = useState<boolean>(false);
@@ -86,7 +89,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
   const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
   const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
-  const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name'>('impact_desc');
+  const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'latency_desc' | 'latency_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name'>('impact_desc');
+  const [showIndexImpactHeatmap, setShowIndexImpactHeatmap] = useState<boolean>(true);
   const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
   const [importedCustomIndices, setImportedCustomIndices] = useState<Array<{
     name: string;
@@ -750,6 +754,25 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }
     if (!removedIndexes.includes(idxName)) {
       setRemovedIndexes((prev) => [...prev, idxName]);
+      const diag = unutilizedDiagnostics.find((d) => d.name === idxName);
+      const ev = new CustomEvent('optimization-lifecycle-event', {
+        detail: {
+          action: 'DELETE',
+          actionLabel: 'Redundant Index Auto-Prune',
+          triggerSource: 'Auto-Healing',
+          targetIndex: idxName,
+          targetTable: diag?.table || 'transactions',
+          columns: diag ? [diag.column] : ['id'],
+          rationale: `Index "${idxName}" pruned to eliminate write amplification and reclaim disk space.`,
+          executedDdl: `DROP INDEX CONCURRENTLY ${idxName};`,
+          executionDurationMs: +(5 + Math.random() * 4).toFixed(1),
+          healthDelta: { before: 20, after: 92, gain: 72 },
+          latencyImpact: { beforeMs: '120 ms write lock stall', afterMs: '0.0 ms', speedup: '100% write lock eliminated' },
+          writeOverheadDelta: '+12.5% write throughput unlocked',
+          status: 'COMPLETED'
+        }
+      });
+      window.dispatchEvent(ev);
     }
     if (idxName.includes('email_missing')) {
       setCreatedCustomIndexes((prev) => prev.filter((c) => c !== 'customer_email'));
@@ -774,6 +797,29 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         return c !== 'customer_email' && c !== 'amount';
       })
     );
+
+    // Dispatch lifecycle deletion events for each unutilized index pruned
+    unutilized.forEach((idxName) => {
+      const diag = unutilizedDiagnostics.find((d) => d.name === idxName);
+      const ev = new CustomEvent('optimization-lifecycle-event', {
+        detail: {
+          action: 'DELETE',
+          actionLabel: 'Redundant Index Auto-Prune',
+          triggerSource: 'Auto-Healing',
+          targetIndex: idxName,
+          targetTable: diag?.table || 'transactions',
+          columns: diag ? [diag.column] : ['created_at'],
+          rationale: `Auto-Healing engine pruned unused index "${idxName}" (0 query seeks in 24h, high write amplification) to reclaim ${diag?.size || '2.3 MB'} memory and eliminate lock contention.`,
+          executedDdl: `DROP INDEX CONCURRENTLY ${idxName};`,
+          executionDurationMs: +(6 + Math.random() * 5).toFixed(1),
+          healthDelta: { before: 18, after: 95, gain: 77 },
+          latencyImpact: { beforeMs: '140 ms write lock stall', afterMs: '0.0 ms write lock stall', speedup: '14% write latency saved' },
+          writeOverheadDelta: '+14.0% write throughput unlocked',
+          status: 'COMPLETED'
+        }
+      });
+      window.dispatchEvent(ev);
+    });
   };
 
   const unutilizedDiagnostics = [
@@ -828,10 +874,45 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     setConsolidatedIndexes([...consolidatedIndexes, idxName]);
     if (idxName.includes('email_missing')) {
       setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'customer_email'));
+      if (!createdCompositeIndexes.includes('email_status')) {
+        setCreatedCompositeIndexes([...createdCompositeIndexes, 'email_status']);
+      }
     }
     if (idxName.includes('amount_missing')) {
       setCreatedCustomIndexes(createdCustomIndexes.filter((c) => c !== 'amount'));
+      if (!createdCompositeIndexes.includes('category_amount')) {
+        setCreatedCompositeIndexes([...createdCompositeIndexes, 'category_amount']);
+      }
     }
+
+    // Dispatch Consolidation Merge Event to window
+    const isEmail = idxName.includes('email_missing');
+    const targetIdx = isEmail ? 'idx_transactions_email_status' : 'idx_transactions_category_amount';
+    const targetCols = isEmail ? ['customer_email', 'status'] : ['category', 'amount'];
+    const ddl = isEmail
+      ? `CREATE INDEX CONCURRENTLY idx_transactions_email_status ON transactions (customer_email, status);\nDROP INDEX CONCURRENTLY ${idxName};`
+      : `CREATE INDEX CONCURRENTLY idx_transactions_category_amount ON transactions (category, amount);\nDROP INDEX CONCURRENTLY ${idxName};`;
+
+    const ev = new CustomEvent('optimization-lifecycle-event', {
+      detail: {
+        action: 'MERGE',
+        actionLabel: 'Multi-Column Index Consolidation',
+        triggerSource: 'Consolidation',
+        targetIndex: targetIdx,
+        targetTable: 'transactions',
+        columns: targetCols,
+        rationale: `Consolidation feature merged overlapping single-column index "${idxName}" into composite B-Tree index "${targetIdx}", reducing write amplification and query latency.`,
+        executedDdl: ddl,
+        executionDurationMs: +(30 + Math.random() * 15).toFixed(1),
+        healthDelta: { before: 52, after: 96, gain: 44 },
+        latencyImpact: { beforeMs: '310.0 ms', afterMs: '1.4 ms', speedup: '99.5% faster' },
+        writeOverheadDelta: '-22.4% WAL write lock reduction',
+        status: 'COMPLETED'
+      }
+    });
+    window.dispatchEvent(ev);
+    setImportSuccessNotice(`[Consolidation Executed] Merged "${idxName}" into composite index "${targetIdx}". Captured in Optimization Lifecycle!`);
+    setTimeout(() => setImportSuccessNotice(null), 5000);
   };
 
   const handleAnalyzeWorkload = () => {
@@ -1626,11 +1707,33 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     setShowSnapshotsModal(false);
   };
 
-  const handleReindexIndex = (indexName: string) => {
+  const handleReindexIndex = (indexName: string, isAutoHeal = false) => {
     if (!reindexedIndexes.includes(indexName)) {
       setReindexedIndexes([...reindexedIndexes, indexName]);
       setImportSuccessNotice(`Successfully executed REINDEX CONCURRENTLY on "${indexName}". Fragmentation reduced to 3% and index health score restored!`);
       setTimeout(() => setImportSuccessNotice(null), 4000);
+
+      // Dispatch Optimization Lifecycle Event
+      const ev = new CustomEvent('optimization-lifecycle-event', {
+        detail: {
+          action: 'HEAL',
+          actionLabel: isAutoHeal ? 'Auto-Healing Concurrent Reindex' : 'Manual Index Maintenance Reindex',
+          triggerSource: 'Auto-Healing',
+          targetIndex: indexName,
+          targetTable: 'transactions',
+          columns: ['transaction_id'],
+          rationale: isAutoHeal
+            ? `Auto-Healing detected index "${indexName}" dropped below 50% health threshold. Automatically reindexed concurrently without table locks.`
+            : `Maintenance reindex executed on "${indexName}". B-Tree pages rebalanced and bloat cleared.`,
+          executedDdl: `REINDEX INDEX CONCURRENTLY ${indexName};`,
+          executionDurationMs: +(14 + Math.random() * 10).toFixed(1),
+          healthDelta: { before: 42, after: 98, gain: 56 },
+          latencyImpact: { beforeMs: '145.0 ms', afterMs: '2.8 ms', speedup: '98.1% faster' },
+          writeOverheadDelta: 'Zero lock contention (Concurrent mode)',
+          status: 'COMPLETED'
+        }
+      });
+      window.dispatchEvent(ev);
     }
   };
 
@@ -2016,6 +2119,135 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     };
   };
 
+  // Calculates an index's total query latency contribution, workload impact, and heatmap shading
+  const calculateIndexLatencyContribution = (
+    idxName: string,
+    active: boolean,
+    tableName: string,
+    isRemoved: boolean
+  ) => {
+    const lower = idxName.toLowerCase();
+    let queryLatencyContributionMs = 120.0;
+    let baselineQueryName = 'Standard Table Scan';
+    let queryFrequencyPerHour = '4,500 queries/hr';
+    let executionShare = '8.5%';
+
+    if (lower.includes('primary') || lower.includes('pk_') || idxName.includes('PRIMARY KEY')) {
+      queryLatencyContributionMs = 0.3;
+      baselineQueryName = 'Clustered PK Lookup (Point Seek)';
+      queryFrequencyPerHour = '45,000 queries/hr';
+      executionShare = '0.1%';
+    } else if (lower.includes('line_items_tx')) {
+      queryLatencyContributionMs = 840.0;
+      baselineQueryName = 'Relational Order Line-Items Child Join Storm';
+      queryFrequencyPerHour = '15,000 queries/hr';
+      executionShare = '37.6%';
+    } else if (lower.includes('category_amount')) {
+      queryLatencyContributionMs = 482.0;
+      baselineQueryName = 'Multi-Column Category & Amount Range Aggregation';
+      queryFrequencyPerHour = '8,900 queries/hr';
+      executionShare = '21.6%';
+    } else if (lower.includes('email_status')) {
+      queryLatencyContributionMs = 395.0;
+      baselineQueryName = 'Customer Order Verification & Status Lookup';
+      queryFrequencyPerHour = '5,120 queries/hr';
+      executionShare = '17.7%';
+    } else if (lower.includes('orders_status_cat')) {
+      queryLatencyContributionMs = 310.0;
+      baselineQueryName = 'Active Order Dashboard & Pipeline Status Filtering';
+      queryFrequencyPerHour = '12,400 queries/hr';
+      executionShare = '13.9%';
+    } else if (lower.includes('amount_missing')) {
+      queryLatencyContributionMs = 482.0;
+      baselineQueryName = 'Sequential Amount Range Scan';
+      queryFrequencyPerHour = '6,200 queries/hr';
+      executionShare = '15.2%';
+    } else if (lower.includes('email_missing')) {
+      queryLatencyContributionMs = 395.0;
+      baselineQueryName = 'Unindexed Customer Email Filter';
+      queryFrequencyPerHour = '4,800 queries/hr';
+      executionShare = '12.4%';
+    } else if (lower.includes('tier_created')) {
+      queryLatencyContributionMs = 165.0;
+      baselineQueryName = 'Customer Tier & Account Date Range Seek';
+      queryFrequencyPerHour = '3,200 queries/hr';
+      executionShare = '7.4%';
+    } else if (idxName === 'idx_transactions_date') {
+      queryLatencyContributionMs = 140.0;
+      baselineQueryName = 'WAL Write-Lock Buffer Stall (0 Query Hits, High Overhead)';
+      queryFrequencyPerHour = '8,200 write tx/hr';
+      executionShare = '6.3%';
+    } else if (lower.includes('customers_email')) {
+      queryLatencyContributionMs = 68.2;
+      baselineQueryName = 'Customer Email Unique Point Seek';
+      queryFrequencyPerHour = '2,800 queries/hr';
+      executionShare = '3.1%';
+    } else if (lower.includes('tx_price')) {
+      queryLatencyContributionMs = 280.0;
+      baselineQueryName = 'Line Item Pricing Aggregate Filter';
+      queryFrequencyPerHour = '3,600 queries/hr';
+      executionShare = '12.5%';
+    } else {
+      queryLatencyContributionMs = 110.0;
+      baselineQueryName = 'Secondary Index Range Seek';
+      queryFrequencyPerHour = '2,400 queries/hr';
+      executionShare = '4.9%';
+    }
+
+    // Heat tiers based on total query latency contribution:
+    // Critical: >= 400ms (Heaviest query bottlenecks in the database)
+    // High: 250ms - 399ms (Significant latency contribution)
+    // Moderate: 100ms - 249ms (Noticeable latency contribution)
+    // Optimal / Low: < 100ms (Fast execution)
+    let heatTier: 'critical' | 'high' | 'moderate' | 'low' = 'low';
+    let rowBgClass = 'bg-emerald-50/40 hover:bg-emerald-50/70 border-l-4 border-l-emerald-500';
+    let cardBgClass = 'bg-emerald-50/30 border-emerald-300 ring-1 ring-emerald-200/60 shadow-2xs';
+    let badgeClass = 'bg-emerald-100 text-emerald-800 border-emerald-300';
+    let textColor = 'text-emerald-700';
+    let tierLabel = 'Optimal (<100ms)';
+    let heatIntensity = 'Optimal';
+
+    if (queryLatencyContributionMs >= 400) {
+      heatTier = 'critical';
+      rowBgClass = 'bg-rose-100/80 hover:bg-rose-100 border-l-4 border-l-rose-600 font-medium text-rose-950';
+      cardBgClass = 'bg-rose-100/60 border-rose-400 ring-2 ring-rose-400/50 shadow-xs';
+      badgeClass = 'bg-rose-200 text-rose-900 border-rose-400 font-bold';
+      textColor = 'text-rose-700';
+      tierLabel = 'Critical (>400ms)';
+      heatIntensity = 'Critical Latency';
+    } else if (queryLatencyContributionMs >= 250) {
+      heatTier = 'high';
+      rowBgClass = 'bg-rose-50/80 hover:bg-rose-100/60 border-l-4 border-l-rose-500 text-rose-900';
+      cardBgClass = 'bg-rose-50/60 border-rose-300 ring-1 ring-rose-300/60 shadow-2xs';
+      badgeClass = 'bg-rose-100 text-rose-800 border-rose-300 font-bold';
+      textColor = 'text-rose-600';
+      tierLabel = 'High (250–400ms)';
+      heatIntensity = 'High Latency';
+    } else if (queryLatencyContributionMs >= 100) {
+      heatTier = 'moderate';
+      rowBgClass = 'bg-amber-50/80 hover:bg-amber-100/60 border-l-4 border-l-amber-500 text-amber-950';
+      cardBgClass = 'bg-amber-50/50 border-amber-300 ring-1 ring-amber-300/60 shadow-2xs';
+      badgeClass = 'bg-amber-100 text-amber-900 border-amber-300 font-semibold';
+      textColor = 'text-amber-700';
+      tierLabel = 'Moderate (100–250ms)';
+      heatIntensity = 'Moderate Latency';
+    }
+
+    return {
+      queryLatencyContributionMs,
+      baselineQueryName,
+      queryFrequencyPerHour,
+      executionShare,
+      heatTier,
+      rowBgClass,
+      cardBgClass,
+      badgeClass,
+      textColor,
+      tierLabel,
+      heatIntensity
+    };
+  };
+
   // Bulk Optimization Calculation Engine:
   // Evaluates every listed index across all tables, calculates the optimal state vs current state,
   // and projects the cumulative schema health, query throughput, and write overhead impacts.
@@ -2317,6 +2549,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       index: typeof tables[0]['indexes'][0];
       health: ReturnType<typeof getIndexHealthScore>;
       impact: ReturnType<typeof calculateIndexImpactScore>;
+      latencyHeat: ReturnType<typeof calculateIndexLatencyContribution>;
       isRemoved: boolean;
       isLocked: boolean;
     }> = [];
@@ -2342,6 +2575,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           const isLocked = lockedIndexes.includes(idx.name);
           const health = getIndexHealthScore(idx.name, idx.active, tbl.name);
           const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
+          const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
 
           list.push({
             table: tbl.name,
@@ -2349,6 +2583,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             index: idx,
             health,
             impact,
+            latencyHeat,
             isRemoved,
             isLocked
           });
@@ -2359,6 +2594,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     list.sort((a, b) => {
       if (indexRankSort === 'impact_desc') return b.impact.score - a.impact.score;
       if (indexRankSort === 'impact_asc') return a.impact.score - b.impact.score;
+      if (indexRankSort === 'latency_desc') return b.latencyHeat.queryLatencyContributionMs - a.latencyHeat.queryLatencyContributionMs;
+      if (indexRankSort === 'latency_asc') return a.latencyHeat.queryLatencyContributionMs - b.latencyHeat.queryLatencyContributionMs;
       if (indexRankSort === 'query_desc') return b.impact.queryImprovement - a.impact.queryImprovement;
       if (indexRankSort === 'write_asc') return a.impact.writePenalty - b.impact.writePenalty;
       if (indexRankSort === 'health_desc') return b.health.score - a.health.score;
@@ -3080,6 +3317,136 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }, 5000);
   };
 
+  // Generates and downloads a structured JSON 'Index Impact Report' containing the current index list,
+  // their health scores, and latency contribution metrics for external analysis.
+  const handleExportImpactReport = () => {
+    setIsExportingImpactReport(true);
+
+    const totalIndexes = allRankedSchemaIndexes.length;
+    const activeIndexes = allRankedSchemaIndexes.filter((item) => item.index.active && !item.isRemoved).length;
+    const prunedIndexes = allRankedSchemaIndexes.filter((item) => item.isRemoved).length;
+    const lockedIndexesCount = allRankedSchemaIndexes.filter((item) => item.isLocked).length;
+
+    const avgHealthScore = totalIndexes > 0
+      ? Math.round(allRankedSchemaIndexes.reduce((sum, item) => sum + item.health.score, 0) / totalIndexes)
+      : 0;
+
+    const avgImpactScore = totalIndexes > 0
+      ? Math.round(allRankedSchemaIndexes.reduce((sum, item) => sum + item.impact.score, 0) / totalIndexes)
+      : 0;
+
+    const totalLatencyMs = Number(
+      allRankedSchemaIndexes
+        .reduce((sum, item) => sum + item.latencyHeat.queryLatencyContributionMs, 0)
+        .toFixed(1)
+    );
+
+    const criticalCount = allRankedSchemaIndexes.filter((item) => item.latencyHeat.heatTier === 'critical').length;
+    const highCount = allRankedSchemaIndexes.filter((item) => item.latencyHeat.heatTier === 'high').length;
+    const moderateCount = allRankedSchemaIndexes.filter((item) => item.latencyHeat.heatTier === 'moderate').length;
+    const optimalCount = allRankedSchemaIndexes.filter((item) => item.latencyHeat.heatTier === 'low').length;
+
+    const impactReportData = {
+      reportMetadata: {
+        title: 'Index Impact & Query Latency Diagnostic Report',
+        version: '1.0.0',
+        exportedAt: new Date().toISOString(),
+        exportedTimestamp: Date.now(),
+        databaseEngine: 'PostgreSQL / Cloud SQL Relational Engine',
+        schemaPrototype: activeSchemaPrototypeName,
+        currentFilter: indexCategoryFilter,
+        currentRankingSort: indexRankSort,
+        description: 'Comprehensive analysis of database schema index health scores, impact scores, and total query latency contributions for external analysis and automated profiling.'
+      },
+      systemOptimizationFlags: {
+        ...flags
+      },
+      summaryMetrics: {
+        totalIndexesAnalyzed: totalIndexes,
+        activeIndexes,
+        prunedIndexes,
+        lockedIndexesCount,
+        averageHealthScore: avgHealthScore,
+        averageImpactScore: avgImpactScore,
+        totalWorkloadLatencyContributionMs: totalLatencyMs,
+        latencyDistribution: {
+          criticalGreaterThan400ms: criticalCount,
+          high250to400ms: highCount,
+          moderate100to250ms: moderateCount,
+          optimalLessThan100ms: optimalCount
+        }
+      },
+      indexes: allRankedSchemaIndexes.map((item, rankIdx) => ({
+        rank: rankIdx + 1,
+        indexName: item.index.name,
+        targetTable: item.table,
+        entityBadge: item.entityBadge || 'Standard Entity',
+        indexType: item.index.type,
+        columns: item.index.columns,
+        status: item.isRemoved ? 'REMOVED' : item.index.active ? 'ACTIVE' : 'INACTIVE',
+        isLocked: item.isLocked,
+        healthScore: {
+          score: item.health.score,
+          rating: item.health.rating,
+          frequencyScore: item.health.frequencyScore,
+          readWriteScore: item.health.readWriteScore,
+          scanEfficiencyScore: item.health.scanEfficiencyScore,
+          statusDescription: item.health.status
+        },
+        impactScore: {
+          score: item.impact.score,
+          overallValueRating: item.impact.overallValueRating,
+          queryPerformanceImprovementPercent: item.impact.queryImprovement,
+          writeLatencyPenaltyPercent: item.impact.writePenalty,
+          readBenefitMultiplier: item.impact.readBenefitMultiplier
+        },
+        latencyContributionMetrics: {
+          latencyContributionMs: item.latencyHeat.queryLatencyContributionMs,
+          executionSharePercent: item.latencyHeat.executionShare,
+          queryFrequencyPerHour: item.latencyHeat.queryFrequencyPerHour,
+          associatedQuery: item.latencyHeat.baselineQueryName,
+          heatTier: item.latencyHeat.heatTier,
+          heatIntensity: item.latencyHeat.heatIntensity,
+          tierLabel: item.latencyHeat.tierLabel
+        }
+      })),
+      expensiveQueriesWorkload: expensiveQueriesWorkload.map((q) => ({
+        id: q.id,
+        name: q.name,
+        frequency: q.frequency,
+        executionShare: q.executionShare,
+        unindexedLatency: q.unindexedLatency,
+        optimizedLatency: q.optimizedLatency,
+        speedup: q.speedup,
+        optimalIndexName: q.optimalIndexName,
+        optimalIndexType: q.optimalIndexType,
+        isToggled: q.isToggled
+      }))
+    };
+
+    const fileName = `index-impact-report-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    const jsonBlob = new Blob([JSON.stringify(impactReportData, null, 2)], {
+      type: 'application/json'
+    });
+    const downloadUrl = URL.createObjectURL(jsonBlob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.href = downloadUrl;
+    downloadAnchor.download = fileName;
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    document.body.removeChild(downloadAnchor);
+    URL.revokeObjectURL(downloadUrl);
+
+    setTimeout(() => {
+      setIsExportingImpactReport(false);
+      setExportSuccessNotice(`Successfully generated & exported Index Impact Report (${totalIndexes} indexes analyzed) to ${fileName}`);
+    }, 350);
+
+    setTimeout(() => {
+      setExportSuccessNotice(null);
+    }, 5000);
+  };
+
   const renderContent = () => {
     if (activeTab === 'dependency-chain') {
       const indexDependencies = [
@@ -3647,10 +4014,12 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     value={indexRankSort}
                     onChange={(e) => setIndexRankSort(e.target.value as any)}
                     className="bg-transparent font-bold text-indigo-900 text-xs focus:outline-none cursor-pointer"
-                    title="Rank indexes by overall value (Index Impact Score), query improvement, write penalty, or health"
+                    title="Rank indexes by overall value (Index Impact Score), query latency contribution, query improvement, write penalty, or health"
                   >
                     <option value="impact_desc">Index Impact Score (High ➔ Low)</option>
                     <option value="impact_asc">Index Impact Score (Low ➔ High / Pruning)</option>
+                    <option value="latency_desc">Query Latency Contribution (High ➔ Low / Most Expensive)</option>
+                    <option value="latency_asc">Query Latency Contribution (Low ➔ High / Least Expensive)</option>
                     <option value="query_desc">Query Speedup (+%)</option>
                     <option value="write_asc">Lowest Write Penalty (-%)</option>
                     <option value="health_desc">Health Score</option>
@@ -3691,6 +4060,51 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <span>Cards View</span>
                   </button>
                 </div>
+
+                {/* Index Impact Heatmap Toggle Button in Header */}
+                <button
+                  type="button"
+                  id="btn-toggle-index-impact-heatmap"
+                  data-testid="toggle-index-impact-heatmap"
+                  onClick={() => setShowIndexImpactHeatmap(!showIndexImpactHeatmap)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    showIndexImpactHeatmap
+                      ? 'bg-rose-600 text-white border-rose-700 shadow-xs ring-1 ring-rose-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Toggle Index Impact Heatmap to shade index list rows according to their total query latency contribution"
+                  aria-label="Toggle Index Impact Heatmap"
+                >
+                  <Flame className={`w-3.5 h-3.5 ${showIndexImpactHeatmap ? 'text-amber-200 animate-pulse' : 'text-rose-500'}`} />
+                  <span>Index Impact Heatmap</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showIndexImpactHeatmap ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-600'}`}>
+                    {showIndexImpactHeatmap ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+
+                {/* Export Impact Report Button in Index List Header */}
+                <button
+                  type="button"
+                  id="btn-toolbar-export-impact-report"
+                  data-testid="btn-toolbar-export-impact-report"
+                  onClick={handleExportImpactReport}
+                  disabled={isExportingImpactReport}
+                  className="px-3 py-1.5 bg-white hover:bg-zinc-50 border border-zinc-300 hover:border-zinc-400 text-zinc-800 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all"
+                  title="Generate a structured JSON file containing the current index list, their associated health scores, and latency contribution metrics for external analysis"
+                  aria-label="Export Impact Report"
+                >
+                  {isExportingImpactReport ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-rose-600" />
+                      <span>Exporting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5 text-rose-600" />
+                      <span>Export Impact Report</span>
+                    </>
+                  )}
+                </button>
 
                 {/* Show Query Impact Toggle Button */}
                 <button
@@ -4038,11 +4452,39 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <div>
                       <strong className="text-zinc-900">Ranked Schema Index Directory:</strong>
                       <span className="text-zinc-600 ml-1">
-                        Ranked by <strong className="text-indigo-900">{indexRankSort === 'impact_desc' ? 'Index Impact Score (High to Low)' : indexRankSort === 'impact_asc' ? 'Index Impact Score (Lowest / Pruning Candidates)' : indexRankSort}</strong>
+                        Ranked by <strong className="text-indigo-900">{indexRankSort === 'impact_desc' ? 'Index Impact Score (High to Low)' : indexRankSort === 'impact_asc' ? 'Index Impact Score (Lowest / Pruning Candidates)' : indexRankSort === 'latency_desc' ? 'Query Latency Contribution (High to Low / Most Expensive)' : indexRankSort === 'latency_asc' ? 'Query Latency Contribution (Low to High)' : indexRankSort}</strong>
                       </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-500">
+                  <div className="flex items-center gap-3 font-mono text-[11px] text-zinc-500">
+                    {showIndexImpactHeatmap && (
+                      <div
+                        id="index-latency-heatmap-legend"
+                        data-testid="index-latency-heatmap-legend"
+                        className="flex flex-wrap items-center gap-2.5 bg-rose-50/90 border border-rose-200/90 px-2.5 py-1 rounded-md text-rose-950 font-sans shadow-2xs"
+                      >
+                        <span className="font-bold flex items-center gap-1 text-rose-800">
+                          <Flame className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
+                          <span>Heatmap:</span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-rose-600"></span>
+                          <span className="font-semibold text-rose-900">&gt;400ms (Critical)</span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+                          <span className="font-medium text-rose-800">250–400ms</span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                          <span className="font-medium text-amber-800">100–250ms</span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                          <span className="font-medium text-emerald-800">&lt;100ms (Optimal)</span>
+                        </span>
+                      </div>
+                    )}
                     <span>Showing <strong>{allRankedSchemaIndexes.length}</strong> indexes</span>
                   </div>
                 </div>
@@ -4058,6 +4500,14 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         <th className="py-2.5 px-3 font-bold w-14 text-center">Rank</th>
                         <th className="py-2.5 px-3 font-bold">Index Name &amp; Entity</th>
                         <th className="py-2.5 px-3 font-bold">Type &amp; Columns</th>
+                        {showIndexImpactHeatmap && (
+                          <th className="py-2.5 px-3 font-bold text-center bg-rose-50/80 border-x border-rose-200 text-rose-950">
+                            <div className="flex items-center justify-center gap-1">
+                              <Flame className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
+                              <span>Latency Contribution</span>
+                            </div>
+                          </th>
+                        )}
                         <th className="py-2.5 px-3 font-bold text-center">
                           <div className="flex items-center justify-center gap-1">
                             <Zap className="w-3 h-3 text-amber-500" />
@@ -4083,26 +4533,28 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <tbody className="divide-y divide-zinc-100">
                       {allRankedSchemaIndexes.length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="py-8 text-center text-zinc-500 font-sans">
+                          <td colSpan={showIndexImpactHeatmap ? 9 : 8} className="py-8 text-center text-zinc-500 font-sans">
                             No indexes matching &ldquo;{indexSearchQuery}&rdquo; found in the selected filter.
                           </td>
                         </tr>
                       ) : (
                         allRankedSchemaIndexes.map((item, idx) => {
-                          const { index, table, entityBadge, health, impact, isRemoved, isLocked } = item;
+                          const { index, table, entityBadge, health, impact, latencyHeat, isRemoved, isLocked } = item;
                           return (
                             <tr
                               key={`table-row-${table}-${index.name}`}
                               id={`index-row-${index.name}`}
                               data-testid={`index-row-${index.name}`}
-                              className={`hover:bg-zinc-50/80 transition-colors ${
-                                isRemoved
-                                  ? 'bg-zinc-50/60 opacity-60'
+                              className={`transition-colors ${
+                                showIndexImpactHeatmap
+                                  ? latencyHeat.rowBgClass
+                                  : isRemoved
+                                  ? 'bg-zinc-50/60 opacity-60 hover:bg-zinc-100/80'
                                   : impact.score >= 90
-                                  ? 'bg-emerald-50/20'
+                                  ? 'bg-emerald-50/20 hover:bg-emerald-50/40'
                                   : impact.score < 30
-                                  ? 'bg-rose-50/20'
-                                  : ''
+                                  ? 'bg-rose-50/20 hover:bg-rose-50/40'
+                                  : 'hover:bg-zinc-50/80'
                               }`}
                             >
                               {/* Rank Position */}
@@ -4129,12 +4581,28 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       LOCKED
                                     </span>
                                   )}
+                                  {showIndexImpactHeatmap && (
+                                    <span
+                                      id={`table-row-heatmap-badge-${index.name}`}
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-bold border shadow-2xs inline-flex items-center gap-0.5 ${latencyHeat.badgeClass}`}
+                                    >
+                                      <Flame className="w-2.5 h-2.5" />
+                                      <span>{latencyHeat.heatIntensity}</span>
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-[10px] text-zinc-500 font-sans mt-0.5 flex items-center gap-1">
                                   <Table className="w-2.5 h-2.5 text-indigo-500" />
                                   <span>{table}</span>
                                   {entityBadge && <span className="text-zinc-400">• {entityBadge}</span>}
                                 </div>
+                                {showIndexImpactHeatmap && (
+                                  <div className="text-[10px] text-zinc-600 font-sans mt-1 flex items-center gap-1 flex-wrap">
+                                    <span className="font-medium text-zinc-500">Workload latency:</span>
+                                    <strong className="text-rose-900 font-mono font-bold">{latencyHeat.queryLatencyContributionMs}ms</strong>
+                                    <span className="text-zinc-400">({latencyHeat.executionShare} share)</span>
+                                  </div>
+                                )}
                               </td>
 
                               {/* Type & Columns */}
@@ -4144,6 +4612,41 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                 </span>
                                 <span className="text-zinc-500 font-sans">({index.columns.join(', ')})</span>
                               </td>
+
+                              {/* Latency Contribution Column (when heatmap active) */}
+                              {showIndexImpactHeatmap && (
+                                <td className="py-3 px-3 text-center bg-rose-50/40 border-x border-rose-200/80">
+                                  <div className="flex flex-col items-center justify-center gap-0.5">
+                                    <div className="flex items-center gap-1">
+                                      <Flame className="w-3 h-3 text-rose-600" />
+                                      <span
+                                        id={`table-latency-value-${index.name}`}
+                                        data-testid={`table-latency-value-${index.name}`}
+                                        className="font-mono text-xs font-bold text-rose-950"
+                                      >
+                                        {latencyHeat.queryLatencyContributionMs} ms
+                                      </span>
+                                    </div>
+                                    <div className="text-[9px] text-zinc-500 font-sans">
+                                      {latencyHeat.executionShare} DB read time
+                                    </div>
+                                    <div className="w-20 bg-zinc-200 h-1.5 rounded-full overflow-hidden mt-0.5">
+                                      <div
+                                        className={`h-full ${
+                                          latencyHeat.heatTier === 'critical'
+                                            ? 'bg-rose-600'
+                                            : latencyHeat.heatTier === 'high'
+                                            ? 'bg-rose-400'
+                                            : latencyHeat.heatTier === 'moderate'
+                                            ? 'bg-amber-500'
+                                            : 'bg-emerald-500'
+                                        }`}
+                                        style={{ width: `${Math.min(100, Math.round((latencyHeat.queryLatencyContributionMs / 840) * 100))}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                </td>
+                              )}
 
                               {/* Query Improvement (+%) */}
                               <td className="py-3 px-3 text-center">
@@ -4458,21 +4961,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               const isRemoved = removedIndexes.includes(idx.name);
                               const isLocked = lockedIndexes.includes(idx.name);
                               const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
+                              const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
 
                               return (
                                 <div
                                   key={`idx-${tbl.name}-${i}`}
                                   onMouseEnter={() => setHoveredIndexWhatIf(idx.name)}
                                   onMouseLeave={() => setHoveredIndexWhatIf(null)}
-                                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all duration-300 bg-white ${
-                                     animatingBulkIndexName === idx.name
-                                       ? 'bg-emerald-50/90 border-emerald-500 ring-2 ring-emerald-400 scale-[1.01] shadow-md'
-                                       : 
-                                    isLocked
-                                      ? 'border-amber-300 ring-1 ring-amber-200/80 shadow-xs'
+                                  className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all duration-300 ${
+                                    showIndexImpactHeatmap
+                                      ? `${latencyHeat.cardBgClass} ${animatingBulkIndexName === idx.name ? 'scale-[1.01] ring-2 ring-emerald-400' : ''}`
+                                      : animatingBulkIndexName === idx.name
+                                      ? 'bg-emerald-50/90 border-emerald-500 ring-2 ring-emerald-400 scale-[1.01] shadow-md bg-white'
+                                      : isLocked
+                                      ? 'border-amber-300 ring-1 ring-amber-200/80 shadow-xs bg-white'
                                       : idx.active
-                                      ? 'border-emerald-300 shadow-2xs'
-                                      : 'border-zinc-200 opacity-80 hover:opacity-100'
+                                      ? 'border-emerald-300 shadow-2xs bg-white'
+                                      : 'border-zinc-200 opacity-80 hover:opacity-100 bg-white'
                                   }`}
                                 >
                                   {/* Interactive What-If Hover Tooltip */}
@@ -4698,6 +5203,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                             {impact.overallValueRating}
                                           </span>
                                         </span>
+
+                                        {/* Color-Coded Index Impact Heatmap Latency Badge */}
+                                        {showIndexImpactHeatmap && (
+                                          <span
+                                            id={`card-latency-heat-${idx.name}`}
+                                            data-testid={`card-latency-heat-${idx.name}`}
+                                            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 shadow-2xs transition-all ${latencyHeat.badgeClass}`}
+                                            title={`Total Query Latency Contribution: ${latencyHeat.queryLatencyContributionMs} ms (${latencyHeat.executionShare} of workload) • Query: ${latencyHeat.baselineQueryName}`}
+                                          >
+                                            <Flame className="w-3 h-3 shrink-0 text-rose-600 animate-pulse" />
+                                            <span>{latencyHeat.queryLatencyContributionMs}ms Latency</span>
+                                            <span className="font-sans font-extrabold text-[9px] uppercase px-1 rounded bg-black/5">
+                                              {latencyHeat.heatIntensity}
+                                            </span>
+                                          </span>
+                                        )}
                                       </div>
 
                                       <div className="flex items-center gap-1.5">
@@ -6073,6 +6594,30 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             )}
           </button>
 
+          {/* Export Impact Report Primary Action in Header */}
+          <button
+            type="button"
+            id="btn-export-impact-report"
+            data-testid="btn-export-impact-report"
+            onClick={handleExportImpactReport}
+            disabled={isExportingImpactReport}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-rose-600 via-pink-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 disabled:opacity-60 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+            title="Generate a structured JSON file containing the current index list, their associated health scores, and latency contribution metrics for external analysis"
+            aria-label="Export Impact Report"
+          >
+            {isExportingImpactReport ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-rose-200" />
+                <span>Generating Report...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5 text-rose-100" />
+                <span>Export Impact Report</span>
+              </>
+            )}
+          </button>
+
           <button
             type="button"
             id="btn-bulk-import-indices"
@@ -6086,6 +6631,19 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           >
             <UploadCloud className="w-3.5 h-3.5 text-amber-300" />
             <span>Bulk Import Indices</span>
+          </button>
+
+          {/* Optimization Lifecycle Log Header Action */}
+          <button
+            type="button"
+            id="btn-view-optimization-lifecycle-log"
+            data-testid="btn-view-optimization-lifecycle-log"
+            onClick={() => setShowLifecycleLogModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-700 via-teal-700 to-indigo-700 hover:from-emerald-600 hover:to-indigo-600 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+            title="Open Optimization Lifecycle Log capturing automatic index creation, deletion, and consolidation merging"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+            <span>Optimization Lifecycle</span>
           </button>
 
           <button
@@ -8196,6 +8754,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     Eliminates redundant single-column lookup overhead, reducing write lock contention by 42% and saving 2.1 MB storage.
                   </p>
                 </div>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    {consolidatedIndexes.includes('idx_transactions_email_missing') ? '✓ Consolidated' : 'Status: Overlapping single-column active'}
+                  </span>
+                  <button
+                    type="button"
+                    id="btn-consolidate-cluster-1"
+                    data-testid="btn-consolidate-cluster-1"
+                    onClick={() => handleConsolidateIndex('idx_transactions_email_missing')}
+                    disabled={consolidatedIndexes.includes('idx_transactions_email_missing')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-emerald-100 disabled:text-emerald-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>{consolidatedIndexes.includes('idx_transactions_email_missing') ? '✓ Cluster Consolidated' : 'Consolidate Cluster #1'}</span>
+                  </button>
+                </div>
               </div>
 
               {/* Cluster 2 */}
@@ -8221,10 +8795,40 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     Co-locates category buckets with sorted amount b-trees, eliminating secondary sorting passes for top-k queries.
                   </p>
                 </div>
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    {consolidatedIndexes.includes('idx_transactions_amount_missing') ? '✓ Consolidated' : 'Status: Overlapping single-column active'}
+                  </span>
+                  <button
+                    type="button"
+                    id="btn-consolidate-cluster-2"
+                    data-testid="btn-consolidate-cluster-2"
+                    onClick={() => handleConsolidateIndex('idx_transactions_amount_missing')}
+                    disabled={consolidatedIndexes.includes('idx_transactions_amount_missing')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-emerald-100 disabled:text-emerald-800 text-white rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>{consolidatedIndexes.includes('idx_transactions_amount_missing') ? '✓ Cluster Consolidated' : 'Consolidate Cluster #2'}</span>
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div className="pt-2 flex justify-end">
+            <div className="pt-3 border-t border-zinc-200 flex items-center justify-between">
+              <button
+                type="button"
+                id="btn-consolidate-all-clusters"
+                data-testid="btn-consolidate-all-clusters"
+                onClick={() => {
+                  handleConsolidateIndex('idx_transactions_email_missing');
+                  handleConsolidateIndex('idx_transactions_amount_missing');
+                }}
+                disabled={consolidatedIndexes.includes('idx_transactions_email_missing') && consolidatedIndexes.includes('idx_transactions_amount_missing')}
+                className="px-3.5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold rounded-lg text-xs cursor-pointer shadow-xs transition-colors flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Consolidate All Overlapping Clusters</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setShowClusterAnalysisModal(false)}
@@ -8876,6 +9480,35 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
               >
                 Close Diff Viewer
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Optimization Lifecycle Log Modal */}
+      {showLifecycleLogModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col text-zinc-900 relative">
+            <div className="p-4 bg-zinc-900 text-white flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h3 className="font-bold text-sm">Optimization Lifecycle Telemetry</h3>
+                  <p className="text-[11px] text-zinc-400">
+                    Capturing autonomous index creations, deletions, and consolidation merging from Auto-Healing &amp; Consolidation features
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLifecycleLogModal(false)}
+                className="p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[calc(90vh-70px)]">
+              <SerializationErrorLogPanel />
             </div>
           </div>
         </div>
