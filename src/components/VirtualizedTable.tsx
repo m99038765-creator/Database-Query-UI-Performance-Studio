@@ -291,6 +291,25 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     return total / displayRecords.length;
   }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
 
+  // Query execution cost bounds for relative heatmap shading across displayed records
+  const { minRowCost, maxRowCost } = useMemo(() => {
+    if (displayRecords.length === 0) return { minRowCost: 10, maxRowCost: 50 };
+    let min = Infinity;
+    let max = -Infinity;
+    for (const r of displayRecords) {
+      const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
+      const unoptMult = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
+      const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+      const cost = safeFlags.batchEagerLoading ? (itemCnt * 4.0 + 10.0) : (20.0 + (itemCnt * unoptMult) + idxPenalty);
+      if (cost < min) min = cost;
+      if (cost > max) max = cost;
+    }
+    return {
+      minRowCost: min === Infinity ? 10 : min,
+      maxRowCost: max === -Infinity ? 50 : Math.max(max, min + 1)
+    };
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+
   const handleExportHeatmapCsv = () => {
     const csvRows: string[] = [];
     csvRows.push('OrderNumber,CreatedAt,CustomerName,CustomerTier,Category,Region,Status,AmountUSD,ItemCount,FetchLatencyMs,SeverityImpact,BatchEagerLoading,BTreeIndexing');
@@ -883,16 +902,17 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </button>
           )}
 
-          {/* Main Header Toggle Switch for Real-Time Latency Heatmap Overlay */}
+          {/* Main Header Toggle Switch for Real-Time Execution Cost Heatmap Overlay */}
           <label
             id="main-header-toggle-latency-heatmap"
+            data-testid="toggle-execution-cost-heatmap"
             htmlFor="main-header-toggle-heatmap-input"
             className={`inline-flex items-center gap-2 px-3 py-1 rounded-md text-xs font-semibold cursor-pointer transition-all border shadow-2xs select-none ${
               showLatencyHeatmap
                 ? 'bg-rose-50 border-rose-300 text-rose-900 ring-1 ring-rose-400/40'
                 : 'bg-zinc-100 hover:bg-zinc-200/70 border-zinc-300 text-zinc-700'
             }`}
-            title="Enable or disable the real-time latency heatmap overlay across table rows"
+            title="Enable or disable the real-time query execution cost heatmap overlay across table rows"
           >
             <input
               id="main-header-toggle-heatmap-input"
@@ -903,7 +923,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               className="w-3.5 h-3.5 rounded border-rose-300 text-rose-600 focus:ring-rose-500/30 accent-rose-600 cursor-pointer"
             />
             <Flame className={`w-3.5 h-3.5 ${showLatencyHeatmap ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
-            <span>Heatmap Overlay</span>
+            <span>Cost Heatmap</span>
           </label>
 
           {/* Main Header Latency Filter Slider Control */}
@@ -1864,7 +1884,24 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         <div className="col-span-2">Category</div>
         <div className="col-span-1">Status</div>
         <div className="col-span-2 text-right">Amount</div>
-        <div className="col-span-1 text-center">Items</div>
+        <div className="col-span-1 text-center flex items-center justify-center gap-1">
+          <span>Items</span>
+          <button
+            type="button"
+            id="btn-header-cost-heatmap-toggle"
+            data-testid="btn-header-cost-heatmap-toggle"
+            onClick={() => setShowLatencyHeatmap(!showLatencyHeatmap)}
+            className={`p-0.5 rounded transition-colors cursor-pointer ${
+              showLatencyHeatmap
+                ? 'text-rose-600 hover:bg-rose-100/50'
+                : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200'
+            }`}
+            title={`Execution Cost Heatmap: ${showLatencyHeatmap ? 'Active (Click to hide)' : 'Inactive (Click to show)'}`}
+            aria-label="Toggle Execution Cost Heatmap"
+          >
+            <Flame className={`w-3.5 h-3.5 ${showLatencyHeatmap ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+          </button>
+        </div>
       </div>
 
       {/* Review Selected Rows Banner when 'Show Selected Only' is Active */}
@@ -1955,25 +1992,35 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 let heatmapRowBg = '';
                 let heatmapRowStyle: React.CSSProperties = { minHeight: `${ROW_HEIGHT}px` };
                 let heatmapBadgeClass = '';
+                let isHighCost = false;
+                let isModerateCost = false;
+                let relativeCostRatio = 0;
+
                 if (showLatencyHeatmap) {
-                  const clampedLatency = Math.min(Math.max(nPlusOneLatencyMs, 0), 250);
-                  const intensityRatio = clampedLatency / 250.0;
-                  if (isStatisticalOutlier || nPlusOneLatencyMs > 150) {
+                  const range = Math.max(maxRowCost - minRowCost, 1);
+                  relativeCostRatio = Math.max(0, Math.min(1, (nPlusOneLatencyMs - minRowCost) / range));
+                  isHighCost = isStatisticalOutlier || nPlusOneLatencyMs > 150 || (relativeCostRatio >= 0.75 && nPlusOneLatencyMs > 40);
+                  isModerateCost = !isHighCost && (nPlusOneLatencyMs >= 50 || relativeCostRatio >= 0.4);
+
+                  if (isHighCost) {
+                    const intensity = 0.12 + relativeCostRatio * 0.38;
                     heatmapRowStyle.backgroundColor = isSelected
-                      ? `rgba(225, 29, 72, ${0.22 + intensityRatio * 0.38})`
-                      : `rgba(225, 29, 72, ${0.1 + intensityRatio * 0.35})`;
-                    heatmapRowBg = isSelected ? 'border-rose-400 ring-2 ring-rose-500 shadow-md' : 'border-rose-300 ring-1 ring-rose-400/50 hover:bg-rose-100/40';
+                      ? `rgba(225, 29, 72, ${intensity + 0.12})`
+                      : `rgba(225, 29, 72, ${intensity})`;
+                    heatmapRowBg = isSelected ? 'border-rose-400 ring-2 ring-rose-500 shadow-md' : 'border-rose-300 ring-1 ring-rose-400/50 hover:bg-rose-100/50';
                     heatmapBadgeClass = 'bg-rose-600 text-white font-bold animate-pulse shadow-xs';
-                  } else if (nPlusOneLatencyMs >= 50) {
+                  } else if (isModerateCost) {
+                    const intensity = 0.08 + relativeCostRatio * 0.28;
                     heatmapRowStyle.backgroundColor = isSelected
-                      ? `rgba(217, 119, 6, ${0.18 + intensityRatio * 0.28})`
-                      : `rgba(217, 119, 6, ${0.06 + intensityRatio * 0.26})`;
+                      ? `rgba(217, 119, 6, ${intensity + 0.1})`
+                      : `rgba(217, 119, 6, ${intensity})`;
                     heatmapRowBg = isSelected ? 'border-amber-300' : 'border-amber-200 hover:bg-amber-100/40';
                     heatmapBadgeClass = 'bg-amber-500 text-white font-semibold';
                   } else {
+                    const intensity = 0.04 + (1 - relativeCostRatio) * 0.18;
                     heatmapRowStyle.backgroundColor = isSelected
-                      ? `rgba(16, 185, 129, ${0.15 + (1 - intensityRatio) * 0.25})`
-                      : `rgba(16, 185, 129, ${0.03 + (1 - intensityRatio) * 0.22})`;
+                      ? `rgba(16, 185, 129, ${intensity + 0.1})`
+                      : `rgba(16, 185, 129, ${intensity})`;
                     heatmapRowBg = isSelected ? 'border-emerald-200' : 'border-emerald-100 hover:bg-emerald-50/40';
                     heatmapBadgeClass = 'bg-emerald-600 text-white font-medium';
                   }
@@ -1995,7 +2042,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       onClick={() => toggleExpand(rec.id)}
                       title={
                         showLatencyHeatmap
-                          ? `Database Fetch Latency: ${nPlusOneLatencyMs.toFixed(1)}ms (Z-score: ${zScoreVal.toFixed(2)}σ)`
+                          ? `Database Fetch Latency: ${nPlusOneLatencyMs.toFixed(1)}ms | Relative Query Cost: ${Math.round(relativeCostRatio * 100)}% (Z-score: ${zScoreVal.toFixed(2)}σ)`
                           : undefined
                       }
                       className={`grid grid-cols-12 px-4 py-3 items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
@@ -2006,6 +2053,20 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                         <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg shadow-xl text-[11px] font-mono z-30 pointer-events-none border border-zinc-700 animate-fadeIn">
                           <Activity className="w-3.5 h-3.5 text-rose-400 animate-pulse shrink-0" />
                           <span>Fetch Latency: <strong className="text-rose-300 font-bold">{nPlusOneLatencyMs.toFixed(1)}ms</strong></span>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            isHighCost
+                              ? 'bg-rose-950 text-rose-300 border border-rose-500'
+                              : isModerateCost
+                              ? 'bg-amber-950 text-amber-300 border border-amber-500'
+                              : 'bg-emerald-950 text-emerald-300 border border-emerald-500'
+                          }`}>
+                            Cost: {Math.round(relativeCostRatio * 100)}%
+                          </span>
+                          {isHighCost && (
+                            <span className="bg-rose-600 text-white px-1.5 py-0.5 rounded font-bold text-[9px] uppercase tracking-wider">
+                              Expensive Record
+                            </span>
+                          )}
                           {isStatisticalOutlier && (
                             <span className="bg-rose-950 text-rose-300 border border-rose-500 px-1.5 py-0.5 rounded font-bold text-[10px]">
                               🚨 Outlier (Z = {zScoreVal > 0 ? `+${zScoreVal.toFixed(2)}` : zScoreVal.toFixed(2)}σ)

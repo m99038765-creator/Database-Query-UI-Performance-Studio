@@ -85,6 +85,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showBulkImportModal, setShowBulkImportModal] = useState<boolean>(false);
   const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
   const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
+  const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
+  const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name'>('impact_desc');
   const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
   const [importedCustomIndices, setImportedCustomIndices] = useState<Array<{
     name: string;
@@ -1906,6 +1908,114 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     };
   };
 
+  // Calculates an 'Index Impact Score' using a weighted average of query performance improvement and write-latency penalty
+  const calculateIndexImpactScore = (
+    idxName: string,
+    active: boolean,
+    tableName: string,
+    isRemoved: boolean,
+    isLocked: boolean
+  ) => {
+    if (isRemoved) {
+      return {
+        score: 12,
+        queryImprovement: 0,
+        writePenalty: 0,
+        readBenefitMultiplier: '0x (Pruned)',
+        overallValueRating: 'Negative / Prune' as const,
+        badgeClass: 'bg-zinc-100 text-zinc-500 border-zinc-200 line-through',
+        ratingColor: 'text-zinc-500'
+      };
+    }
+
+    const lower = idxName.toLowerCase();
+    let queryImprovement = 75.0;
+    let writePenalty = 4.0;
+    let readBenefitMultiplier = '45x Faster';
+
+    if (lower.includes('primary') || lower.includes('pk_') || idxName.includes('PRIMARY KEY')) {
+      queryImprovement = 99.9;
+      writePenalty = 1.8;
+      readBenefitMultiplier = '350x Faster (O(1))';
+    } else if (lower.includes('orders_status_cat')) {
+      queryImprovement = active ? 99.6 : 14.0;
+      writePenalty = 4.2;
+      readBenefitMultiplier = active ? '280x Faster' : '1x (Fallback)';
+    } else if (lower.includes('line_items_tx')) {
+      queryImprovement = active ? 99.6 : 12.0;
+      writePenalty = 3.8;
+      readBenefitMultiplier = active ? '253x Faster' : '1x (N+1 Storm)';
+    } else if (lower.includes('email_status')) {
+      queryImprovement = active ? 99.5 : 15.0;
+      writePenalty = 4.5;
+      readBenefitMultiplier = active ? '240x Faster' : '1x (Missing)';
+    } else if (lower.includes('category_amount')) {
+      queryImprovement = active ? 99.1 : 15.0;
+      writePenalty = 4.8;
+      readBenefitMultiplier = active ? '210x Faster' : '1x (Missing)';
+    } else if (lower.includes('tx_price') || lower.includes('tier_created')) {
+      queryImprovement = active ? 98.4 : 10.0;
+      writePenalty = 4.9;
+      readBenefitMultiplier = active ? '180x Faster' : '1x (Unindexed)';
+    } else if (lower.includes('customers_email')) {
+      queryImprovement = 96.5;
+      writePenalty = 2.8;
+      readBenefitMultiplier = '95x Faster';
+    } else if (idxName === 'idx_transactions_date') {
+      queryImprovement = 0.0;
+      writePenalty = 14.0;
+      readBenefitMultiplier = '1.0x (0 Hits, High Overhead)';
+    } else if (lower.includes('email_missing') || lower.includes('amount_missing')) {
+      queryImprovement = active ? 86.0 : 15.0;
+      writePenalty = 6.2;
+      readBenefitMultiplier = active ? '65x Faster' : '1x';
+    } else {
+      queryImprovement = active ? 88.0 : 18.0;
+      writePenalty = 4.5;
+      readBenefitMultiplier = active ? '75x Faster' : '1x';
+    }
+
+    // Weighted average: 75% query performance improvement benefit, 25% write latency efficiency (100 - writePenalty * 4)
+    const writeEfficiency = Math.max(0, 100 - writePenalty * 4);
+    const score = Math.max(0, Math.min(100, Math.round(queryImprovement * 0.75 + writeEfficiency * 0.25)));
+
+    let overallValueRating: 'Exceptional' | 'High Value' | 'Moderate' | 'Marginal' | 'Negative / Prune' = 'Moderate';
+    let badgeClass = 'bg-indigo-100 text-indigo-800 border-indigo-300';
+    let ratingColor = 'text-indigo-700';
+
+    if (score >= 90) {
+      overallValueRating = 'Exceptional';
+      badgeClass = 'bg-emerald-100 text-emerald-900 border-emerald-300 font-bold';
+      ratingColor = 'text-emerald-700';
+    } else if (score >= 75) {
+      overallValueRating = 'High Value';
+      badgeClass = 'bg-teal-100 text-teal-900 border-teal-300 font-bold';
+      ratingColor = 'text-teal-700';
+    } else if (score >= 50) {
+      overallValueRating = 'Moderate';
+      badgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
+      ratingColor = 'text-amber-700';
+    } else if (score >= 30) {
+      overallValueRating = 'Marginal';
+      badgeClass = 'bg-orange-100 text-orange-900 border-orange-300';
+      ratingColor = 'text-orange-700';
+    } else {
+      overallValueRating = 'Negative / Prune';
+      badgeClass = 'bg-rose-100 text-rose-900 border-rose-300 font-bold';
+      ratingColor = 'text-rose-700';
+    }
+
+    return {
+      score,
+      queryImprovement,
+      writePenalty,
+      readBenefitMultiplier,
+      overallValueRating,
+      badgeClass,
+      ratingColor
+    };
+  };
+
   // Bulk Optimization Calculation Engine:
   // Evaluates every listed index across all tables, calculates the optimal state vs current state,
   // and projects the cumulative schema health, query throughput, and write overhead impacts.
@@ -2198,6 +2308,66 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       healthGain
     };
   }, [tables, removedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, lockedIndexes]);
+
+  // Aggregated list of all schema indexes ranked by Index Impact Score or user criteria
+  const allRankedSchemaIndexes = useMemo(() => {
+    const list: Array<{
+      table: string;
+      entityBadge?: string;
+      index: typeof tables[0]['indexes'][0];
+      health: ReturnType<typeof getIndexHealthScore>;
+      impact: ReturnType<typeof calculateIndexImpactScore>;
+      isRemoved: boolean;
+      isLocked: boolean;
+    }> = [];
+
+    tables
+      .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
+      .forEach((tbl) => {
+        const queryLower = indexSearchQuery.trim().toLowerCase();
+        tbl.indexes.forEach((idx) => {
+          if (queryLower) {
+            const matchesName = idx.name.toLowerCase().includes(queryLower);
+            const matchesTargetTable =
+              tbl.name.toLowerCase().includes(queryLower) ||
+              (idx.targetTable && idx.targetTable.toLowerCase().includes(queryLower)) ||
+              (tbl.entityName && tbl.entityName.toLowerCase().includes(queryLower)) ||
+              (idx.targetEntity && idx.targetEntity.toLowerCase().includes(queryLower));
+            const matchesColumns = idx.columns.some((c) => c.toLowerCase().includes(queryLower));
+            const matchesType = idx.type.toLowerCase().includes(queryLower);
+            if (!matchesName && !matchesTargetTable && !matchesColumns && !matchesType) return;
+          }
+
+          const isRemoved = removedIndexes.includes(idx.name);
+          const isLocked = lockedIndexes.includes(idx.name);
+          const health = getIndexHealthScore(idx.name, idx.active, tbl.name);
+          const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
+
+          list.push({
+            table: tbl.name,
+            entityBadge: tbl.entityBadge,
+            index: idx,
+            health,
+            impact,
+            isRemoved,
+            isLocked
+          });
+        });
+      });
+
+    // Sort according to indexRankSort
+    list.sort((a, b) => {
+      if (indexRankSort === 'impact_desc') return b.impact.score - a.impact.score;
+      if (indexRankSort === 'impact_asc') return a.impact.score - b.impact.score;
+      if (indexRankSort === 'query_desc') return b.impact.queryImprovement - a.impact.queryImprovement;
+      if (indexRankSort === 'write_asc') return a.impact.writePenalty - b.impact.writePenalty;
+      if (indexRankSort === 'health_desc') return b.health.score - a.health.score;
+      if (indexRankSort === 'name') return a.index.name.localeCompare(b.index.name);
+      return b.impact.score - a.impact.score;
+    });
+
+    return list;
+  }, [tables, indexCategoryFilter, indexSearchQuery, removedIndexes, lockedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, indexRankSort]);
 
   // Single button handler to apply all calculated optimal improvements at once with sequential transition animation
   const handleApplyBulkOptimize = () => {
@@ -3467,6 +3637,61 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   <span>Collapse All</span>
                 </button>
 
+                {/* Index Ranking & Sorting Selector */}
+                <div className="flex items-center gap-1.5 bg-white border border-zinc-300 px-2.5 py-1 rounded-lg text-xs shadow-2xs">
+                  <Sliders className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span className="font-semibold text-zinc-700 text-[11px] shrink-0">Rank by:</span>
+                  <select
+                    id="select-index-rank-sort"
+                    data-testid="select-index-rank-sort"
+                    value={indexRankSort}
+                    onChange={(e) => setIndexRankSort(e.target.value as any)}
+                    className="bg-transparent font-bold text-indigo-900 text-xs focus:outline-none cursor-pointer"
+                    title="Rank indexes by overall value (Index Impact Score), query improvement, write penalty, or health"
+                  >
+                    <option value="impact_desc">Index Impact Score (High ➔ Low)</option>
+                    <option value="impact_asc">Index Impact Score (Low ➔ High / Pruning)</option>
+                    <option value="query_desc">Query Speedup (+%)</option>
+                    <option value="write_asc">Lowest Write Penalty (-%)</option>
+                    <option value="health_desc">Health Score</option>
+                    <option value="name">Alphabetical</option>
+                  </select>
+                </div>
+
+                {/* View Mode Toggle: Table View vs Grouped Cards */}
+                <div className="inline-flex rounded-lg border border-zinc-300 p-0.5 bg-zinc-100 shadow-2xs">
+                  <button
+                    type="button"
+                    id="btn-index-view-table"
+                    data-testid="btn-index-view-table"
+                    onClick={() => setIndexListLayout('table')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
+                      indexListLayout === 'table'
+                        ? 'bg-white text-indigo-900 shadow-xs font-bold'
+                        : 'text-zinc-600 hover:text-zinc-900'
+                    }`}
+                    title="Switch to Index List Table view featuring the 'Index Impact Score' column"
+                  >
+                    <Table className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Table View</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-index-view-cards"
+                    data-testid="btn-index-view-cards"
+                    onClick={() => setIndexListLayout('cards')}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
+                      indexListLayout === 'cards'
+                        ? 'bg-white text-indigo-900 shadow-xs font-bold'
+                        : 'text-zinc-600 hover:text-zinc-900'
+                    }`}
+                    title="Switch to Entity Grouped Cards view"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Cards View</span>
+                  </button>
+                </div>
+
                 {/* Show Query Impact Toggle Button */}
                 <button
                   type="button"
@@ -3800,8 +4025,236 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               })}
             </div>
 
-            {/* Collapsible Categories Grouped by Entity */}
-            <div className="space-y-3.5">
+            {/* Index List Views: Ranked Index Table with 'Index Impact Score' Column vs Collapsible Entity Cards */}
+            {indexListLayout === 'table' ? (
+              <div
+                id="indexes-ranked-table-container"
+                data-testid="indexes-ranked-table-container"
+                className="bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-2xs"
+              >
+                <div className="p-3 bg-gradient-to-r from-indigo-50/80 via-white to-emerald-50/80 border-b border-zinc-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Target className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <div>
+                      <strong className="text-zinc-900">Ranked Schema Index Directory:</strong>
+                      <span className="text-zinc-600 ml-1">
+                        Ranked by <strong className="text-indigo-900">{indexRankSort === 'impact_desc' ? 'Index Impact Score (High to Low)' : indexRankSort === 'impact_asc' ? 'Index Impact Score (Lowest / Pruning Candidates)' : indexRankSort}</strong>
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-500">
+                    <span>Showing <strong>{allRankedSchemaIndexes.length}</strong> indexes</span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table
+                    id="indexes-impact-table"
+                    data-testid="indexes-impact-table"
+                    className="w-full text-left text-xs font-mono border-collapse"
+                  >
+                    <thead className="bg-zinc-100/90 text-zinc-700 uppercase tracking-wider text-[10px] border-b border-zinc-200 select-none">
+                      <tr>
+                        <th className="py-2.5 px-3 font-bold w-14 text-center">Rank</th>
+                        <th className="py-2.5 px-3 font-bold">Index Name &amp; Entity</th>
+                        <th className="py-2.5 px-3 font-bold">Type &amp; Columns</th>
+                        <th className="py-2.5 px-3 font-bold text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <Zap className="w-3 h-3 text-amber-500" />
+                            <span>Query Gain</span>
+                          </div>
+                        </th>
+                        <th className="py-2.5 px-3 font-bold text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-rose-500" />
+                            <span>Write Penalty</span>
+                          </div>
+                        </th>
+                        <th className="py-2.5 px-4 font-bold text-center bg-indigo-50/70 border-x border-indigo-200 text-indigo-950">
+                          <div className="flex items-center justify-center gap-1.5 font-bold">
+                            <Target className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Index Impact Score</span>
+                          </div>
+                        </th>
+                        <th className="py-2.5 px-3 font-bold text-center">Health</th>
+                        <th className="py-2.5 px-3 font-bold text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                      {allRankedSchemaIndexes.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-8 text-center text-zinc-500 font-sans">
+                            No indexes matching &ldquo;{indexSearchQuery}&rdquo; found in the selected filter.
+                          </td>
+                        </tr>
+                      ) : (
+                        allRankedSchemaIndexes.map((item, idx) => {
+                          const { index, table, entityBadge, health, impact, isRemoved, isLocked } = item;
+                          return (
+                            <tr
+                              key={`table-row-${table}-${index.name}`}
+                              id={`index-row-${index.name}`}
+                              data-testid={`index-row-${index.name}`}
+                              className={`hover:bg-zinc-50/80 transition-colors ${
+                                isRemoved
+                                  ? 'bg-zinc-50/60 opacity-60'
+                                  : impact.score >= 90
+                                  ? 'bg-emerald-50/20'
+                                  : impact.score < 30
+                                  ? 'bg-rose-50/20'
+                                  : ''
+                              }`}
+                            >
+                              {/* Rank Position */}
+                              <td className="py-3 px-3 text-center font-bold text-zinc-500">
+                                <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold ${
+                                  idx === 0
+                                    ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-300'
+                                    : idx === 1
+                                    ? 'bg-zinc-200 text-zinc-800'
+                                    : idx === 2
+                                    ? 'bg-amber-50 text-amber-900'
+                                    : 'bg-zinc-100 text-zinc-700'
+                                }`}>
+                                  #{idx + 1}
+                                </span>
+                              </td>
+
+                              {/* Index Name & Entity */}
+                              <td className="py-3 px-3">
+                                <div className="font-bold text-zinc-900 flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-mono text-indigo-950 font-bold">{index.name}</span>
+                                  {isLocked && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                      LOCKED
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-zinc-500 font-sans mt-0.5 flex items-center gap-1">
+                                  <Table className="w-2.5 h-2.5 text-indigo-500" />
+                                  <span>{table}</span>
+                                  {entityBadge && <span className="text-zinc-400">• {entityBadge}</span>}
+                                </div>
+                              </td>
+
+                              {/* Type & Columns */}
+                              <td className="py-3 px-3 text-zinc-600 text-[11px]">
+                                <span className="px-1.5 py-0.5 rounded bg-zinc-100 text-zinc-700 font-bold mr-1 border border-zinc-200 text-[10px]">
+                                  {index.type}
+                                </span>
+                                <span className="text-zinc-500 font-sans">({index.columns.join(', ')})</span>
+                              </td>
+
+                              {/* Query Improvement (+%) */}
+                              <td className="py-3 px-3 text-center">
+                                {isRemoved ? (
+                                  <span className="text-zinc-400 text-[11px] line-through">0%</span>
+                                ) : (
+                                  <div>
+                                    <span className="font-bold text-emerald-700 text-[11px]">
+                                      +{impact.queryImprovement.toFixed(1)}%
+                                    </span>
+                                    <div className="text-[9px] text-zinc-500 font-sans">
+                                      {impact.readBenefitMultiplier}
+                                    </div>
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* Write Latency Penalty (-%) */}
+                              <td className="py-3 px-3 text-center">
+                                {isRemoved ? (
+                                  <span className="text-emerald-700 text-[10px] font-bold">
+                                    +14% Overhead Saved
+                                  </span>
+                                ) : (
+                                  <div>
+                                    <span className="font-bold text-rose-600 text-[11px]">
+                                      -{impact.writePenalty.toFixed(1)}%
+                                    </span>
+                                    <div className="text-[9px] text-zinc-500 font-sans">
+                                      Write overhead
+                                    </div>
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* NEW COLUMN: Index Impact Score (Overall Value) */}
+                              <td className="py-3 px-4 text-center bg-indigo-50/40 border-x border-indigo-100">
+                                <div className="flex flex-col items-center justify-center gap-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span
+                                      id={`table-impact-score-${index.name}`}
+                                      data-testid={`table-impact-score-${index.name}`}
+                                      className={`px-2 py-0.5 rounded-full text-xs font-bold border shadow-2xs ${impact.badgeClass}`}
+                                      title={`Index Impact Score: ${impact.score}/100 • Weighted avg: 75% Query Gain (+${impact.queryImprovement.toFixed(1)}%) & 25% Write Efficiency (-${impact.writePenalty.toFixed(1)}% overhead)`}
+                                    >
+                                      {impact.score} / 100
+                                    </span>
+                                    <span className={`font-sans font-extrabold text-[10px] uppercase ${impact.ratingColor}`}>
+                                      {impact.overallValueRating}
+                                    </span>
+                                  </div>
+                                  <div className="w-24 bg-zinc-200 h-1.5 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full transition-all ${
+                                        impact.score >= 90
+                                          ? 'bg-emerald-600'
+                                          : impact.score >= 75
+                                          ? 'bg-teal-500'
+                                          : impact.score >= 50
+                                          ? 'bg-amber-500'
+                                          : 'bg-rose-500'
+                                      }`}
+                                      style={{ width: `${impact.score}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Health Score */}
+                              <td className="py-3 px-3 text-center">
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${health.badgeClass}`}>
+                                  {health.score}/100
+                                </span>
+                              </td>
+
+                              {/* Actions & Status */}
+                              <td className="py-3 px-3 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleLockIndex(index.name)}
+                                    className={`p-1 rounded cursor-pointer transition-colors ${
+                                      isLocked
+                                        ? 'text-amber-700 bg-amber-100 hover:bg-amber-200'
+                                        : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100'
+                                    }`}
+                                    title={isLocked ? 'Unlock index' : 'Lock index'}
+                                  >
+                                    {isLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                                  </button>
+                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                                    isRemoved
+                                      ? 'bg-zinc-200 text-zinc-600 line-through'
+                                      : index.active
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-zinc-200 text-zinc-600'
+                                  }`}>
+                                    {isRemoved ? 'REMOVED' : index.active ? 'ACTIVE' : 'INACTIVE'}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3.5">
               {tables
                 .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
                 .map((tbl) => {
@@ -4004,6 +4457,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               const health = getIndexHealthScore(idx.name, idx.active, tbl.name);
                               const isRemoved = removedIndexes.includes(idx.name);
                               const isLocked = lockedIndexes.includes(idx.name);
+                              const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
 
                               return (
                                 <div
@@ -4226,6 +4680,22 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                           <span>Health: {health.score}/100</span>
                                           <span className="font-sans font-extrabold text-[9px] uppercase px-1 rounded bg-black/5">
                                             {health.rating}
+                                          </span>
+                                        </span>
+
+                                        {/* Color-Coded Index Impact Score Badge (0-100) */}
+                                        <span
+                                          id={`card-impact-score-${idx.name}`}
+                                          data-testid={`card-impact-score-${idx.name}`}
+                                          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 shadow-2xs transition-all ${
+                                            isRemoved ? 'bg-zinc-100 text-zinc-400 border-zinc-200 line-through' : impact.badgeClass
+                                          }`}
+                                          title={`Index Impact Score: ${impact.score}/100 • Weighted avg: 75% Query Gain (+${impact.queryImprovement.toFixed(1)}%) & 25% Write Efficiency (-${impact.writePenalty.toFixed(1)}% overhead)`}
+                                        >
+                                          <Target className="w-3 h-3 shrink-0 text-indigo-600" />
+                                          <span>Impact: {impact.score}/100</span>
+                                          <span className={`font-sans font-extrabold text-[9px] uppercase px-1 rounded bg-black/5 ${impact.ratingColor}`}>
+                                            {impact.overallValueRating}
                                           </span>
                                         </span>
                                       </div>
@@ -4629,7 +5099,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     </button>
                   </div>
                 )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Relational Foreign Key Graph */}
