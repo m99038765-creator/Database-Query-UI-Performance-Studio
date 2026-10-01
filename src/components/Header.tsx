@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square, Camera } from 'lucide-react';
+import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square, Camera, Flame } from 'lucide-react';
 import { OptimizationFlags, DataTapeEntry } from '../types';
 
 interface HeaderProps {
@@ -25,6 +25,8 @@ interface HeaderProps {
   onSelectTapeEntry?: (entry: DataTapeEntry) => void;
   onExportDiagnosticPackage?: () => void;
   onQuickSnapshot?: () => void;
+  showQueryIntensityOverlay?: boolean;
+  onToggleQueryIntensityOverlay?: (show: boolean) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -55,7 +57,9 @@ export const Header: React.FC<HeaderProps> = ({
   dataTapeEntries = [],
   onSelectTapeEntry,
   onExportDiagnosticPackage,
-  onQuickSnapshot
+  onQuickSnapshot,
+  showQueryIntensityOverlay = false,
+  onToggleQueryIntensityOverlay
 }) => {
   const currentFlags = flags || {
     batchEagerLoading: true,
@@ -218,6 +222,24 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="font-mono text-[10px] bg-amber-200 text-amber-950 px-1.5 py-0.2 rounded font-bold">
               {recentOperations.length} Ops
             </span>
+          </button>
+
+          {/* Query Intensity Overlay Toggle */}
+          <button
+            type="button"
+            id="btn-toggle-query-intensity"
+            data-testid="btn-toggle-query-intensity"
+            onClick={() => onToggleQueryIntensityOverlay?.(!showQueryIntensityOverlay)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border ${
+              showQueryIntensityOverlay
+                ? 'bg-gradient-to-r from-rose-600 to-amber-600 text-white border-rose-700 shadow-md animate-pulse'
+                : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-300'
+            }`}
+            title="Toggle global Query Intensity heatmap overlay across the application based on execution plan cost metrics"
+            aria-pressed={showQueryIntensityOverlay}
+          >
+            <Flame className={`w-3.5 h-3.5 ${showQueryIntensityOverlay ? 'text-amber-200 animate-bounce' : 'text-rose-600'}`} />
+            <span>Query Intensity {showQueryIntensityOverlay ? 'ON' : ''}</span>
           </button>
 
           {onOpenBulkImport && (

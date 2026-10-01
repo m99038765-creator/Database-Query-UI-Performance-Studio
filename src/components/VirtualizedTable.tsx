@@ -46,7 +46,9 @@ import {
   SkipBack,
   Monitor,
   Sparkles,
-  TrendingUp
+  TrendingUp,
+  Pin,
+  ArrowUp
 } from 'lucide-react';
 import {
   exportRecords,
@@ -395,6 +397,23 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
   // Selection & Batch Operations State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  const [pinnedRowIds, setPinnedRowIds] = useState<Set<string>>(new Set());
+
+  const handleTogglePinRow = (recordId: string) => {
+    setPinnedRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(recordId)) {
+        next.delete(recordId);
+      } else {
+        next.add(recordId);
+      }
+      return next;
+    });
+  };
+
+  const pinnedRecords = useMemo(() => {
+    return records.filter((rec) => pinnedRowIds.has(rec.id));
+  }, [records, pinnedRowIds]);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [isLatencyDistModalOpen, setIsLatencyDistModalOpen] = useState(false);
   const [batchNotification, setBatchNotification] = useState<{
@@ -1295,7 +1314,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   };
 
   return (
-    <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden flex flex-col">
+    <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden flex flex-col relative">
       {/* Latency Heatmap Threshold Legend Bar */}
       <div className="bg-zinc-100/90 px-4 py-2 border-b border-zinc-200 flex items-center justify-between text-xs flex-wrap gap-2">
         <div className="flex items-center gap-1.5 text-zinc-700 font-semibold">
@@ -1413,10 +1432,11 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               <button
                 type="button"
                 id="btn-clear-search-term"
+                data-testid="btn-clear-search-term"
                 onClick={() => onSearchChange?.('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 p-0.5 rounded cursor-pointer transition-colors"
-                title="Clear search"
-                aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700 bg-zinc-100 hover:bg-zinc-200 p-1 rounded-md cursor-pointer transition-colors shadow-2xs"
+                title="Clear search query"
+                aria-label="Clear search query"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -2892,6 +2912,85 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         </div>
       )}
 
+      {/* Pinned Baseline Rows Section (Anchored at top of viewport for tracking baseline performance) */}
+      {pinnedRecords.length > 0 && (
+        <div
+          id="pinned-baseline-rows-container"
+          data-testid="pinned-baseline-rows-container"
+          className="bg-amber-50/95 border-b-2 border-amber-300 shadow-sm shrink-0"
+        >
+          <div className="px-4 py-2 bg-amber-100/90 border-b border-amber-200 flex items-center justify-between text-xs font-semibold text-amber-950">
+            <div className="flex items-center gap-2">
+              <Pin className="w-3.5 h-3.5 text-amber-700 fill-amber-500 rotate-45 shrink-0" />
+              <span>Pinned Baseline Records ({pinnedRecords.length}) — Anchored for performance comparison</span>
+            </div>
+            <button
+              type="button"
+              id="btn-unpin-all-rows"
+              onClick={() => setPinnedRowIds(new Set())}
+              className="text-[11px] text-amber-800 hover:text-amber-950 underline cursor-pointer"
+            >
+              Unpin All
+            </button>
+          </div>
+          <div className="divide-y divide-amber-200/70 max-h-48 overflow-y-auto">
+            {pinnedRecords.map((rec) => {
+              const recordItemCount = rec.items && rec.items.length > 0 ? rec.items.length : (rec.itemCount || 1);
+              const unoptimizedMultiplier = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
+              const indexPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+              const nPlusOneLatencyMs = safeFlags.batchEagerLoading 
+                ? (recordItemCount * 4.0 + 10.0) 
+                : (20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty);
+
+              return (
+                <div
+                  key={`pinned-${rec.id}`}
+                  id={`pinned-row-${rec.id}`}
+                  className="grid grid-cols-12 px-4 py-2 items-center text-xs bg-amber-50/70 hover:bg-amber-100/80 transition-colors border-b border-amber-200/40"
+                >
+                  <div className="col-span-1 flex items-center gap-1.5 text-amber-900 font-mono">
+                    <button
+                      type="button"
+                      id={`btn-unpin-row-${rec.id}`}
+                      onClick={() => handleTogglePinRow(rec.id)}
+                      className="p-0.5 rounded bg-amber-200 text-amber-800 hover:bg-amber-300 transition-colors cursor-pointer"
+                      title="Unpin baseline record row"
+                      aria-label={`Unpin baseline record ${rec.orderNumber}`}
+                    >
+                      <Pin className="w-3 h-3 fill-amber-600 text-amber-800 rotate-45" />
+                    </button>
+                    <span className="text-[10px] bg-amber-200/90 text-amber-900 px-1 rounded font-bold">
+                      PIN
+                    </span>
+                  </div>
+                  <div className="col-span-2 flex items-center gap-1.5">
+                    <span className="font-mono font-bold text-amber-950">{rec.orderNumber}</span>
+                    <span className="text-[10px] font-mono bg-amber-200 text-amber-900 px-1.5 py-0.2 rounded font-semibold">
+                      {nPlusOneLatencyMs.toFixed(1)}ms
+                    </span>
+                  </div>
+                  <div className="col-span-3 text-amber-900 truncate">
+                    {rec.customerName} <span className="text-amber-700 font-mono text-[10px]">({rec.customerEmail})</span>
+                  </div>
+                  <div className="col-span-2 text-amber-900 truncate">{rec.category}</div>
+                  <div className="col-span-1">
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200/90 text-amber-900 capitalize">
+                      {rec.status}
+                    </span>
+                  </div>
+                  <div className="col-span-2 text-right font-mono font-semibold text-amber-950">
+                    ${rec.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <div className="col-span-1 text-center font-mono text-amber-900">
+                    {recordItemCount} items
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Scrollable Table Viewport */}
       <div
         ref={containerRef}
@@ -3075,6 +3174,24 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                           ) : (
                             <ChevronRight className={`w-3.5 h-3.5 ${isSelected ? 'text-emerald-600' : ''}`} />
                           )}
+                        </button>
+                        <button
+                          type="button"
+                          id={`btn-pin-row-${rec.id}`}
+                          data-testid={`btn-pin-row-${rec.id}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleTogglePinRow(rec.id);
+                          }}
+                          className={`p-0.5 rounded transition-colors cursor-pointer ${
+                            pinnedRowIds.has(rec.id)
+                              ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 ring-1 ring-amber-400'
+                              : 'hover:bg-zinc-200/80 text-zinc-400 hover:text-zinc-600'
+                          }`}
+                          title={pinnedRowIds.has(rec.id) ? 'Unpin baseline performance row' : 'Pin row to top of viewport as baseline'}
+                          aria-label={`Pin row ${rec.orderNumber}`}
+                        >
+                          <Pin className={`w-3 h-3 ${pinnedRowIds.has(rec.id) ? 'fill-amber-500 text-amber-700 rotate-45' : 'text-zinc-400'}`} />
                         </button>
                         <span
                           className={`font-mono text-[11px] select-none ${
@@ -3511,6 +3628,27 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         onClose={() => setIsCompareModalOpen(false)}
         initialFlags={safeFlags}
       />
+
+      {/* 'Back to Top' Floating Action Button */}
+      {scrollTop > ROW_HEIGHT * 20 && (
+        <button
+          type="button"
+          id="btn-back-to-top"
+          data-testid="btn-back-to-top"
+          onClick={() => {
+            if (containerRef.current) {
+              containerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+            setScrollTop(0);
+          }}
+          className="absolute bottom-6 right-6 z-40 inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-full shadow-xl font-semibold text-xs transition-all animate-fadeIn cursor-pointer ring-2 ring-white/80"
+          title="Scroll back to top of table header"
+          aria-label="Scroll back to top"
+        >
+          <ArrowUp className="w-4 h-4 animate-bounce" />
+          <span>Back to Top</span>
+        </button>
+      )}
     </div>
   );
 };

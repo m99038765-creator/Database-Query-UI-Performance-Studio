@@ -18,7 +18,7 @@ import { LatencyComparisonView } from './components/LatencyComparisonView';
 import { DatabaseSchemaExplorerView } from './components/DatabaseSchemaExplorerView';
 import { OptimizationWizardModal } from './components/OptimizationWizardModal';
 import { LatencyLegend } from './components/LatencyLegend';
-import { AlertTriangle, X } from 'lucide-react';
+import { AlertTriangle, X, Flame } from 'lucide-react';
 import {
   exportRecordsToCsv,
   ExportFormat,
@@ -187,6 +187,7 @@ export default function App() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [alertThresholdMs, setAlertThresholdMs] = useState<number>(100);
   const [showLatencyHeatmap, setShowLatencyHeatmap] = useState(true);
+  const [showQueryIntensityOverlay, setShowQueryIntensityOverlay] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -456,6 +457,8 @@ export default function App() {
         }}
         onExportDiagnosticPackage={handleExportDiagnosticPackage}
         onQuickSnapshot={handleQuickSnapshot}
+        showQueryIntensityOverlay={showQueryIntensityOverlay}
+        onToggleQueryIntensityOverlay={setShowQueryIntensityOverlay}
       />
 
       <OptimizationControls
@@ -489,6 +492,33 @@ export default function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 space-y-4">
+        {/* Global Query Intensity Heatmap Overlay Banner */}
+        {showQueryIntensityOverlay && (
+          <div className="p-4 bg-gradient-to-r from-rose-950 via-amber-950 to-zinc-950 text-white rounded-2xl border-2 border-rose-500 shadow-2xl flex items-center justify-between gap-4 animate-fadeIn relative z-40 ring-4 ring-rose-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-rose-600 text-white rounded-xl shadow-md animate-bounce">
+                <Flame className="w-6 h-6 text-amber-200" />
+              </div>
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-extrabold text-sm text-white tracking-wide">🔥 Global Query Intensity Heatmap Overlay Active</h3>
+                  <span className="font-mono text-[10px] bg-rose-500 text-white px-2 py-0.5 rounded-full font-bold uppercase animate-pulse">High Thermal Load</span>
+                </div>
+                <p className="text-xs text-rose-200">
+                  Visualizing execution plan cost bottlenecks, sequential scan memory pressure, and N+1 query hotspots across the application interface in real-time.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowQueryIntensityOverlay(false)}
+              className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow cursor-pointer transition-colors"
+            >
+              Disable Overlay
+            </button>
+          </div>
+        )}
+
         {activeView === 'grid' ? (
           <>
             <ExplainPlanViewer

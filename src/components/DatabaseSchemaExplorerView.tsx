@@ -82,6 +82,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [bulkDryRunActive, setBulkDryRunActive] = useState<boolean>(false);
   const [dryRunPreviewList, setDryRunPreviewList] = useState<Array<{ name: string; impact: string; projectedHealth: number }> | null>(null);
   const [bulkOptimizeSuccessNotice, setBulkOptimizeSuccessNotice] = useState<string | null>(null);
+  const [coveringConflictToast, setCoveringConflictToast] = useState<{ message: string; conflictingIndex: string } | null>(null);
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
   const [animatingBulkIndexName, setAnimatingBulkIndexName] = useState<string | null>(null);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
@@ -93,6 +94,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [copiedDdlIndex, setCopiedDdlIndex] = useState<string | null>(null);
   const [showBulkImportModal, setShowBulkImportModal] = useState<boolean>(false);
   const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
+  const [hoveredDiffProp, setHoveredDiffProp] = useState<string | null>(null);
   const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
   const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
   const [isGroupByTable, setIsGroupByTable] = useState<boolean>(false);
@@ -2918,6 +2920,10 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         setBulkOptimizeSuccessNotice(
           `Bulk Optimization Complete: Applied ${bulkOptimizationPlan.pendingChanges.length} optimal changes across all tables! All ${bulkOptimizationPlan.totalCount} indexes are now in their optimal state with average schema health increased to ${bulkOptimizationPlan.projectedAvgHealth}/100.`
         );
+        setCoveringConflictToast({
+          message: `Bulk index creation generated a 'covering index' conflict with existing high-priority index "idx_transactions_date" and "idx_line_items_tx_price" (overlapping column subsets).`,
+          conflictingIndex: 'idx_transactions_date'
+        });
         setTimeout(() => {
           setBulkOptimizeSuccessNotice(null);
         }, 7000);
@@ -3431,6 +3437,10 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const handleCreateIndex = (colName: string) => {
     if (!createdCustomIndexes.includes(colName)) {
       setCreatedCustomIndexes([...createdCustomIndexes, colName]);
+      setCoveringConflictToast({
+        message: `New index on column "${colName}" creates a 'covering index' conflict with existing high-priority index "idx_transactions_date" (overlapping prefix set and duplicate B-Tree leaf pages).`,
+        conflictingIndex: 'idx_transactions_date'
+      });
     }
   };
 
@@ -10408,18 +10418,68 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
               </div>
 
               <div className="space-y-2 pt-2">
-                <h4 className="font-bold text-zinc-800 uppercase tracking-wider text-[11px]">Granular Property Diff Breakdown</h4>
+                <h4 className="font-bold text-zinc-800 uppercase tracking-wider text-[11px]">Granular Property Diff Breakdown (Hover for Before vs After Parameter Values)</h4>
                 {[
-                  { prop: 'Fill Factor Density', oldVal: '90 (Default)', newVal: '100 (Dense B-Tree)', status: 'Modified (+10% space saving)' },
-                  { prop: 'Inclusion Columns', oldVal: 'None', newVal: '(status)', status: 'Added (Covering Index optimization)' },
-                  { prop: 'Build Concurrency', oldVal: 'Standard LOCK', newVal: 'CONCURRENTLY', status: 'Modified (Zero-Downtime)' }
+                  {
+                    prop: 'Fill Factor Density',
+                    oldVal: '90 (Default)',
+                    newVal: '100 (Dense B-Tree)',
+                    status: 'Modified (+10% space saving)',
+                    description: 'Determines page packing density. Increasing to 100 eliminates page splits for append-only transaction logs.'
+                  },
+                  {
+                    prop: 'Inclusion Columns',
+                    oldVal: 'None',
+                    newVal: '(status)',
+                    status: 'Added (Covering Index optimization)',
+                    description: 'Adds non-key payload attributes to leaf nodes, enabling Index-Only Scans and avoiding heap fetches.'
+                  },
+                  {
+                    prop: 'Build Concurrency',
+                    oldVal: 'Standard LOCK',
+                    newVal: 'CONCURRENTLY',
+                    status: 'Modified (Zero-Downtime)',
+                    description: 'Allows concurrent reads and writes during index creation, avoiding exclusive table locks on high-traffic tables.'
+                  }
                 ].map((diff, idx) => (
-                  <div key={idx} className="p-3 bg-white rounded-xl border border-zinc-200 flex items-center justify-between text-xs">
-                    <div className="font-bold text-zinc-900 font-mono w-1/3">🔑 {diff.prop}</div>
-                    <div className="text-zinc-500 font-mono w-1/3 line-through">{diff.oldVal}</div>
-                    <div className="text-emerald-800 font-mono font-bold w-1/3 bg-emerald-50 px-2 py-1 rounded border border-emerald-200">
-                      ➔ {diff.newVal} ({diff.status})
+                  <div
+                    key={idx}
+                    onMouseEnter={() => setHoveredDiffProp(diff.prop)}
+                    onMouseLeave={() => setHoveredDiffProp(null)}
+                    className="p-3 bg-white rounded-xl border border-zinc-200 hover:border-teal-400 hover:shadow-sm flex items-center justify-between text-xs relative cursor-pointer group transition-all"
+                  >
+                    <div className="font-bold text-zinc-900 font-mono w-1/3 flex items-center gap-1.5">
+                      <span>🔑 {diff.prop}</span>
+                      <span className="text-[10px] text-teal-600 bg-teal-50 px-1.5 py-0.2 rounded font-sans group-hover:underline">Hover Details</span>
                     </div>
+                    <div className="text-zinc-500 font-mono w-1/3 line-through">{diff.oldVal}</div>
+                    <div className="text-emerald-800 font-mono font-bold w-1/3 bg-emerald-50 px-2 py-1 rounded border border-emerald-200 flex items-center justify-between">
+                      <span>➔ {diff.newVal}</span>
+                      <span className="text-[10px] text-emerald-700 font-sans">({diff.status})</span>
+                    </div>
+
+                    {/* Interactive Tooltip Card on Hover */}
+                    {hoveredDiffProp === diff.prop && (
+                      <div className="absolute left-0 right-0 -top-28 z-20 bg-zinc-950 text-white p-3 rounded-xl shadow-2xl border border-zinc-700 space-y-1.5 animate-fadeIn pointer-events-none">
+                        <div className="flex items-center justify-between border-b border-zinc-800 pb-1 font-bold text-[11px] text-teal-300">
+                          <span>🔍 Parameter Comparison: {diff.prop}</span>
+                          <span className="text-[9px] font-mono bg-zinc-800 text-zinc-300 px-1 rounded">Before vs After</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                          <div className="p-1.5 bg-rose-950/80 border border-rose-800/60 rounded text-rose-200">
+                            <span className="text-[9px] text-rose-400 block uppercase">Base Version (Before):</span>
+                            <span>{diff.oldVal}</span>
+                          </div>
+                          <div className="p-1.5 bg-emerald-950/80 border border-emerald-800/60 rounded text-emerald-200">
+                            <span className="text-[9px] text-emerald-400 block uppercase">Target Version (After):</span>
+                            <span>{diff.newVal}</span>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-zinc-300 italic">
+                          {diff.description}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
