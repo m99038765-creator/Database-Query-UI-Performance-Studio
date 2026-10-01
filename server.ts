@@ -15,6 +15,79 @@ app.get(['/healthz', '/_health', '/health', '/_ready'], (_req, res) => {
   res.status(200).send('OK');
 });
 
+// AI Query Cost Estimator API Endpoint
+app.post('/api/estimate-query-cost', async (req, res) => {
+  try {
+    const { sql, diskTier = 'NVMe', flags = {} } = req.body || {};
+    if (!sql || typeof sql !== 'string') {
+      return res.status(400).json({ error: 'SQL query string is required' });
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) {
+      try {
+        const { GoogleGenAI } = await import('@google/genai');
+        const ai = new GoogleGenAI({});
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: `Analyze this PostgreSQL query for execution cost and latency:
+Query: ${sql}
+Storage Tier: ${diskTier}
+Active Indexes: B-Tree Index on transactions(status, category) is ${flags.btreeIndexing !== false ? 'ACTIVE' : 'INACTIVE'}.
+Batch Eager Loading is ${flags.batchEagerLoading !== false ? 'ACTIVE' : 'INACTIVE'}.
+
+Respond in JSON with:
+{
+  "predictedTimeMs": number,
+  "confidenceMarginMs": number,
+  "plannerCost": number,
+  "scanType": string,
+  "estimatedRowsScanned": number,
+  "estimatedRowsReturned": number,
+  "estimatedIOPS": number,
+  "riskLevel": "optimal" | "moderate" | "critical",
+  "riskScore": number,
+  "reasoningSummary": string,
+  "bottlenecks": string[],
+  "aiRecommendations": string[]
+}`
+        });
+
+        const text = response.text || '';
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          return res.json(parsed);
+        }
+      } catch (geminiErr) {
+        console.warn('Gemini query estimation fallback:', geminiErr);
+      }
+    }
+
+    // Heuristic fallback
+    const lower = sql.toLowerCase();
+    const isIndexed = flags.btreeIndexing !== false && (lower.includes('status') || lower.includes('category'));
+    const mult = diskTier === 'HDD' ? 7.5 : diskTier === 'SSD' ? 2.2 : 1.0;
+    const timeMs = +((isIndexed ? 1.2 : 35.0) * mult).toFixed(2);
+    return res.json({
+      predictedTimeMs: timeMs,
+      confidenceMarginMs: +(timeMs * 0.12).toFixed(2),
+      plannerCost: isIndexed ? 4.82 : 48.5,
+      scanType: isIndexed ? 'Index Scan (idx_orders_status_category)' : 'Seq Scan (Full Table Heap Scan)',
+      estimatedRowsScanned: isIndexed ? 50 : 50000,
+      estimatedRowsReturned: 50,
+      estimatedIOPS: isIndexed ? 24 : Math.round(2500 * mult),
+      riskLevel: timeMs > 25 ? 'critical' : timeMs > 5 ? 'moderate' : 'optimal',
+      riskScore: timeMs > 25 ? 85 : timeMs > 5 ? 50 : 15,
+      reasoningSummary: `Predicted execution time: ${timeMs}ms using ${isIndexed ? 'index scan' : 'sequential heap scan'}.`,
+      bottlenecks: isIndexed ? [] : ['Full table sequential heap scan inspecting 50,000 records.'],
+      aiRecommendations: isIndexed ? ['Query uses optimal B-Tree index scan.'] : ['Add composite B-Tree index on (status, category).']
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to estimate query cost' });
+  }
+});
+
 // Resolve potential build / dist directories
 const candidateDirs = [
   path.join(process.cwd(), 'dist'),

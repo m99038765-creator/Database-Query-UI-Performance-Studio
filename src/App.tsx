@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { OptimizationFlags, OrderStatus, ProductCategory, LatencyTrendPoint, BulkImportResult, SerializationLogEntry } from './types';
+import { OptimizationFlags, OrderStatus, ProductCategory, LatencyTrendPoint, BulkImportResult, SerializationLogEntry, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS } from './types';
 import { executeQuery, initializeDatabase, getDatabaseStats } from './db/databaseEngine';
 import { useFpsMonitor } from './utils/fpsTracker';
 import { Header } from './components/Header';
@@ -178,6 +178,24 @@ export default function App() {
     virtualizedDOM: true,
     deferredRendering: true,
   });
+
+  const [lowUsageThresholds, setLowUsageThresholds] = useState<LowUsageThresholdsConfig>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_low_usage_thresholds');
+      return saved ? JSON.parse(saved) : DEFAULT_LOW_USAGE_THRESHOLDS;
+    } catch {
+      return DEFAULT_LOW_USAGE_THRESHOLDS;
+    }
+  });
+
+  const handleLowUsageThresholdsChange = (config: LowUsageThresholdsConfig) => {
+    setLowUsageThresholds(config);
+    try {
+      localStorage.setItem('enterprise_low_usage_thresholds', JSON.stringify(config));
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<ProductCategory | 'All'>('All');
@@ -466,6 +484,8 @@ export default function App() {
         onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
         onResetAll={() => setFlags({ batchEagerLoading: true, btreeIndexing: true, queryCaching: true, virtualizedDOM: true, deferredRendering: true })}
         onApplyFlags={(newFlags) => setFlags(newFlags)}
+        lowUsageThresholds={lowUsageThresholds}
+        onLowUsageThresholdsChange={handleLowUsageThresholdsChange}
       />
 
       <MetricsBar
@@ -584,6 +604,7 @@ export default function App() {
             flags={flags}
             onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
             onClose={() => setActiveView('grid')}
+            lowUsageThresholds={lowUsageThresholds}
           />
         ) : (
           <PerformanceTrendsView

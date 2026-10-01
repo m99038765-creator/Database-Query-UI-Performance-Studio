@@ -329,3 +329,17 @@ export interface QueryReplaySequence {
   createdAt: number;
   steps: QueryReplayStep[];
 }
+
+export interface LowUsageThresholdsConfig {
+  daysInactive: number;       // Inactivity duration threshold (default: 7 days)
+  minQueryHits: number;       // Minimum scan hits in audit window (default: 10 hits)
+  minReadWriteRatio: number;  // Minimum read-to-write ratio floor (default: 3.0x)
+  enabled: boolean;           // Whether low usage auditing & badge flagging is active (default: true)
+}
+
+export const DEFAULT_LOW_USAGE_THRESHOLDS: LowUsageThresholdsConfig = {
+  daysInactive: 7,
+  minQueryHits: 10,
+  minReadWriteRatio: 3.0,
+  enabled: true
+};

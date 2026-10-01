@@ -1,6 +1,75 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { QueryExecutionResult, OptimizationFlags } from '../types';
 import { Clock, Database, Layers, Monitor, CheckCircle, AlertTriangle, Zap } from 'lucide-react';
+
+interface AnimatedCounterOptions {
+  duration?: number;
+  decimals?: number;
+}
+
+const useAnimatedCounter = (
+  targetValue: number,
+  options: AnimatedCounterOptions = {}
+) => {
+  const { duration = 450, decimals = 0 } = options;
+  const [displayNumber, setDisplayNumber] = useState<number>(targetValue);
+  const [direction, setDirection] = useState<'up' | 'down' | 'idle'>('idle');
+  const [isAnimating, setIsAnimating] = useState<boolean>(false);
+  const startValRef = useRef<number>(targetValue);
+  const startTimeRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const prevTargetRef = useRef<number>(targetValue);
+
+  useEffect(() => {
+    // If target value changed
+    if (Math.abs(prevTargetRef.current - targetValue) > (decimals > 0 ? 0.05 : 0.5)) {
+      const isUp = targetValue > prevTargetRef.current;
+      setDirection(isUp ? 'up' : 'down');
+      setIsAnimating(true);
+      startValRef.current = displayNumber;
+      startTimeRef.current = null;
+      prevTargetRef.current = targetValue;
+
+      const step = (timestamp: number) => {
+        if (!startTimeRef.current) startTimeRef.current = timestamp;
+        const progress = Math.min((timestamp - startTimeRef.current) / duration, 1);
+        // easeOutCubic: 1 - Math.pow(1 - progress, 3)
+        const ease = 1 - Math.pow(1 - progress, 3);
+        const current = startValRef.current + (targetValue - startValRef.current) * ease;
+        setDisplayNumber(current);
+
+        if (progress < 1) {
+          rafRef.current = requestAnimationFrame(step);
+        } else {
+          setDisplayNumber(targetValue);
+          setIsAnimating(false);
+          const timeout = setTimeout(() => setDirection('idle'), 600);
+          return () => clearTimeout(timeout);
+        }
+      };
+
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+      rafRef.current = requestAnimationFrame(step);
+    } else {
+      setDisplayNumber(targetValue);
+      prevTargetRef.current = targetValue;
+    }
+
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [targetValue, duration, decimals]);
+
+  const formatted = decimals > 0
+    ? displayNumber.toFixed(decimals)
+    : Math.round(displayNumber).toLocaleString();
+
+  return { formatted, raw: displayNumber, direction, isAnimating };
+};
 
 interface MetricsBarProps {
   queryResult: QueryExecutionResult;
@@ -48,39 +117,63 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   const effectiveDomCount = renderedDomCount ?? (queryResult?.records ? (safeFlags.virtualizedDOM ? Math.min(queryResult.records.length, 18) : queryResult.records.length) : 18);
   const effectiveTotalRecords = dbStats?.totalRecords ?? totalDatabaseRecords ?? 50000;
 
-  const isQueryFast = (queryResult?.executionTimeMs ?? 0) < 15;
+  const currentLatency = queryResult?.executionTimeMs ?? 0;
+  const isQueryFast = currentLatency < 15;
   const isFpsGood = effectiveFps >= 50;
   const isDomHealthy = effectiveDomCount < 100;
   const isPoolHealthy = !queryResult?.simulatedError;
-  const currentLatency = queryResult?.executionTimeMs ?? 0;
   const isThresholdExceeded = currentLatency > alertThresholdMs;
+
+  // Animated counters with smooth cubic easing and CSS transitions
+  const animatedLatency = useAnimatedCounter(currentLatency, { duration: 450, decimals: 1 });
+  const animatedRowsScanned = useAnimatedCounter(queryResult?.rowsScanned ?? 0, { duration: 500, decimals: 0 });
+  const animatedTotalRecords = useAnimatedCounter(effectiveTotalRecords, { duration: 500, decimals: 0 });
+  const animatedFps = useAnimatedCounter(effectiveFps, { duration: 350, decimals: 0 });
+  const animatedDomCount = useAnimatedCounter(effectiveDomCount, { duration: 450, decimals: 0 });
+  const animatedDbConnections = useAnimatedCounter(queryResult?.activeQueriesCount ?? 1, { duration: 300, decimals: 0 });
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {/* 1. Query Execution Latency */}
-      <div className={`bg-white rounded-xl border p-4 shadow-xs relative overflow-hidden transition-all ${isThresholdExceeded ? 'border-rose-300 ring-2 ring-rose-400/20 bg-rose-50/30' : 'border-zinc-200'}`}>
+      <div className={`bg-white rounded-xl border p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${isThresholdExceeded ? 'border-rose-300 ring-2 ring-rose-400/20 bg-rose-50/30' : 'border-zinc-200'}`}>
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
             <Clock className="w-3.5 h-3.5 text-zinc-400" />
             Query Latency
           </span>
           {queryResult?.cacheHit && (
-            <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-1.5 py-0.5 rounded">
+            <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-1.5 py-0.5 rounded transition-all duration-300">
               CACHE HIT
             </span>
           )}
         </div>
         <div className="flex items-baseline gap-2">
           <span
-            className={`text-2xl font-bold tracking-tight ${
-              isQueryFast ? 'text-emerald-600' : 'text-rose-600'
-            }`}
+            id="metric-query-latency-value"
+            data-testid="metric-query-latency-value"
+            className={`text-2xl font-bold tracking-tight font-mono tabular-nums metric-value-transition transition-colors duration-300 flex items-baseline gap-0.5 ${
+              animatedLatency.isAnimating
+                ? animatedLatency.direction === 'down'
+                  ? 'animate-metric-down'
+                  : 'animate-metric-up'
+                : ''
+            } ${isQueryFast ? 'text-emerald-600' : 'text-rose-600'}`}
           >
-            {currentLatency.toFixed(1)}
+            <span>{animatedLatency.formatted}</span>
             <span className="text-sm font-medium text-zinc-500 ml-0.5">ms</span>
+            {animatedLatency.isAnimating && (
+              <span
+                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                  animatedLatency.direction === 'down' ? 'text-emerald-600' : 'text-rose-600'
+                }`}
+                title={animatedLatency.direction === 'down' ? 'Latency Decreasing (Faster)' : 'Latency Increasing (Slower)'}
+              >
+                {animatedLatency.direction === 'down' ? '↓' : '↑'}
+              </span>
+            )}
           </span>
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1 flex items-center justify-between">
+        <div className="text-[11px] text-zinc-500 mt-1 flex items-center justify-between transition-colors duration-300">
           {safeFlags.btreeIndexing ? (
             <span className="text-emerald-700 font-medium">B-Tree Index Active</span>
           ) : (
@@ -97,7 +190,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
         )}
 
         <div
-          className={`absolute bottom-0 left-0 right-0 h-1 ${
+          className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${
             isThresholdExceeded ? 'bg-rose-600' : isQueryFast ? 'bg-emerald-500' : 'bg-rose-500'
           }`}
         />
@@ -106,7 +199,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       {/* 2. Rows Scanned */}
       <div
         id="metric-card-rows-scanned"
-        className={`bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all ${
+        className={`bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${
           onOpenBulkImport ? 'cursor-pointer hover:border-blue-300 group' : ''
         }`}
         onClick={onOpenBulkImport}
@@ -118,22 +211,42 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
             Rows Scanned
           </span>
           {effectiveTotalRecords > 50000 && (
-            <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
+            <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200 transition-all duration-300">
               +{((effectiveTotalRecords - 50000) / 1000).toFixed(0)}k Ingested
             </span>
           )}
         </div>
         <div className="flex items-baseline gap-2">
           <span
-            className={`text-2xl font-bold tracking-tight ${
+            id="metric-rows-scanned-value"
+            data-testid="metric-rows-scanned-value"
+            className={`text-2xl font-bold tracking-tight font-mono tabular-nums metric-value-transition transition-colors duration-300 flex items-baseline gap-1 ${
+              animatedRowsScanned.isAnimating
+                ? animatedRowsScanned.direction === 'down'
+                  ? 'animate-metric-down'
+                  : 'animate-metric-up'
+                : ''
+            } ${
               (queryResult?.rowsScanned ?? 0) < 1000 ? 'text-emerald-600' : 'text-amber-600'
             }`}
           >
-            {(queryResult?.rowsScanned ?? 0).toLocaleString()}
+            <span>{animatedRowsScanned.formatted}</span>
+            {animatedRowsScanned.isAnimating && (
+              <span
+                className={`text-[11px] font-bold transition-opacity duration-300 ${
+                  animatedRowsScanned.direction === 'down' ? 'text-emerald-600' : 'text-amber-600'
+                }`}
+                title={animatedRowsScanned.direction === 'down' ? 'Rows Scanned Decreased' : 'Rows Scanned Increased'}
+              >
+                {animatedRowsScanned.direction === 'down' ? '↓' : '↑'}
+              </span>
+            )}
           </span>
-          <span className="text-xs text-zinc-400">/ {effectiveTotalRecords.toLocaleString()} total</span>
+          <span className="text-xs text-zinc-400 font-mono tabular-nums transition-colors duration-300">
+            / {animatedTotalRecords.formatted} total
+          </span>
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1 flex items-center justify-between">
+        <div className="text-[11px] text-zinc-500 mt-1 flex items-center justify-between transition-colors duration-300">
           {(queryResult?.rowsScanned ?? 0) < 1000 ? (
             <span className="text-emerald-700 font-medium">Exact B-Tree seek</span>
           ) : (
@@ -146,21 +259,21 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
           )}
         </div>
         <div
-          className={`absolute bottom-0 left-0 right-0 h-1 ${
+          className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${
             (queryResult?.rowsScanned ?? 0) < 1000 ? 'bg-emerald-500' : 'bg-amber-500'
           }`}
         />
       </div>
 
       {/* 3. UI Frame Rate (FPS) */}
-      <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden">
+      <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300">
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
             <Monitor className="w-3.5 h-3.5 text-zinc-400" />
             UI Frame Rate
           </span>
           <span
-            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+            className={`text-[10px] font-bold px-1.5 py-0.5 rounded transition-all duration-300 ${
               isFpsGood
                 ? 'bg-emerald-100 text-emerald-800'
                 : 'bg-rose-100 text-rose-800 animate-pulse'
@@ -171,15 +284,31 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
         </div>
         <div className="flex items-baseline gap-2">
           <span
-            className={`text-2xl font-bold tracking-tight ${
-              isFpsGood ? 'text-emerald-600' : 'text-rose-600'
-            }`}
+            id="metric-fps-value"
+            data-testid="metric-fps-value"
+            className={`text-2xl font-bold tracking-tight font-mono tabular-nums metric-value-transition transition-colors duration-300 flex items-baseline gap-0.5 ${
+              animatedFps.isAnimating
+                ? animatedFps.direction === 'up'
+                  ? 'animate-metric-up'
+                  : 'animate-metric-down'
+                : ''
+            } ${isFpsGood ? 'text-emerald-600' : 'text-rose-600'}`}
           >
-            {effectiveFps}
+            <span>{animatedFps.formatted}</span>
             <span className="text-sm font-medium text-zinc-500 ml-0.5">FPS</span>
+            {animatedFps.isAnimating && (
+              <span
+                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                  animatedFps.direction === 'up' ? 'text-emerald-600' : 'text-rose-600'
+                }`}
+                title={animatedFps.direction === 'up' ? 'FPS Improving' : 'FPS Dropping'}
+              >
+                {animatedFps.direction === 'up' ? '↑' : '↓'}
+              </span>
+            )}
           </span>
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">
+        <div className="text-[11px] text-zinc-500 mt-1 transition-colors duration-300">
           {safeFlags.virtualizedDOM ? (
             <span className="text-emerald-700 font-medium">Virtual Windowing ON</span>
           ) : (
@@ -187,14 +316,14 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
           )}
         </div>
         <div
-          className={`absolute bottom-0 left-0 right-0 h-1 ${
+          className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${
             isFpsGood ? 'bg-emerald-500' : 'bg-rose-500'
           }`}
         />
       </div>
 
       {/* 4. Active DOM Nodes in Viewport */}
-      <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden">
+      <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300">
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
             <Layers className="w-3.5 h-3.5 text-zinc-400" />
@@ -203,15 +332,31 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
         </div>
         <div className="flex items-baseline gap-2">
           <span
-            className={`text-2xl font-bold tracking-tight ${
-              isDomHealthy ? 'text-emerald-600' : 'text-rose-600'
-            }`}
+            id="metric-dom-nodes-value"
+            data-testid="metric-dom-nodes-value"
+            className={`text-2xl font-bold tracking-tight font-mono tabular-nums metric-value-transition transition-colors duration-300 flex items-baseline gap-0.5 ${
+              animatedDomCount.isAnimating
+                ? animatedDomCount.direction === 'down'
+                  ? 'animate-metric-down'
+                  : 'animate-metric-up'
+                : ''
+            } ${isDomHealthy ? 'text-emerald-600' : 'text-rose-600'}`}
           >
-            {effectiveDomCount.toLocaleString()}
+            <span>{animatedDomCount.formatted}</span>
             <span className="text-sm font-medium text-zinc-500 ml-0.5">elements</span>
+            {animatedDomCount.isAnimating && (
+              <span
+                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                  animatedDomCount.direction === 'down' ? 'text-emerald-600' : 'text-rose-600'
+                }`}
+                title={animatedDomCount.direction === 'down' ? 'DOM Nodes Reduced (Optimized)' : 'DOM Nodes Increased'}
+              >
+                {animatedDomCount.direction === 'down' ? '↓' : '↑'}
+              </span>
+            )}
           </span>
         </div>
-        <div className="text-[11px] text-zinc-500 mt-1">
+        <div className="text-[11px] text-zinc-500 mt-1 transition-colors duration-300">
           {isDomHealthy ? (
             <span className="text-emerald-700 font-medium">Ultra-low memory footprint</span>
           ) : (
@@ -219,14 +364,14 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
           )}
         </div>
         <div
-          className={`absolute bottom-0 left-0 right-0 h-1 ${
+          className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${
             isDomHealthy ? 'bg-emerald-500' : 'bg-rose-500'
           }`}
         />
       </div>
 
       {/* 5. Database Connection Pool Status & Auto-Refresh Toggle */}
-      <div className="col-span-2 lg:col-span-1 bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden flex flex-col justify-between">
+      <div className="col-span-2 lg:col-span-1 bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden flex flex-col justify-between transition-all duration-300">
         <div>
           <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
             <span className="font-medium flex items-center gap-1.5">
@@ -241,14 +386,30 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
           </div>
           <div className="flex items-baseline gap-2">
             <span
-              className={`text-2xl font-bold tracking-tight ${
-                isPoolHealthy ? 'text-emerald-600' : 'text-rose-600'
-              }`}
+              id="metric-db-connections-value"
+              data-testid="metric-db-connections-value"
+              className={`text-2xl font-bold tracking-tight font-mono tabular-nums metric-value-transition transition-colors duration-300 flex items-baseline gap-0.5 ${
+                animatedDbConnections.isAnimating
+                  ? animatedDbConnections.direction === 'down'
+                    ? 'animate-metric-down'
+                    : 'animate-metric-up'
+                  : ''
+              } ${isPoolHealthy ? 'text-emerald-600' : 'text-rose-600'}`}
             >
-              {queryResult?.activeQueriesCount ?? 1}
+              <span>{animatedDbConnections.formatted}</span>
               <span className="text-xs font-normal text-zinc-500 ml-1">
                 / 25 pooled
               </span>
+              {animatedDbConnections.isAnimating && (
+                <span
+                  className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                    animatedDbConnections.direction === 'down' ? 'text-emerald-600' : 'text-rose-600'
+                  }`}
+                  title={animatedDbConnections.direction === 'down' ? 'Connections Released' : 'Connections Acquired'}
+                >
+                  {animatedDbConnections.direction === 'down' ? '↓' : '↑'}
+                </span>
+              )}
             </span>
           </div>
         </div>
@@ -296,7 +457,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
         </div>
 
         <div
-          className={`absolute bottom-0 left-0 right-0 h-1 ${
+          className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${
             isPoolHealthy ? 'bg-emerald-500' : 'bg-rose-500'
           }`}
         />
@@ -304,3 +465,4 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
     </div>
   );
 };
+

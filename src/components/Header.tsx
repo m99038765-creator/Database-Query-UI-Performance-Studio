@@ -151,62 +151,209 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Global Action & View Switcher Buttons */}
         <div className="flex flex-wrap items-center gap-2.5">
           {/* Primary View Switcher */}
-          <div className="inline-flex items-center p-1 bg-zinc-100 rounded-lg border border-zinc-200 text-xs font-medium">
-            <button
-              id="header-nav-grid"
-              type="button"
-              onClick={() => onSelectView?.('grid')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
-                activeView === 'grid'
-                  ? 'bg-white text-zinc-900 font-semibold shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-900'
-              }`}
-            >
-              <Table className="w-3.5 h-3.5 text-zinc-500" />
-              <span>Table &amp; Plan</span>
-            </button>
-            <button
-              id="header-nav-trends"
-              type="button"
-              onClick={() => onSelectView?.('trends')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
-                activeView === 'trends'
-                  ? 'bg-white text-emerald-900 font-semibold shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-900'
-              }`}
-            >
-              <TrendingDown className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Performance Trends</span>
-              <span className="bg-emerald-100 text-emerald-800 font-mono text-[10px] px-1.5 py-0.2 rounded-full">
-                D3
-              </span>
-            </button>
-            <button
-              id="header-nav-comparison"
-              type="button"
-              onClick={() => onSelectView?.('comparison')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
-                activeView === 'comparison'
-                  ? 'bg-white text-blue-900 font-semibold shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-900'
-              }`}
-            >
-              <Sliders className="w-3.5 h-3.5 text-blue-600" />
-              <span>Latency Comparison</span>
-            </button>
-            <button
-              id="header-nav-schema"
-              type="button"
-              onClick={() => onSelectView?.('schema')}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
-                activeView === 'schema'
-                  ? 'bg-white text-indigo-900 font-semibold shadow-xs'
-                  : 'text-zinc-600 hover:text-zinc-900'
-              }`}
-            >
-              <Database className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Schema Explorer</span>
-            </button>
+          <div className="inline-flex items-center p-1 bg-zinc-100 rounded-lg border border-zinc-200 text-xs font-medium gap-0.5">
+            {/* 1. Grid (Table & Plan) */}
+            <div className="relative group">
+              <button
+                id="header-nav-grid"
+                data-testid="header-nav-grid"
+                type="button"
+                onClick={() => onSelectView?.('grid')}
+                title={`View Current Grid Performance • Full Name: Table & Execution Plan Viewer • Status: ${activeView === 'grid' ? 'Active (50,000 Rows, 60 FPS)' : 'Inactive (Click to switch)'}`}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                  activeView === 'grid'
+                    ? 'bg-white text-zinc-900 font-semibold shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <Table className="w-3.5 h-3.5 text-zinc-500" />
+                <span>Table &amp; Plan</span>
+              </button>
+
+              {/* Tooltip */}
+              <div
+                id="tooltip-header-nav-grid"
+                data-testid="tooltip-header-nav-grid"
+                role="tooltip"
+                className="absolute top-full left-1/2 -translate-x-1/2 pt-2 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 ease-out transform group-hover:translate-y-0 translate-y-1 invisible group-hover:visible whitespace-nowrap shadow-xl"
+              >
+                <div className="bg-zinc-900 text-white rounded-lg py-2 px-3 shadow-2xl border border-zinc-700/80 flex flex-col items-center gap-0.5 text-center">
+                  <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-t border-l border-zinc-700/80 rotate-45" />
+                  <span className="font-bold text-xs text-zinc-100 flex items-center gap-1.5">
+                    <Table className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>View Current Grid Performance</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+                    <span className="text-zinc-400">Full Name:</span>
+                    <span className="font-medium text-white">Table &amp; Execution Plan Viewer</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] mt-0.5 font-medium">
+                    <span className="text-zinc-400">Current Status:</span>
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded font-semibold ${
+                      activeView === 'grid'
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                        : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${activeView === 'grid' ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-400'}`}></span>
+                      <span>{activeView === 'grid' ? 'Active • 50,000 Rows (60 FPS)' : 'Inactive • Click to View'}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Performance Trends */}
+            <div className="relative group">
+              <button
+                id="header-nav-trends"
+                data-testid="header-nav-trends"
+                type="button"
+                onClick={() => onSelectView?.('trends')}
+                title={`View Performance Trends • Full Name: Performance Trends & Historical D3 Charts • Status: ${activeView === 'trends' ? 'Active' : 'Inactive'}`}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                  activeView === 'trends'
+                    ? 'bg-white text-emerald-900 font-semibold shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <TrendingDown className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Performance Trends</span>
+                <span className="bg-emerald-100 text-emerald-800 font-mono text-[10px] px-1.5 py-0.2 rounded-full">
+                  D3
+                </span>
+              </button>
+
+              {/* Tooltip */}
+              <div
+                id="tooltip-header-nav-trends"
+                data-testid="tooltip-header-nav-trends"
+                role="tooltip"
+                className="absolute top-full left-1/2 -translate-x-1/2 pt-2 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 ease-out transform group-hover:translate-y-0 translate-y-1 invisible group-hover:visible whitespace-nowrap shadow-xl"
+              >
+                <div className="bg-zinc-900 text-white rounded-lg py-2 px-3 shadow-2xl border border-zinc-700/80 flex flex-col items-center gap-0.5 text-center">
+                  <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-t border-l border-zinc-700/80 rotate-45" />
+                  <span className="font-bold text-xs text-zinc-100 flex items-center gap-1.5">
+                    <TrendingDown className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>View Performance Trends</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+                    <span className="text-zinc-400">Full Name:</span>
+                    <span className="font-medium text-white">Performance Trends &amp; Historical D3 Charts</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] mt-0.5 font-medium">
+                    <span className="text-zinc-400">Current Status:</span>
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded font-semibold ${
+                      activeView === 'trends'
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                        : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${activeView === 'trends' ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-400'}`}></span>
+                      <span>{activeView === 'trends' ? 'Active • D3 Analytics' : trendCount > 0 ? `Inactive • ${trendCount} Points Logged` : 'Inactive • Click to View'}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Latency Comparison */}
+            <div className="relative group">
+              <button
+                id="header-nav-comparison"
+                data-testid="header-nav-comparison"
+                type="button"
+                onClick={() => onSelectView?.('comparison')}
+                title={`View Latency Comparison • Full Name: Side-by-Side Latency & Resource Comparison • Status: ${activeView === 'comparison' ? 'Active' : 'Inactive'}`}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                  activeView === 'comparison'
+                    ? 'bg-white text-blue-900 font-semibold shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5 text-blue-600" />
+                <span>Latency Comparison</span>
+              </button>
+
+              {/* Tooltip */}
+              <div
+                id="tooltip-header-nav-comparison"
+                data-testid="tooltip-header-nav-comparison"
+                role="tooltip"
+                className="absolute top-full left-1/2 -translate-x-1/2 pt-2 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 ease-out transform group-hover:translate-y-0 translate-y-1 invisible group-hover:visible whitespace-nowrap shadow-xl"
+              >
+                <div className="bg-zinc-900 text-white rounded-lg py-2 px-3 shadow-2xl border border-zinc-700/80 flex flex-col items-center gap-0.5 text-center">
+                  <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-t border-l border-zinc-700/80 rotate-45" />
+                  <span className="font-bold text-xs text-zinc-100 flex items-center gap-1.5">
+                    <Sliders className="w-3.5 h-3.5 text-blue-400" />
+                    <span>View Latency Comparison</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+                    <span className="text-zinc-400">Full Name:</span>
+                    <span className="font-medium text-white">Side-by-Side Latency &amp; Resource Comparison</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] mt-0.5 font-medium">
+                    <span className="text-zinc-400">Current Status:</span>
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded font-semibold ${
+                      activeView === 'comparison'
+                        ? 'bg-blue-950 text-blue-300 border border-blue-700'
+                        : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${activeView === 'comparison' ? 'bg-blue-400 animate-pulse' : 'bg-zinc-400'}`}></span>
+                      <span>{activeView === 'comparison' ? 'Active • Matrix Ready' : 'Inactive • Click to Compare'}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 4. Schema Explorer */}
+            <div className="relative group">
+              <button
+                id="header-nav-schema"
+                data-testid="header-nav-schema"
+                type="button"
+                onClick={() => onSelectView?.('schema')}
+                title={`View Schema Explorer • Full Name: Database Schema Explorer & Index Manager • Status: ${activeView === 'schema' ? 'Active' : 'Inactive'}`}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
+                  activeView === 'schema'
+                    ? 'bg-white text-indigo-900 font-semibold shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900'
+                }`}
+              >
+                <Database className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Schema Explorer</span>
+              </button>
+
+              {/* Tooltip */}
+              <div
+                id="tooltip-header-nav-schema"
+                data-testid="tooltip-header-nav-schema"
+                role="tooltip"
+                className="absolute top-full left-1/2 -translate-x-1/2 pt-2 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 ease-out transform group-hover:translate-y-0 translate-y-1 invisible group-hover:visible whitespace-nowrap shadow-xl"
+              >
+                <div className="bg-zinc-900 text-white rounded-lg py-2 px-3 shadow-2xl border border-zinc-700/80 flex flex-col items-center gap-0.5 text-center">
+                  <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-zinc-900 border-t border-l border-zinc-700/80 rotate-45" />
+                  <span className="font-bold text-xs text-zinc-100 flex items-center gap-1.5">
+                    <Database className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>View Schema Explorer</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-300">
+                    <span className="text-zinc-400">Full Name:</span>
+                    <span className="font-medium text-white">Database Schema Explorer &amp; Index Manager</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] mt-0.5 font-medium">
+                    <span className="text-zinc-400">Current Status:</span>
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.2 rounded font-semibold ${
+                      activeView === 'schema'
+                        ? 'bg-indigo-950 text-indigo-300 border border-indigo-700'
+                        : 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${activeView === 'schema' ? 'bg-indigo-400 animate-pulse' : 'bg-zinc-400'}`}></span>
+                      <span>{activeView === 'schema' ? 'Active • 4 Tables & Indexes' : isIndexSynchronized ? 'Inactive • Indexes Synced' : 'Inactive • Drift Monitored'}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           <button

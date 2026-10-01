@@ -1,7 +1,265 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ExplainPlanNode, OptimizationFlags, QueryExecutionResult } from '../types';
-import { Terminal, Database, Code, CheckCircle2, AlertTriangle, ArrowDownRight, Layers, Sparkles, TrendingUp, History } from 'lucide-react';
+import {
+  Terminal,
+  Database,
+  Code,
+  CheckCircle2,
+  AlertTriangle,
+  ArrowDownRight,
+  Layers,
+  Sparkles,
+  TrendingUp,
+  TrendingDown,
+  History,
+  Calculator,
+  Play,
+  Clock,
+  Cpu,
+  Zap,
+  Copy,
+  Check,
+  RefreshCw,
+  X,
+  FileCode,
+  Sliders,
+  GitCompare,
+  Flame,
+  ArrowUp,
+  ArrowDown,
+  Lightbulb
+} from 'lucide-react';
 import * as d3 from 'd3';
+
+export interface QueryCostPrediction {
+  predictedTimeMs: number;
+  confidenceMarginMs: number;
+  plannerCost: number;
+  scanType: string;
+  estimatedRowsScanned: number;
+  estimatedRowsReturned: number;
+  estimatedIOPS: number;
+  riskLevel: 'optimal' | 'moderate' | 'critical';
+  riskScore: number;
+  reasoningSummary: string;
+  bottlenecks: string[];
+  aiRecommendations: string[];
+  astFeatures: {
+    hasIndexMatch: boolean;
+    hasJoin: boolean;
+    hasAggregation: boolean;
+    hasSort: boolean;
+    hasWildcardLike: boolean;
+    hasLimit: boolean;
+  };
+}
+
+export const PRESET_QUERIES = [
+  {
+    name: 'Indexed Point Lookup (Fast)',
+    desc: 'Uses composite B-Tree index on (status, category)',
+    sql: `SELECT id, order_number, customer_name, amount, status\nFROM transactions\nWHERE status = 'completed' AND category = 'Cloud Infrastructure'\nORDER BY created_at DESC\nLIMIT 50;`
+  },
+  {
+    name: 'Unindexed Amount Filter (Seq Scan)',
+    desc: 'Forces full table scan across 50,000 heap rows',
+    sql: `SELECT * FROM transactions\nWHERE amount > 5000 AND category = 'Enterprise License'\nORDER BY created_at DESC;`
+  },
+  {
+    name: 'Join with Line Items (N+1 Risk)',
+    desc: 'Joins parent transactions with order_items child table',
+    sql: `SELECT t.id, t.order_number, i.sku, i.unit_price, i.quantity\nFROM transactions t\nJOIN order_items i ON t.id = i.order_id\nWHERE t.status = 'flagged'\nLIMIT 100;`
+  },
+  {
+    name: 'Aggregate Group-By Summary',
+    desc: 'Multi-column aggregation and grouping metrics',
+    sql: `SELECT category, status, COUNT(*) as total_orders, AVG(amount) as avg_spend, SUM(amount) as revenue\nFROM transactions\nGROUP BY category, status\nHAVING COUNT(*) > 5\nORDER BY revenue DESC;`
+  },
+  {
+    name: 'Non-Sargable Wildcard Scan',
+    desc: 'Leading wildcard in LIKE expression prevents index usage',
+    sql: `SELECT id, order_number, customer_email, amount\nFROM transactions\nWHERE customer_email ILIKE '%corp.com%'\nLIMIT 50;`
+  }
+];
+
+export const predictQueryExecutionMetrics = (
+  rawSql: string,
+  diskTier: string,
+  flags: OptimizationFlags
+): QueryCostPrediction => {
+  const sql = rawSql.trim();
+  const lower = sql.toLowerCase();
+
+  const isBTreeIndexed = !!flags.btreeIndexing;
+  const isBatched = !!flags.batchEagerLoading;
+  const isCaching = !!flags.queryCaching;
+
+  const diskMultiplier = diskTier === 'HDD' ? 7.5 : diskTier === 'SSD' ? 2.2 : 1.0;
+  const baseIOPSCapacity = diskTier === 'NVMe' ? 500000 : diskTier === 'SSD' ? 10000 : 250;
+
+  // AST Feature Extraction
+  const hasJoin = lower.includes('join') || lower.includes('order_items');
+  const hasAggregation = lower.includes('group by') || lower.includes('count(') || lower.includes('sum(') || lower.includes('avg(');
+  const hasSort = lower.includes('order by');
+  const hasLimit = lower.includes('limit');
+  const hasWildcardLike = lower.includes("like '%") || lower.includes("ilike '%") || lower.includes('like "%') || lower.includes('ilike "%');
+
+  // Match indexed columns (status, category)
+  const filtersStatus = lower.includes('status =') || lower.includes('status in');
+  const filtersCategory = lower.includes('category =') || lower.includes('category in');
+  const filtersAmount = lower.includes('amount >') || lower.includes('amount <') || lower.includes('amount =') || lower.includes('amount between');
+  const filtersEmail = lower.includes('customer_email') || lower.includes('customer_name');
+
+  const hasCompositeIndexMatch = isBTreeIndexed && (filtersStatus || filtersCategory);
+  const isFullTableScanForced = hasWildcardLike || (!hasCompositeIndexMatch && (filtersAmount || filtersEmail || !lower.includes('where')));
+
+  // Base rows scanned & base metrics
+  let rowsScanned = 50000;
+  let scanType = 'Seq Scan (Full Table Heap Scan)';
+  let baseCost = 48.5;
+  let baseLatencyMs = 28.0;
+
+  if (hasCompositeIndexMatch && !isFullTableScanForced) {
+    scanType = 'Index Scan (idx_orders_status_category)';
+    rowsScanned = hasLimit ? 50 : 280;
+    baseCost = 4.82;
+    baseLatencyMs = 0.8;
+  } else if (hasCompositeIndexMatch && isFullTableScanForced) {
+    scanType = 'Bitmap Index Scan + Heap Filter';
+    rowsScanned = 8500;
+    baseCost = 18.40;
+    baseLatencyMs = 7.5;
+  } else {
+    scanType = 'Seq Scan (Full Table Heap Scan)';
+    rowsScanned = 50000;
+    baseCost = 48.5;
+    baseLatencyMs = 28.0;
+  }
+
+  // Joins impact
+  if (hasJoin) {
+    if (isBatched) {
+      baseCost += 12.0;
+      baseLatencyMs += 1.8;
+    } else {
+      // N+1 query cascade penalty
+      baseCost += 180.0;
+      baseLatencyMs += 64.0;
+    }
+  }
+
+  // Aggregation impact
+  if (hasAggregation) {
+    baseCost += 15.5;
+    baseLatencyMs += 3.2;
+  }
+
+  // Sort impact
+  if (hasSort && !hasCompositeIndexMatch) {
+    baseCost += 8.2;
+    baseLatencyMs += 2.4;
+  }
+
+  // Limit discount
+  let rowsReturned = hasLimit ? 50 : (hasAggregation ? 12 : 250);
+  if (hasLimit && !hasSort && !hasAggregation) {
+    baseLatencyMs *= 0.85;
+  }
+
+  // Cache impact
+  if (isCaching && sql.length < 220 && !hasWildcardLike) {
+    baseLatencyMs = Math.min(baseLatencyMs, 0.4);
+    baseCost = Math.min(baseCost, 2.1);
+  }
+
+  const finalLatencyMs = +(baseLatencyMs * diskMultiplier).toFixed(2);
+  const confidenceMargin = +(finalLatencyMs * 0.12).toFixed(2);
+  const plannerCost = +baseCost.toFixed(2);
+
+  // IOPS calculation
+  const estimatedIOPS = Math.round(
+    scanType.includes('Index')
+      ? Math.max(12, Math.round(rowsScanned * 0.45 * (diskTier === 'HDD' ? 0.3 : 1)))
+      : Math.round(Math.min(baseIOPSCapacity * 0.85, rowsScanned * 0.08 * diskMultiplier))
+  );
+
+  // Risk assessment
+  let riskLevel: 'optimal' | 'moderate' | 'critical' = 'optimal';
+  let riskScore = 15;
+  if (finalLatencyMs > 25 || plannerCost > 50) {
+    riskLevel = 'critical';
+    riskScore = Math.min(98, Math.round(40 + finalLatencyMs * 0.6));
+  } else if (finalLatencyMs > 5 || plannerCost > 15) {
+    riskLevel = 'moderate';
+    riskScore = Math.min(65, Math.round(20 + finalLatencyMs * 1.5));
+  } else {
+    riskLevel = 'optimal';
+    riskScore = Math.min(20, Math.round(finalLatencyMs * 3));
+  }
+
+  const bottlenecks: string[] = [];
+  const aiRecommendations: string[] = [];
+
+  if (scanType.includes('Seq Scan')) {
+    bottlenecks.push(`Full table sequential heap scan inspecting 50,000 records on storage tier (${diskTier})`);
+    aiRecommendations.push('Add composite B-Tree index on predicate columns (status, category) to avoid O(N) heap scans.');
+  }
+
+  if (hasJoin && !isBatched) {
+    bottlenecks.push('Synchronous join dispatch detected without batch eager loading (potential N+1 connection churn)');
+    aiRecommendations.push('Use single-roundtrip batched eager join: WHERE order_id IN (...) or Hash Join.');
+  }
+
+  if (hasWildcardLike) {
+    bottlenecks.push('Leading wildcard in ILIKE/LIKE (%...) invalidates B-Tree index traversal, forcing sequential evaluation');
+    aiRecommendations.push('Replace leading wildcard with pg_trgm trigram index (GIN) or prefix matching for sargability.');
+  }
+
+  if (hasSort && !hasCompositeIndexMatch) {
+    bottlenecks.push('In-memory Top-N heapsort requires work_mem memory allocation during query execution');
+    aiRecommendations.push('Include ORDER BY column in index leaf nodes to enable pre-sorted index order traversal.');
+  }
+
+  if (!hasLimit && !hasAggregation) {
+    aiRecommendations.push('Specify a LIMIT clause to prevent unbound heap record materialization on high-cardinality result sets.');
+  }
+
+  if (aiRecommendations.length === 0) {
+    aiRecommendations.push('Query execution path is fully optimized. Point lookups leverage composite B-Tree leaf pages.');
+  }
+
+  let reasoningSummary = `The AI query planner estimates execution will complete in ~${finalLatencyMs}ms (Cost: ${plannerCost}) using a ${scanType}. `;
+  if (riskLevel === 'critical') {
+    reasoningSummary += `High hardware storage pressure (${estimatedIOPS.toLocaleString()} IOPS on ${diskTier}) and table scanning require index remediation prior to execution.`;
+  } else if (riskLevel === 'moderate') {
+    reasoningSummary += `Moderate latency overhead observed. Applying suggested covering index columns will reduce latency by ~65-80%.`;
+  } else {
+    reasoningSummary += `Minimal I/O overhead. Execution plan utilizes existing index paths with sub-millisecond seek times.`;
+  }
+
+  return {
+    predictedTimeMs: finalLatencyMs,
+    confidenceMarginMs: confidenceMargin,
+    plannerCost: plannerCost,
+    scanType: scanType,
+    estimatedRowsScanned: rowsScanned,
+    estimatedRowsReturned: rowsReturned,
+    estimatedIOPS: estimatedIOPS,
+    riskLevel: riskLevel,
+    riskScore: riskScore,
+    reasoningSummary: reasoningSummary,
+    bottlenecks: bottlenecks,
+    aiRecommendations: aiRecommendations,
+    astFeatures: {
+      hasIndexMatch: hasCompositeIndexMatch,
+      hasJoin: hasJoin,
+      hasAggregation: hasAggregation,
+      hasSort: hasSort,
+      hasWildcardLike: hasWildcardLike,
+      hasLimit: hasLimit
+    }
+  };
+};
 
 interface ExplainPlanViewerProps {
   result?: QueryExecutionResult;
@@ -25,8 +283,18 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
   const [showIopsImpact, setShowIopsImpact] = useState<boolean>(false);
   const [showPredictiveCost, setShowPredictiveCost] = useState<boolean>(false);
   const [selectedPlanVersion, setSelectedPlanVersion] = useState<string>('current');
+  const [isComparePlansActive, setIsComparePlansActive] = useState<boolean>(false);
+  const [isHotpathActive, setIsHotpathActive] = useState<boolean>(false);
   const [isIndexSandboxOpen, setIsIndexSandboxOpen] = useState<boolean>(false);
   const [isAutoFixerOpen, setIsAutoFixerOpen] = useState<boolean>(false);
+  const [isSuggestIndexesOpen, setIsSuggestIndexesOpen] = useState<boolean>(false);
+  const [appliedIndexNotice, setAppliedIndexNotice] = useState<string | null>(null);
+  const [isCostEstimatorOpen, setIsCostEstimatorOpen] = useState<boolean>(false);
+  const [customSqlInput, setCustomSqlInput] = useState<string>(
+    `SELECT id, order_number, customer_name, amount, status\nFROM transactions\nWHERE status = 'completed' AND category = 'Cloud Infrastructure'\nORDER BY created_at DESC\nLIMIT 50;`
+  );
+  const [isEstimating, setIsEstimating] = useState<boolean>(false);
+  const [copiedSql, setCopiedSql] = useState<string | null>(null);
   const [sandboxColumns, setSandboxColumns] = useState<string[]>(['status', 'category', 'created_at']);
   const [sandboxNewColInput, setSandboxNewColInput] = useState<string>('');
   const [isSandboxComputed, setIsSandboxComputed] = useState<boolean>(false);
@@ -37,6 +305,60 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
     queryCaching: true,
     virtualizedDOM: true,
     deferredRendering: true,
+  };
+
+  const diskTier = (() => {
+    try {
+      return localStorage.getItem('enterprise_global_disk_tier') || 'NVMe';
+    } catch {
+      return 'NVMe';
+    }
+  })();
+
+  const [estimationResult, setEstimationResult] = useState<QueryCostPrediction>(() => {
+    return predictQueryExecutionMetrics(
+      `SELECT id, order_number, customer_name, amount, status\nFROM transactions\nWHERE status = 'completed' AND category = 'Cloud Infrastructure'\nORDER BY created_at DESC\nLIMIT 50;`,
+      diskTier,
+      safeFlags
+    );
+  });
+
+  const handleRunEstimation = async (queryOverride?: string) => {
+    const targetSql = queryOverride || customSqlInput;
+    setIsEstimating(true);
+    try {
+      const response = await fetch('/api/estimate-query-cost', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: targetSql, diskTier, flags: safeFlags })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && typeof data.predictedTimeMs === 'number') {
+          const fallbackMetrics = predictQueryExecutionMetrics(targetSql, diskTier, safeFlags);
+          setEstimationResult({
+            ...fallbackMetrics,
+            ...data
+          });
+          setIsEstimating(false);
+          return;
+        }
+      }
+    } catch {
+      // Ignore network errors in dev mode without express
+    }
+
+    setTimeout(() => {
+      const pred = predictQueryExecutionMetrics(targetSql, diskTier, safeFlags);
+      setEstimationResult(pred);
+      setIsEstimating(false);
+    }, 250);
+  };
+
+  const handleCopySql = (text: string, label: string) => {
+    navigator.clipboard?.writeText(text);
+    setCopiedSql(label);
+    setTimeout(() => setCopiedSql(null), 2000);
   };
 
   const effectiveExplainPlan: ExplainPlanNode = explainPlan || result?.explainPlan || {
@@ -52,14 +374,6 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
       : 'Full sequential scan across 50,000 rows in memory'
   };
 
-  const diskTier = (() => {
-    try {
-      return localStorage.getItem('enterprise_global_disk_tier') || 'NVMe';
-    } catch {
-      return 'NVMe';
-    }
-  })();
-
   const diskMultiplier = diskTier === 'HDD' ? 7.5 : diskTier === 'SSD' ? 2.2 : 1.0;
   const pageSize = result?.pageSize ?? 100;
   const baseExecutionTime = result?.executionTimeMs ?? effectiveExplainPlan.actualTimeMs ?? 1.2;
@@ -74,7 +388,215 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
     { id: 'v1', name: 'Version 1 (1d ago - Initial Baseline)', cost: 62.10, time: 34.5, type: 'Seq Scan' }
   ];
 
+  const getPlanTreeForVersion = (versionId: string, currentPlan: ExplainPlanNode): ExplainPlanNode => {
+    if (versionId === 'current') return currentPlan;
+    if (versionId === 'v5') {
+      return {
+        nodeType: 'Index Scan',
+        relationName: 'transactions',
+        indexName: 'idx_orders_status_category',
+        cost: 4.82,
+        actualTimeMs: 1.2,
+        rowsScanned: 32,
+        rowsReturned: 32,
+        details: 'B-Tree composite index seek on (status, category)',
+        subNodes: [
+          {
+            nodeType: 'Index Scan',
+            relationName: 'order_items',
+            indexName: 'idx_order_items_order_id',
+            cost: 0.85,
+            actualTimeMs: 0.35,
+            rowsScanned: 64,
+            rowsReturned: 64,
+            details: 'Batched index seek on foreign key (order_id)'
+          }
+        ]
+      };
+    }
+    if (versionId === 'v4') {
+      return {
+        nodeType: 'Index Scan',
+        relationName: 'transactions',
+        indexName: 'idx_transactions_status',
+        cost: 6.15,
+        actualTimeMs: 1.8,
+        rowsScanned: 64,
+        rowsReturned: 32,
+        details: 'Single-column index lookup on status with filter on category',
+        subNodes: [
+          {
+            nodeType: 'Nested Loop',
+            relationName: 'order_items',
+            cost: 2.10,
+            actualTimeMs: 1.1,
+            rowsScanned: 128,
+            rowsReturned: 64,
+            details: 'Nested loop join fetching order items with partial index scan'
+          }
+        ]
+      };
+    }
+    if (versionId === 'v3') {
+      return {
+        nodeType: 'Seq Scan',
+        relationName: 'transactions',
+        cost: 48.50,
+        actualTimeMs: 24.0,
+        rowsScanned: 50000,
+        rowsReturned: 32,
+        details: 'Full sequential table scan across 50,000 unindexed heap rows',
+        subNodes: [
+          {
+            nodeType: 'Seq Scan',
+            relationName: 'order_items',
+            cost: 25.40,
+            actualTimeMs: 18.2,
+            rowsScanned: 25000,
+            rowsReturned: 64,
+            details: 'Synchronous N+1 subquery storm executing 50+ roundtrips'
+          }
+        ]
+      };
+    }
+    if (versionId === 'v2') {
+      return {
+        nodeType: 'Index Scan',
+        relationName: 'transactions',
+        indexName: 'idx_status_partial',
+        cost: 14.20,
+        actualTimeMs: 5.6,
+        rowsScanned: 1500,
+        rowsReturned: 32,
+        details: 'Partial index scan with secondary heap filter rechecks',
+        subNodes: [
+          {
+            nodeType: 'Hash Join',
+            relationName: 'order_items',
+            cost: 6.80,
+            actualTimeMs: 3.2,
+            rowsScanned: 3200,
+            rowsReturned: 64,
+            details: 'Hash join with temporary in-memory materialization table'
+          }
+        ]
+      };
+    }
+    // v1
+    return {
+      nodeType: 'Seq Scan',
+      relationName: 'transactions',
+      cost: 62.10,
+      actualTimeMs: 34.5,
+      rowsScanned: 50000,
+      rowsReturned: 32,
+      details: 'Initial unindexed baseline full table scan with heavy memory contention',
+      subNodes: [
+        {
+          nodeType: 'Seq Scan',
+          relationName: 'order_items',
+          cost: 38.20,
+          actualTimeMs: 26.0,
+          rowsScanned: 40000,
+          rowsReturned: 64,
+          details: 'Unbatched synchronous queries with thread lock contention'
+        }
+      ]
+    };
+  };
+
   const activePlanVersionData = cachedPlanVersions.find(v => v.id === selectedPlanVersion) || cachedPlanVersions[0];
+  const comparedVersionId = selectedPlanVersion === 'current' ? 'v3' : selectedPlanVersion;
+  const targetPreviousPlanMeta = cachedPlanVersions.find(v => v.id === comparedVersionId) || cachedPlanVersions[3];
+  const targetPreviousPlanTree = getPlanTreeForVersion(comparedVersionId, effectiveExplainPlan);
+
+  // Evaluates the query's current cost nodes dynamically
+  const evaluatedNodes = [
+    {
+      name: `Root ${effectiveExplainPlan.nodeType} (${effectiveExplainPlan.relationName})`,
+      cost: effectiveExplainPlan.cost,
+      timeMs: baseExecutionTime,
+      rows: effectiveExplainPlan.rowsScanned,
+      risk: effectiveExplainPlan.cost > 20 ? 'Critical Bottleneck' : 'Moderate Overhead',
+      isSeqScan: effectiveExplainPlan.nodeType.includes('Seq'),
+      description: effectiveExplainPlan.details
+    },
+    ...(effectiveExplainPlan.subNodes || []).map((sub) => ({
+      name: `Child ${sub.nodeType} (${sub.relationName})`,
+      cost: sub.cost,
+      timeMs: sub.actualTimeMs,
+      rows: sub.rowsScanned,
+      risk: sub.details.includes('N+1') || sub.cost > 10 ? 'High Latency Cascades' : 'Low Overhead',
+      isSeqScan: sub.nodeType.includes('Seq'),
+      description: sub.details
+    }))
+  ];
+
+  const totalEvaluatedCost = evaluatedNodes.reduce((acc, n) => acc + n.cost, 0);
+
+  // 3 specific composite index recommendations targeting the evaluated cost nodes
+  const recommendedCompositeIndexes = [
+    {
+      id: 'idx-rec-1',
+      title: 'Filter + Sort Composite B-Tree Index',
+      tableName: 'transactions',
+      indexName: 'idx_transactions_status_category_created',
+      columns: ['status', 'category', 'created_at DESC'],
+      includeColumns: ['amount', 'customer_name', 'order_number'],
+      targetNode: `Root Node: ${effectiveExplainPlan.nodeType} on transactions (Cost: ${effectiveExplainPlan.cost.toFixed(2)})`,
+      bottleneckResolved: 'Eliminates full-table sequential heap scans and in-memory Top-N quicksort memory spills',
+      currentLatencyMs: executionTime,
+      projectedLatencyMs: +(executionTime * 0.08).toFixed(2),
+      currentCost: effectiveExplainPlan.cost,
+      projectedCost: 2.15,
+      latencyReductionPct: 92.0,
+      costReductionPct: 95.6,
+      ddl: `CREATE INDEX CONCURRENTLY idx_transactions_status_category_created 
+ON transactions (status, category, created_at DESC) 
+INCLUDE (amount, customer_name, order_number);`,
+      explanation: 'Composite key ordering (status, category, created_at DESC) aligns directly with active WHERE predicates and ORDER BY clauses, enabling PostgreSQL to jump directly to target leaf nodes and stream pre-sorted records without memory allocation. The INCLUDE clause turns this into an Index-Only Scan.'
+    },
+    {
+      id: 'idx-rec-2',
+      title: 'Covering Composite Index for Customer Lookups',
+      tableName: 'transactions',
+      indexName: 'idx_transactions_status_customer_covering',
+      columns: ['status', 'customer_name', 'customer_email'],
+      includeColumns: ['amount', 'category', 'created_at'],
+      targetNode: `Predicate Filtering on transactions (Rows Scanned: ${effectiveExplainPlan.rowsScanned.toLocaleString()})`,
+      bottleneckResolved: 'Eliminates random heap page I/O lookups during customer search & filtering',
+      currentLatencyMs: executionTime,
+      projectedLatencyMs: +(executionTime * 0.12).toFixed(2),
+      currentCost: effectiveExplainPlan.cost,
+      projectedCost: 3.40,
+      latencyReductionPct: 88.0,
+      costReductionPct: 93.0,
+      ddl: `CREATE INDEX CONCURRENTLY idx_transactions_status_customer_covering 
+ON transactions (status, customer_name, customer_email) 
+INCLUDE (amount, category, created_at);`,
+      explanation: 'Optimizes high-cardinality ILIKE prefix searches and customer lookups. By storing secondary projection attributes directly in index payload pages, the query engine achieves 0 physical heap fetches, reading entire rows directly from RAM buffer cache.'
+    },
+    {
+      id: 'idx-rec-3',
+      title: 'Foreign Key Composite Join Index',
+      tableName: 'order_items',
+      indexName: 'idx_order_items_fk_composite_covering',
+      columns: ['order_id', 'sku'],
+      includeColumns: ['unit_price', 'quantity', 'name'],
+      targetNode: `Child Join Subnode on order_items (Subquery dispatch / N+1 cascade)`,
+      bottleneckResolved: 'Replaces synchronous N+1 subquery cascades with single-roundtrip batched seeks',
+      currentLatencyMs: +(executionTime * 0.4).toFixed(2),
+      projectedLatencyMs: 0.35,
+      currentCost: 25.40,
+      projectedCost: 0.85,
+      latencyReductionPct: 98.1,
+      costReductionPct: 96.7,
+      ddl: `CREATE INDEX CONCURRENTLY idx_order_items_fk_composite_covering 
+ON order_items (order_id, sku) 
+INCLUDE (unit_price, quantity, name);`,
+      explanation: 'Creating a composite index on (order_id, sku) with covering attributes enables PostgreSQL to satisfy batched WHERE order_id IN (...) queries in a single 0.35ms seek, eliminating repeated roundtrips and connection pool exhaustion.'
+    }
+  ];
 
   const unoptimizedSQL = `-- Query 1: Parent order query with unindexed sequential table scan
 SELECT o.id, o.order_number, o.customer_id, o.amount, o.status, o.category
@@ -108,15 +630,46 @@ SELECT i.order_id, i.sku, i.name, i.unit_price, i.quantity
 FROM order_items i
 WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
 
-  const renderPlanNode = (node: ExplainPlanNode, depth = 0) => {
+  const renderPlanNodeWithDiff = (
+    node: ExplainPlanNode,
+    depth = 0,
+    compareNode?: ExplainPlanNode,
+    isPreviousVersion = false,
+    isHotpath = false
+  ) => {
     const isIndex = node.nodeType === 'Index Scan' || node.nodeType === 'LRU Cache Lookup';
     const isNPlusOne = node.details.includes('N+1');
+    const isSeq = node.nodeType === 'Seq Scan';
+    const isHot = isHotpath && (isSeq || node.cost >= 20 || isNPlusOne);
+
+    let costDelta = 0;
+    let hasDelta = false;
+    if (compareNode) {
+      hasDelta = true;
+      if (isPreviousVersion) {
+        costDelta = compareNode.cost - node.cost;
+      } else {
+        costDelta = node.cost - compareNode.cost;
+      }
+    }
+
+    const costDecreased = hasDelta && costDelta < -0.01;
+    const costIncreased = hasDelta && costDelta > 0.01;
+    const costPct = hasDelta && compareNode && compareNode.cost > 0
+      ? Math.abs((costDelta / (isPreviousVersion ? node.cost : compareNode.cost)) * 100).toFixed(1)
+      : '0';
 
     return (
-      <div key={`${node.relationName}-${depth}`} className="flex flex-col gap-2">
+      <div key={`${node.relationName}-${depth}-${node.nodeType}`} className="flex flex-col gap-2">
         <div
-          className={`p-3 rounded-lg border text-xs ${
-            isIndex
+          className={`p-3 rounded-xl border text-xs transition-all ${
+            isHot
+              ? 'ring-4 ring-amber-400/80 border-amber-500 bg-amber-50/90 shadow-lg shadow-amber-200/50 animate-pulse'
+              : costDecreased
+              ? 'border-2 border-emerald-500 bg-emerald-50/90 ring-2 ring-emerald-400/30 shadow-xs'
+              : costIncreased
+              ? 'border-2 border-rose-500 bg-rose-50/90 ring-2 ring-rose-400/30 shadow-xs'
+              : isIndex
               ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950'
               : isNPlusOne
               ? 'bg-rose-50/80 border-rose-300 text-rose-950'
@@ -125,7 +678,7 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
           style={{ marginLeft: `${depth * 20}px` }}
         >
           <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span
                 className={`font-mono font-bold px-2 py-0.5 rounded text-[11px] ${
                   isIndex
@@ -137,23 +690,78 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
               >
                 {node.nodeType}
               </span>
-              <span className="font-semibold">{node.relationName}</span>
+              <span className="font-semibold text-zinc-900">{node.relationName}</span>
               {node.indexName && (
-                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-100/70 px-1.5 py-0.2 rounded">
+                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-100/70 px-1.5 py-0.2 rounded border border-emerald-200">
                   using {node.indexName}
                 </span>
               )}
+              {isHot && (
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-extrabold bg-amber-500 text-white px-2 py-0.5 rounded-full shadow-xs">
+                  <Flame className="w-3 h-3 fill-white" />
+                  Critical Hotpath
+                </span>
+              )}
             </div>
-            <div className="flex items-center gap-3 font-mono text-[11px] text-zinc-600">
-              <span>Cost: {node.cost.toFixed(2)}</span>
-              <span className="font-semibold text-zinc-900">
+            <div className="flex items-center gap-2.5 font-mono text-[11px] text-zinc-600 flex-wrap">
+              <span className="font-bold text-zinc-900">Cost: {node.cost.toFixed(2)}</span>
+              <span className="font-semibold text-zinc-800">
                 Time: {node.actualTimeMs.toFixed(2)} ms
               </span>
               <span>
-                Rows: {node.rowsReturned} / {node.rowsScanned.toLocaleString()} scanned
+                Rows: {node.rowsReturned} / {node.rowsScanned.toLocaleString()}
               </span>
             </div>
           </div>
+
+          {/* Cost Delta Diff Highlight Badge */}
+          {hasDelta && (
+            <div className="mt-2 pt-1.5 border-t border-zinc-200/70 flex items-center justify-between flex-wrap gap-2 text-[11px]">
+              {isPreviousVersion ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-zinc-500 font-medium">Historical Baseline Node:</span>
+                  {costDecreased ? (
+                    <span className="inline-flex items-center gap-1 font-mono font-bold text-emerald-800 bg-emerald-100/80 px-2 py-0.5 rounded border border-emerald-300">
+                      <TrendingDown className="w-3.5 h-3.5 text-emerald-700" />
+                      <span>Current plan reduces this node cost by {Math.abs(costDelta).toFixed(2)} (-{costPct}%)</span>
+                    </span>
+                  ) : costIncreased ? (
+                    <span className="inline-flex items-center gap-1 font-mono font-bold text-rose-800 bg-rose-100/80 px-2 py-0.5 rounded border border-rose-300">
+                      <TrendingUp className="w-3.5 h-3.5 text-rose-700" />
+                      <span>Current plan node cost is higher by +{costDelta.toFixed(2)} (+{costPct}%)</span>
+                    </span>
+                  ) : (
+                    <span className="font-mono text-zinc-600 bg-zinc-100 px-2 py-0.5 rounded">
+                      Equal cost in current plan
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  {costDecreased ? (
+                    <span className="inline-flex items-center gap-1 font-mono font-bold text-emerald-800 bg-emerald-100/90 px-2.5 py-0.5 rounded-full border border-emerald-300 shadow-2xs">
+                      <TrendingDown className="w-3.5 h-3.5 text-emerald-700" />
+                      <span>Cost Decreased: -{Math.abs(costDelta).toFixed(2)} (-{costPct}%)</span>
+                    </span>
+                  ) : costIncreased ? (
+                    <span className="inline-flex items-center gap-1 font-mono font-bold text-rose-800 bg-rose-100/90 px-2.5 py-0.5 rounded-full border border-rose-300 shadow-2xs">
+                      <TrendingUp className="w-3.5 h-3.5 text-rose-700" />
+                      <span>Cost Increased: +{costDelta.toFixed(2)} (+{costPct}%)</span>
+                    </span>
+                  ) : (
+                    <span className="font-mono text-zinc-600 bg-zinc-100 px-2.5 py-0.5 rounded-full text-[10px]">
+                      Cost Unchanged (±0.00)
+                    </span>
+                  )}
+                  {compareNode && (
+                    <span className="text-zinc-500 font-mono text-[10px]">
+                      (vs {compareNode.cost.toFixed(2)} in selected version)
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <p className="text-[11px] text-zinc-600 mt-1">{node.details}</p>
         </div>
@@ -165,12 +773,23 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                 className="w-4 h-4 text-zinc-400 shrink-0 mt-2"
                 style={{ marginLeft: `${depth * 20 + 6}px` }}
               />
-              <div className="flex-1">{renderPlanNode(childNode, depth + 1)}</div>
+              <div className="flex-1">
+                {renderPlanNodeWithDiff(
+                  childNode,
+                  depth + 1,
+                  compareNode?.subNodes?.[idx],
+                  isPreviousVersion,
+                  isHotpath
+                )}
+              </div>
             </div>
           ))}
       </div>
     );
   };
+
+  const renderPlanNode = (node: ExplainPlanNode, depth = 0) =>
+    renderPlanNodeWithDiff(node, depth, undefined, false, isHotpathActive);
 
   const D3CostBreakdownChart: React.FC<{ plan: ExplainPlanNode }> = ({ plan }) => {
     const svgRef = useRef<SVGSVGElement | null>(null);
@@ -298,6 +917,29 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
             </select>
           </div>
 
+          {/* Compare Plans Header Button */}
+          <button
+            type="button"
+            id="btn-toggle-compare-plans"
+            data-testid="btn-toggle-compare-plans"
+            onClick={() => {
+              const nextState = !isComparePlansActive;
+              setIsComparePlansActive(nextState);
+              if (nextState && selectedPlanVersion === 'current') {
+                setSelectedPlanVersion('v3');
+              }
+            }}
+            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-2xs ${
+              isComparePlansActive
+                ? 'bg-blue-600 text-white border-blue-700 ring-2 ring-blue-300'
+                : 'bg-white text-blue-900 hover:bg-blue-50 border-blue-300'
+            }`}
+            title="Toggle side-by-side visualization of current execution plan vs selected historical plan"
+          >
+            <GitCompare className="w-3.5 h-3.5" />
+            <span>Compare Plans {isComparePlansActive ? 'ON' : ''}</span>
+          </button>
+
           <div className="flex items-center gap-1 bg-zinc-200/80 p-0.5 rounded-lg text-xs">
           <button
             type="button"
@@ -364,7 +1006,7 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
           <div className="space-y-3">
             {/* Historical Plan Comparison Banner */}
             {selectedPlanVersion !== 'current' && (
-              <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 flex items-center justify-between gap-3 animate-fadeIn">
+              <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 flex items-center justify-between gap-3 animate-fadeIn flex-wrap">
                 <div className="flex items-center gap-2">
                   <History className="w-4 h-4 text-amber-700 shrink-0" />
                   <div>
@@ -374,13 +1016,27 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPlanVersion('current')}
-                  className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-950 font-bold rounded-lg cursor-pointer transition-colors"
-                >
-                  Reset to Current
-                </button>
+                <div className="flex items-center gap-2">
+                  {!isComparePlansActive && (
+                    <button
+                      type="button"
+                      id="btn-open-side-by-side-compare"
+                      data-testid="btn-open-side-by-side-compare"
+                      onClick={() => setIsComparePlansActive(true)}
+                      className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg cursor-pointer transition-colors shadow-2xs flex items-center gap-1"
+                    >
+                      <GitCompare className="w-3.5 h-3.5" />
+                      <span>Side-by-Side Compare</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedPlanVersion('current')}
+                    className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-950 font-bold rounded-lg cursor-pointer transition-colors"
+                  >
+                    Reset to Current
+                  </button>
+                </div>
               </div>
             )}
 
@@ -420,8 +1076,105 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                   <Sparkles className="w-3.5 h-3.5 text-amber-400 animate-spin" />
                   <span>AI Index Auto-Fixer</span>
                 </button>
+
+                <button
+                  type="button"
+                  id="btn-suggest-optimized-indexes"
+                  data-testid="btn-suggest-optimized-indexes"
+                  onClick={() => setIsSuggestIndexesOpen(!isSuggestIndexesOpen)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isSuggestIndexesOpen
+                      ? 'bg-gradient-to-r from-amber-600 to-orange-600 text-white border-amber-700 ring-2 ring-amber-300'
+                      : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border-amber-300'
+                  }`}
+                  title="Suggest Optimized Indexes: Evaluates query's current cost nodes and recommends 2-3 specific composite index structures"
+                >
+                  <Lightbulb className={`w-3.5 h-3.5 ${isSuggestIndexesOpen ? 'text-amber-200 fill-amber-300' : 'text-amber-600'}`} />
+                  <span>Suggest Optimized Indexes</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-ai-query-cost-estimator"
+                  data-testid="btn-ai-query-cost-estimator"
+                  onClick={() => setIsCostEstimatorOpen(!isCostEstimatorOpen)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isCostEstimatorOpen
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white border-emerald-700'
+                      : 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100 border-emerald-300'
+                  }`}
+                  title="AI-Query Cost Estimator: Predicts execution time & cost for custom SQL strings before running against database"
+                >
+                  <Calculator className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>AI Cost Estimator</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-toggle-compare-plans-toolbar"
+                  data-testid="toggle-compare-plans"
+                  onClick={() => {
+                    const nextState = !isComparePlansActive;
+                    setIsComparePlansActive(nextState);
+                    if (nextState && selectedPlanVersion === 'current') {
+                      setSelectedPlanVersion('v3');
+                    }
+                  }}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isComparePlansActive
+                      ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white border-blue-700 ring-2 ring-blue-300'
+                      : 'bg-blue-50 text-blue-900 hover:bg-blue-100 border-blue-300'
+                  }`}
+                  title="Compare Plans: Side-by-side visualization of current execution plan against historical version"
+                >
+                  <GitCompare className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Compare Plans {isComparePlansActive ? 'ON' : ''}</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-toggle-hotpath"
+                  data-testid="btn-toggle-hotpath"
+                  onClick={() => setIsHotpathActive(!isHotpathActive)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isHotpathActive
+                      ? 'bg-gradient-to-r from-amber-500 to-rose-600 text-white border-amber-600 ring-2 ring-amber-300'
+                      : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border-amber-300'
+                  }`}
+                  title="Hotpath: Highlights critical execution path nodes with glowing borders to identify sequential scan bottlenecks"
+                >
+                  <Flame className={`w-3.5 h-3.5 ${isHotpathActive ? 'animate-bounce text-amber-200' : 'text-amber-600'}`} />
+                  <span>Hotpath {isHotpathActive ? 'ON' : ''}</span>
+                </button>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-blue-900 cursor-pointer bg-blue-50 hover:bg-blue-100/70 px-2.5 py-1 rounded-lg transition-colors border border-blue-200">
+                  <input
+                    type="checkbox"
+                    id="checkbox-compare-plans"
+                    data-testid="checkbox-compare-plans"
+                    checked={isComparePlansActive}
+                    onChange={(e) => {
+                      setIsComparePlansActive(e.target.checked);
+                      if (e.target.checked && selectedPlanVersion === 'current') {
+                        setSelectedPlanVersion('v3');
+                      }
+                    }}
+                    className="rounded border-blue-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Compare Plans</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-amber-900 cursor-pointer bg-amber-50 hover:bg-amber-100/70 px-2.5 py-1 rounded-lg transition-colors border border-amber-200">
+                  <input
+                    type="checkbox"
+                    id="checkbox-hotpath"
+                    data-testid="checkbox-hotpath"
+                    checked={isHotpathActive}
+                    onChange={(e) => setIsHotpathActive(e.target.checked)}
+                    className="rounded border-amber-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Hotpath</span>
+                </label>
                 <label className="flex items-center gap-2 text-xs font-semibold text-cyan-800 cursor-pointer bg-cyan-50 hover:bg-cyan-100/70 px-2.5 py-1 rounded-lg transition-colors border border-cyan-200">
                   <input
                     type="checkbox"
@@ -453,7 +1206,7 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                     onChange={(e) => setShowExecutiveSummary(e.target.checked)}
                     className="rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
                   />
-                  <span>Show Executive Summary</span>
+                  <span>Executive Summary</span>
                 </label>
                 <span className="font-mono">
                   Total Query Cost: {isSandboxComputed ? '2.15' : effectiveExplainPlan.cost.toFixed(2)} | Time: {isSandboxComputed ? '0.6' : executionTime}ms
@@ -661,6 +1414,483 @@ INCLUDE (amount, customer_email, created_at);
               </div>
             )}
 
+            {/* Suggest Optimized Indexes Panel */}
+            {isSuggestIndexesOpen && (
+              <div
+                id="panel-suggest-optimized-indexes"
+                data-testid="panel-suggest-optimized-indexes"
+                className="p-4 bg-gradient-to-r from-amber-50/90 via-orange-50/80 to-amber-50/90 rounded-xl border-2 border-amber-300 shadow-lg space-y-4 animate-fadeIn"
+              >
+                <div className="flex items-center justify-between border-b border-amber-200 pb-2.5 flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-amber-600 text-white rounded-lg shadow-xs">
+                      <Lightbulb className="w-4 h-4 text-amber-200 fill-amber-300" />
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-bold text-amber-950 uppercase tracking-wider flex items-center gap-2">
+                        <span>Suggest Optimized Indexes</span>
+                        <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full font-mono font-bold">
+                          3 Composite Structures Recommended
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-amber-900">
+                        Evaluated query cost nodes ({evaluatedNodes.length} nodes inspected, Total Cost: {totalEvaluatedCost.toFixed(2)}). Recommended composite index structures designed to eliminate sequential scans and heapsort memory bottlenecks.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsSuggestIndexesOpen(false)}
+                      className="text-amber-800 hover:text-amber-950 p-1 rounded-lg hover:bg-amber-100 cursor-pointer"
+                      title="Close suggestions panel"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {appliedIndexNotice && (
+                  <div className="p-2.5 bg-emerald-100 border border-emerald-300 rounded-lg text-xs font-semibold text-emerald-900 flex items-center justify-between animate-fadeIn">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                      <span>{appliedIndexNotice}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAppliedIndexNotice(null)}
+                      className="text-emerald-700 hover:text-emerald-950 font-bold ml-2 cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+
+                {/* Evaluated Cost Nodes Summary Ribbon */}
+                <div className="p-3 bg-white/95 rounded-xl border border-amber-200 shadow-2xs space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-zinc-800 flex items-center gap-1.5">
+                      <Cpu className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Evaluated Query Cost Nodes:</span>
+                    </span>
+                    <span className="font-mono text-[11px] text-amber-900 font-bold">
+                      Evaluated Latency: {executionTime}ms | Base Planner Cost: {effectiveExplainPlan.cost.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                    {evaluatedNodes.map((n, i) => (
+                      <div key={i} className="p-2 rounded-lg bg-zinc-50 border border-zinc-200 flex items-center justify-between">
+                        <div>
+                          <div className="font-semibold text-zinc-900 flex items-center gap-1.5">
+                            <span className={`w-2 h-2 rounded-full ${n.isSeqScan ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
+                            <span>{n.name}</span>
+                          </div>
+                          <p className="text-[10px] text-zinc-500 mt-0.5">{n.description}</p>
+                        </div>
+                        <div className="text-right font-mono text-[11px] shrink-0 ml-2">
+                          <span className="font-bold text-zinc-900">Cost: {n.cost.toFixed(2)}</span>
+                          <div className="text-[10px] text-zinc-500">{n.rows.toLocaleString()} rows</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3 Specific Composite Index Structure Cards */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+                  {recommendedCompositeIndexes.map((rec, idx) => (
+                    <div
+                      key={rec.id}
+                      className="p-3.5 bg-white rounded-xl border border-amber-200 shadow-sm flex flex-col justify-between space-y-3 hover:border-amber-300 transition-all"
+                    >
+                      <div className="space-y-2">
+                        {/* Header */}
+                        <div className="flex items-start justify-between gap-1.5">
+                          <div>
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                              Structure {idx + 1}
+                            </span>
+                            <h5 className="font-bold text-xs text-zinc-900 mt-1">{rec.title}</h5>
+                            <span className="text-[11px] font-mono font-semibold text-indigo-700">
+                              Table: {rec.tableName}
+                            </span>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="inline-flex items-center gap-0.5 text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded border border-emerald-300">
+                              <TrendingDown className="w-3 h-3 text-emerald-700" />
+                              -{rec.latencyReductionPct}% Time
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Reduction Metrics */}
+                        <div className="grid grid-cols-2 gap-1.5 py-1 text-center bg-zinc-50 rounded-lg border border-zinc-100 font-mono text-[10px]">
+                          <div className="p-1">
+                            <span className="text-zinc-500 block text-[9px] uppercase">Latency Drop</span>
+                            <span className="font-bold text-emerald-700">{rec.currentLatencyMs}ms ➔ {rec.projectedLatencyMs}ms</span>
+                          </div>
+                          <div className="p-1 border-l border-zinc-200">
+                            <span className="text-zinc-500 block text-[9px] uppercase">Cost Drop</span>
+                            <span className="font-bold text-indigo-700">{rec.currentCost.toFixed(2)} ➔ {rec.projectedCost.toFixed(2)}</span>
+                          </div>
+                        </div>
+
+                        {/* Evaluated Bottleneck */}
+                        <div className="text-[11px] text-zinc-600 space-y-1">
+                          <p>
+                            <strong className="text-zinc-900">Target Node:</strong> {rec.targetNode}
+                          </p>
+                          <p className="text-[10px] text-zinc-500 leading-snug">
+                            {rec.explanation}
+                          </p>
+                        </div>
+
+                        {/* Columns Pill Tags */}
+                        <div className="space-y-1 text-xs">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="text-[10px] font-bold text-zinc-500">Key Order:</span>
+                            {rec.columns.map((col, cIdx) => (
+                              <span key={cIdx} className="font-mono text-[10px] bg-indigo-50 text-indigo-900 px-1.5 py-0.2 rounded border border-indigo-200 font-semibold">
+                                {col}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span className="text-[10px] font-bold text-zinc-500">INCLUDE:</span>
+                            {rec.includeColumns.map((col, cIdx) => (
+                              <span key={cIdx} className="font-mono text-[10px] bg-emerald-50 text-emerald-900 px-1.5 py-0.2 rounded border border-emerald-200">
+                                {col}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* DDL Box */}
+                        <div className="p-2.5 bg-zinc-950 text-emerald-400 font-mono text-[10px] rounded-lg border border-zinc-800 shadow-inner overflow-x-auto leading-relaxed relative">
+                          <pre className="whitespace-pre-wrap">{rec.ddl}</pre>
+                        </div>
+                      </div>
+
+                      {/* Card Actions */}
+                      <div className="pt-2 border-t border-zinc-100 flex items-center justify-between gap-1.5 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => handleCopySql(rec.ddl, rec.id)}
+                          className="px-2.5 py-1 text-xs bg-zinc-100 hover:bg-zinc-200 text-zinc-800 rounded-md font-semibold cursor-pointer transition-colors flex items-center gap-1"
+                        >
+                          {copiedSql === rec.id ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedSql === rec.id ? 'Copied DDL' : 'Copy DDL'}</span>
+                        </button>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSandboxColumns(rec.columns.map(c => c.replace(' DESC', '')));
+                              setIsIndexSandboxOpen(true);
+                              setIsSandboxComputed(true);
+                            }}
+                            className="px-2.5 py-1 text-xs bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 rounded-md font-semibold cursor-pointer transition-colors"
+                            title="Load columns into Index Sandbox to verify simulated cost reduction"
+                          >
+                            Sandbox
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAppliedIndexNotice(`✓ Successfully applied composite index structure '${rec.indexName}'! Execution plan projected to complete in ${rec.projectedLatencyMs}ms.`);
+                              setTimeout(() => setAppliedIndexNotice(null), 5000);
+                            }}
+                            className="px-2.5 py-1 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded-md font-bold cursor-pointer transition-colors shadow-2xs"
+                          >
+                            Apply Index
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Footer Action Bar */}
+                <div className="flex items-center justify-between pt-2 border-t border-amber-200 text-xs flex-wrap gap-2">
+                  <span className="font-mono text-[11px] text-amber-900 font-bold">
+                    🚀 Combining these composite indexes delivers up to 95.6% lower query latency with zero application code rewrites.
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const allDdl = recommendedCompositeIndexes.map(r => r.ddl).join('\n\n');
+                        handleCopySql(allDdl, 'all-suggested-ddl');
+                      }}
+                      className="px-3 py-1.5 bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg font-bold cursor-pointer transition-colors flex items-center gap-1.5"
+                    >
+                      {copiedSql === 'all-suggested-ddl' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedSql === 'all-suggested-ddl' ? 'Copied All 3 DDLs' : 'Copy All 3 DDL Statements'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsSuggestIndexesOpen(false)}
+                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold cursor-pointer transition-colors shadow-xs"
+                    >
+                      Close Suggestions
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* AI-Query Cost Estimator Panel */}
+            {isCostEstimatorOpen && (
+              <div
+                id="panel-ai-query-cost-estimator"
+                data-testid="panel-ai-query-cost-estimator"
+                className="p-4 bg-gradient-to-r from-emerald-50 via-teal-50 to-cyan-50 rounded-xl border-2 border-emerald-300 shadow-lg space-y-4 animate-fadeIn"
+              >
+                <div className="flex items-center justify-between border-b border-emerald-200 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-emerald-600 text-white rounded-lg shadow-xs">
+                      <Calculator className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider flex items-center gap-1.5">
+                        <span>AI-Query Cost Estimator</span>
+                        <span className="text-[10px] bg-emerald-200 text-emerald-900 px-2 py-0.2 rounded-full font-mono font-semibold">
+                          Pre-Execution Predictor
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-emerald-800">
+                        Predicts expected execution time and storage resource usage for custom SQL strings before running against the database engine.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold hidden sm:inline">
+                      Storage Tier: {diskTier} ({diskMultiplier}x)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setIsCostEstimatorOpen(false)}
+                      className="text-emerald-700 hover:text-emerald-950 p-1 rounded-md hover:bg-emerald-200/50 cursor-pointer"
+                      title="Close Cost Estimator"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Preset SQL Quick Pickers */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] text-emerald-950 font-semibold">
+                    <span>Quick Test SQL Presets:</span>
+                    <span className="text-[10px] text-zinc-500 font-normal">Click any preset to load &amp; predict</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PRESET_QUERIES.map((preset, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          setCustomSqlInput(preset.sql);
+                          handleRunEstimation(preset.sql);
+                        }}
+                        className="px-2.5 py-1 bg-white hover:bg-emerald-100/70 border border-emerald-200 text-emerald-900 rounded-lg text-xs font-medium cursor-pointer transition-colors shadow-2xs flex items-center gap-1"
+                        title={preset.desc}
+                      >
+                        <Zap className="w-3 h-3 text-emerald-600" />
+                        <span>{preset.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom SQL Input Area */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <label htmlFor="input-custom-sql-query" className="font-bold text-emerald-950 flex items-center gap-1.5">
+                      <Code className="w-3.5 h-3.5 text-emerald-700" />
+                      <span>Custom SQL Query String:</span>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCustomSqlInput('')}
+                        className="text-[11px] text-zinc-500 hover:text-zinc-800 underline cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopySql(customSqlInput, 'custom')}
+                        className="text-[11px] text-emerald-700 hover:text-emerald-900 flex items-center gap-0.5 cursor-pointer font-medium"
+                      >
+                        {copiedSql === 'custom' ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedSql === 'custom' ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    id="input-custom-sql-query"
+                    data-testid="input-custom-sql-query"
+                    rows={4}
+                    value={customSqlInput}
+                    onChange={(e) => setCustomSqlInput(e.target.value)}
+                    placeholder="Enter custom SQL string (e.g. SELECT * FROM transactions WHERE amount > 5000)..."
+                    className="w-full p-3 font-mono text-xs bg-zinc-950 text-emerald-300 rounded-xl border border-zinc-800 shadow-inner focus:outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
+                  />
+                </div>
+
+                {/* Action Toolbar */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-emerald-200">
+                  <span className="text-[11px] font-mono text-emerald-900">
+                    Query Length: {customSqlInput.length} chars | Target: <strong className="underline">transactions</strong>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      id="btn-predict-query-cost"
+                      data-testid="btn-predict-query-cost"
+                      disabled={isEstimating || !customSqlInput.trim()}
+                      onClick={() => handleRunEstimation()}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg text-xs font-bold cursor-pointer transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      {isEstimating ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Predicting Execution Metrics...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3.5 h-3.5 fill-white" />
+                          <span>Predict Expected Execution Time</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Predictive Results Grid */}
+                {estimationResult && (
+                  <div className="space-y-3 pt-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {/* Metric 1: Expected Execution Time */}
+                      <div className="p-3 bg-white rounded-xl border border-emerald-200 shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500 font-semibold">
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Expected Time</span>
+                          </span>
+                          <span className="text-[10px] font-mono text-zinc-400">±{estimationResult.confidenceMarginMs}ms</span>
+                        </div>
+                        <div className="text-xl font-bold font-mono text-emerald-950">
+                          {estimationResult.predictedTimeMs} ms
+                        </div>
+                        <div className="text-[10px] text-emerald-700 font-medium">
+                          Confidence: 96.8%
+                        </div>
+                      </div>
+
+                      {/* Metric 2: Planner Cost Score */}
+                      <div className="p-3 bg-white rounded-xl border border-emerald-200 shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500 font-semibold">
+                          <span className="flex items-center gap-1">
+                            <Cpu className="w-3.5 h-3.5 text-indigo-600" />
+                            <span>Planner Cost</span>
+                          </span>
+                          <span className="text-[10px] font-mono text-zinc-400">units</span>
+                        </div>
+                        <div className="text-xl font-bold font-mono text-indigo-950">
+                          {estimationResult.plannerCost.toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">
+                          Baseline: 4.82 (Index)
+                        </div>
+                      </div>
+
+                      {/* Metric 3: Access Scan Method */}
+                      <div className="p-3 bg-white rounded-xl border border-emerald-200 shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500 font-semibold">
+                          <span className="flex items-center gap-1">
+                            <Database className="w-3.5 h-3.5 text-teal-600" />
+                            <span>Scan Method</span>
+                          </span>
+                        </div>
+                        <div className="text-xs font-bold font-mono text-zinc-900 truncate" title={estimationResult.scanType}>
+                          {estimationResult.scanType}
+                        </div>
+                        <div className="text-[10px] font-mono text-zinc-500">
+                          {estimationResult.estimatedRowsScanned.toLocaleString()} rows scanned
+                        </div>
+                      </div>
+
+                      {/* Metric 4: Storage Load & IOPS */}
+                      <div className="p-3 bg-white rounded-xl border border-emerald-200 shadow-2xs space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500 font-semibold">
+                          <span className="flex items-center gap-1">
+                            <Sliders className="w-3.5 h-3.5 text-cyan-600" />
+                            <span>Storage IOPS</span>
+                          </span>
+                          <span className="text-[10px] font-mono font-bold text-cyan-700">{diskTier}</span>
+                        </div>
+                        <div className="text-xl font-bold font-mono text-cyan-950">
+                          {estimationResult.estimatedIOPS.toLocaleString()}
+                        </div>
+                        <div className="text-[10px] text-zinc-500">
+                          Returns {estimationResult.estimatedRowsReturned} rows
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Risk & Reasoning Assessment Banner */}
+                    <div
+                      className={`p-3 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs ${
+                        estimationResult.riskLevel === 'optimal'
+                          ? 'bg-emerald-100/70 border-emerald-300 text-emerald-950'
+                          : estimationResult.riskLevel === 'moderate'
+                          ? 'bg-amber-100/70 border-amber-300 text-amber-950'
+                          : 'bg-rose-100/70 border-rose-300 text-rose-950'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${
+                          estimationResult.riskLevel === 'optimal'
+                            ? 'text-emerald-700'
+                            : estimationResult.riskLevel === 'moderate'
+                            ? 'text-amber-700'
+                            : 'text-rose-700'
+                        }`} />
+                        <div>
+                          <div className="font-bold flex items-center gap-2">
+                            <span>Predicted Risk Assessment:</span>
+                            <span className="uppercase text-[10px] font-mono px-2 py-0.2 rounded font-extrabold bg-white/70">
+                              {estimationResult.riskLevel} (Risk Score: {estimationResult.riskScore}/100)
+                            </span>
+                          </div>
+                          <p className="mt-0.5 leading-relaxed text-[11px]">
+                            {estimationResult.reasoningSummary}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Pre-Execution Recommendations */}
+                    <div className="p-3 bg-white/90 rounded-xl border border-emerald-200 text-xs space-y-1.5">
+                      <div className="font-bold text-emerald-950 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>AI Pre-Execution Recommendations &amp; Advice:</span>
+                      </div>
+                      <ul className="list-disc list-inside space-y-1 text-[11px] text-zinc-700">
+                        {estimationResult.aiRecommendations.map((rec, i) => (
+                          <li key={i}>{rec}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Index Sandbox Panel */}
             {isIndexSandboxOpen && (
               <div className="p-4 bg-gradient-to-r from-purple-50 via-indigo-50 to-purple-50 rounded-xl border border-purple-200 shadow-sm space-y-3 animate-fadeIn">
@@ -857,7 +2087,130 @@ INCLUDE (amount, customer_email, created_at);
               </div>
             )}
 
-            {renderPlanNode(effectiveExplainPlan)}
+            {isComparePlansActive ? (
+              <div className="space-y-4 animate-fadeIn">
+                {/* Side-by-Side Comparison Header Banner */}
+                <div className="p-3.5 bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 border border-blue-200 rounded-xl text-xs text-blue-950 space-y-2.5 shadow-2xs">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <GitCompare className="w-4 h-4 text-indigo-600" />
+                      <strong className="font-bold text-sm text-indigo-950">Side-by-Side Execution Plan Comparison</strong>
+                      <span className="bg-indigo-100 text-indigo-800 text-[10px] font-bold px-2 py-0.5 rounded border border-indigo-300">
+                        Current vs {targetPreviousPlanMeta.name}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-zinc-700 text-[11px]">Compare Against:</span>
+                      <select
+                        id="select-compare-version-inner"
+                        data-testid="select-compare-version-inner"
+                        value={comparedVersionId}
+                        onChange={(e) => setSelectedPlanVersion(e.target.value)}
+                        className="bg-white border border-indigo-300 font-semibold text-indigo-900 rounded-md px-2 py-1 text-xs focus:outline-none cursor-pointer"
+                      >
+                        {cachedPlanVersions.filter(v => v.id !== 'current').map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.name} (Cost: {v.cost.toFixed(2)}, {v.time}ms)
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setIsComparePlansActive(false)}
+                        className="px-2.5 py-1 bg-white hover:bg-zinc-100 text-zinc-700 font-semibold rounded-lg border border-zinc-300 cursor-pointer text-xs"
+                      >
+                        Close Compare
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Delta Metrics Summary */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                    <div className="p-2.5 bg-white/95 rounded-lg border border-blue-200 shadow-2xs">
+                      <span className="text-zinc-500 text-[10px] font-semibold">Total Cost Comparison</span>
+                      <div className="flex items-baseline gap-2 font-mono">
+                        <span className="text-base font-bold text-zinc-900">{effectiveExplainPlan.cost.toFixed(2)}</span>
+                        <span className="text-xs text-zinc-400">vs</span>
+                        <span className="text-sm font-semibold text-zinc-600">{targetPreviousPlanTree.cost.toFixed(2)}</span>
+                      </div>
+                      <div className={`text-[11px] font-bold font-mono mt-0.5 ${
+                        effectiveExplainPlan.cost < targetPreviousPlanTree.cost ? 'text-emerald-700' : 'text-rose-700'
+                      }`}>
+                        {effectiveExplainPlan.cost < targetPreviousPlanTree.cost
+                          ? `↓ ${(targetPreviousPlanTree.cost - effectiveExplainPlan.cost).toFixed(2)} Cost Savings (${(((targetPreviousPlanTree.cost - effectiveExplainPlan.cost) / targetPreviousPlanTree.cost) * 100).toFixed(1)}% reduction)`
+                          : `↑ +${(effectiveExplainPlan.cost - targetPreviousPlanTree.cost).toFixed(2)} Cost Increase`}
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 bg-white/95 rounded-lg border border-blue-200 shadow-2xs">
+                      <span className="text-zinc-500 text-[10px] font-semibold">Execution Latency Comparison</span>
+                      <div className="flex items-baseline gap-2 font-mono">
+                        <span className="text-base font-bold text-zinc-900">{executionTime}ms</span>
+                        <span className="text-xs text-zinc-400">vs</span>
+                        <span className="text-sm font-semibold text-zinc-600">{targetPreviousPlanMeta.time}ms</span>
+                      </div>
+                      <div className={`text-[11px] font-bold font-mono mt-0.5 ${
+                        executionTime < targetPreviousPlanMeta.time ? 'text-emerald-700' : 'text-rose-700'
+                      }`}>
+                        {executionTime < targetPreviousPlanMeta.time
+                          ? `↓ ${(targetPreviousPlanMeta.time - executionTime).toFixed(1)}ms Faster (${(((targetPreviousPlanMeta.time - executionTime) / targetPreviousPlanMeta.time) * 100).toFixed(1)}% speedup)`
+                          : `↑ +${(executionTime - targetPreviousPlanMeta.time).toFixed(1)}ms Slower`}
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 bg-white/95 rounded-lg border border-blue-200 shadow-2xs">
+                      <span className="text-zinc-500 text-[10px] font-semibold">Visual Highlight Legend</span>
+                      <div className="space-y-1 mt-1 text-[10px]">
+                        <div className="flex items-center gap-1.5 font-bold text-emerald-700">
+                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-emerald-200"></span>
+                          <span>Cost Decreased (Node Improved)</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 font-bold text-rose-700">
+                          <span className="w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-rose-200"></span>
+                          <span>Cost Increased (Node Regressed)</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Two Columns Side by Side */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Left Column: Current Plan */}
+                  <div className="space-y-2 border border-zinc-200 rounded-xl p-3 bg-zinc-50/50 shadow-2xs">
+                    <div className="flex items-center justify-between pb-2 border-b border-zinc-200">
+                      <div>
+                        <span className="text-xs font-bold text-zinc-900 uppercase tracking-wide">Current Execution Plan</span>
+                        <p className="text-[11px] text-zinc-500">Active engine execution profile</p>
+                      </div>
+                      <div className="text-right font-mono text-xs">
+                        <span className="font-bold text-zinc-900">Cost: {effectiveExplainPlan.cost.toFixed(2)}</span>
+                        <span className="text-zinc-500 ml-2">Time: {executionTime}ms</span>
+                      </div>
+                    </div>
+                    {renderPlanNodeWithDiff(effectiveExplainPlan, 0, targetPreviousPlanTree, false, isHotpathActive)}
+                  </div>
+
+                  {/* Right Column: Previous Version Plan */}
+                  <div className="space-y-2 border border-zinc-200 rounded-xl p-3 bg-zinc-50/50 shadow-2xs">
+                    <div className="flex items-center justify-between pb-2 border-b border-zinc-200">
+                      <div>
+                        <span className="text-xs font-bold text-zinc-900 uppercase tracking-wide">Previous: {targetPreviousPlanMeta.name}</span>
+                        <p className="text-[11px] text-zinc-500">Selected from Plan History</p>
+                      </div>
+                      <div className="text-right font-mono text-xs">
+                        <span className="font-bold text-zinc-900">Cost: {targetPreviousPlanTree.cost.toFixed(2)}</span>
+                        <span className="text-zinc-500 ml-2">Time: {targetPreviousPlanMeta.time}ms</span>
+                      </div>
+                    </div>
+                    {renderPlanNodeWithDiff(targetPreviousPlanTree, 0, effectiveExplainPlan, true, isHotpathActive)}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              renderPlanNodeWithDiff(effectiveExplainPlan, 0, undefined, false, isHotpathActive)
+            )}
           </div>
         )}
 
@@ -874,6 +2227,109 @@ INCLUDE (amount, customer_email, created_at);
 
             <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 flex flex-col items-center">
               <D3CostBreakdownChart plan={effectiveExplainPlan} />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'sql' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between text-xs text-zinc-600 pb-2 border-b border-zinc-100">
+              <span className="font-semibold text-zinc-800">
+                SQL Statements Comparison &amp; AI-Query Cost Estimator
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsCostEstimatorOpen(true)}
+                className="inline-flex items-center gap-1 text-emerald-700 hover:text-emerald-900 font-bold cursor-pointer"
+              >
+                <Calculator className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Open Custom Query Estimator</span>
+              </button>
+            </div>
+
+            {/* Side-by-Side SQL Comparison */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Unoptimized SQL */}
+              <div className="p-3.5 bg-rose-50/70 border border-rose-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between pb-1.5 border-b border-rose-200">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-rose-950">
+                    <span className="w-2 h-2 rounded-full bg-rose-600" />
+                    <span>1. Unoptimized Query Cascade (N+1 Storm)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono bg-rose-200 text-rose-900 px-1.5 py-0.2 rounded font-bold">
+                      Cost: 48.50+
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(unoptimizedSQL, 'unopt')}
+                      className="text-[11px] text-rose-800 hover:text-rose-950 flex items-center gap-0.5 cursor-pointer font-medium"
+                    >
+                      {copiedSql === 'unopt' ? <Check className="w-3 h-3 text-rose-700" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedSql === 'unopt' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="p-2.5 bg-zinc-950 text-rose-300 font-mono text-[11px] rounded-lg overflow-x-auto shadow-inner max-h-56">
+                  <pre>{unoptimizedSQL}</pre>
+                </div>
+                <p className="text-[11px] text-rose-700">
+                  Fires synchronous subqueries for each line item row, exhausting database connections and forcing sequential scans.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomSqlInput(unoptimizedSQL);
+                    setIsCostEstimatorOpen(true);
+                    handleRunEstimation(unoptimizedSQL);
+                  }}
+                  className="w-full py-1.5 bg-white hover:bg-rose-100 border border-rose-300 text-rose-900 rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                >
+                  <Calculator className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Estimate Unoptimized Query in AI Workbench</span>
+                </button>
+              </div>
+
+              {/* Optimized SQL */}
+              <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
+                <div className="flex items-center justify-between pb-1.5 border-b border-emerald-200">
+                  <div className="flex items-center gap-1.5 font-bold text-xs text-emerald-950">
+                    <span className="w-2 h-2 rounded-full bg-emerald-600" />
+                    <span>2. Optimized B-Tree &amp; Single Eager Batch</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono bg-emerald-200 text-emerald-900 px-1.5 py-0.2 rounded font-bold">
+                      Cost: 4.82 (1.2ms)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(optimizedSQL, 'opt')}
+                      className="text-[11px] text-emerald-800 hover:text-emerald-950 flex items-center gap-0.5 cursor-pointer font-medium"
+                    >
+                      {copiedSql === 'opt' ? <Check className="w-3 h-3 text-emerald-700" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedSql === 'opt' ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="p-2.5 bg-zinc-950 text-emerald-300 font-mono text-[11px] rounded-lg overflow-x-auto shadow-inner max-h-56">
+                  <pre>{optimizedSQL}</pre>
+                </div>
+                <p className="text-[11px] text-emerald-700">
+                  Leverages composite B-Tree index scan on (status, category) and retrieves all child items in a single eager roundtrip.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomSqlInput(optimizedSQL);
+                    setIsCostEstimatorOpen(true);
+                    handleRunEstimation(optimizedSQL);
+                  }}
+                  className="w-full py-1.5 bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                >
+                  <Calculator className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Estimate Optimized Query in AI Workbench</span>
+                </button>
+              </div>
             </div>
           </div>
         )}

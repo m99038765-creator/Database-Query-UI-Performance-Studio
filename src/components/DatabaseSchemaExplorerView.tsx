@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge, PieChart, BarChart2 } from 'lucide-react';
-import { OptimizationFlags } from '../types';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge, PieChart, BarChart2, Clock } from 'lucide-react';
+import { OptimizationFlags, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS } from '../types';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { IndexEfficiencyTrendChart } from './IndexEfficiencyTrendChart';
 import { IndexPerformanceDeltaBarChart } from './IndexPerformanceDeltaBarChart';
@@ -12,6 +12,7 @@ interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
   onToggleFlag: (flag: keyof OptimizationFlags) => void;
   onClose?: () => void;
+  lowUsageThresholds?: LowUsageThresholdsConfig;
 }
 
 export interface SchemaSnapshot {
@@ -39,8 +40,38 @@ export interface SchemaSnapshot {
 export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProps> = ({
   flags,
   onToggleFlag,
-  onClose
+  onClose,
+  lowUsageThresholds
 }) => {
+  // Low Usage Policy Configuration State
+  const [lowUsageConfig, setLowUsageConfig] = useState<LowUsageThresholdsConfig>(() => {
+    if (lowUsageThresholds) return lowUsageThresholds;
+    try {
+      const saved = localStorage.getItem('enterprise_low_usage_thresholds');
+      return saved ? JSON.parse(saved) : DEFAULT_LOW_USAGE_THRESHOLDS;
+    } catch {
+      return DEFAULT_LOW_USAGE_THRESHOLDS;
+    }
+  });
+
+  useEffect(() => {
+    if (lowUsageThresholds) {
+      setLowUsageConfig(lowUsageThresholds);
+    }
+  }, [lowUsageThresholds]);
+
+  useEffect(() => {
+    const handleThresholdsUpdate = (e: any) => {
+      if (e.detail) {
+        setLowUsageConfig(e.detail);
+      }
+    };
+    window.addEventListener('low-usage-thresholds-updated', handleThresholdsUpdate);
+    return () => {
+      window.removeEventListener('low-usage-thresholds-updated', handleThresholdsUpdate);
+    };
+  }, []);
+
   const [selectedTable, setSelectedTable] = useState<string>('transactions');
   const [createdCustomIndexes, setCreatedCustomIndexes] = useState<string[]>([]);
   const [createdCompositeIndexes, setCreatedCompositeIndexes] = useState<string[]>([]);
@@ -176,7 +207,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [activeWhatIfModalIndex, setActiveWhatIfModalIndex] = useState<{ name: string; tableName: string; columns: string[] } | null>(null);
   const [whatIfInputText, setWhatIfInputText] = useState<string>('');
   const [showConflictDashboardModal, setShowConflictDashboardModal] = useState<boolean>(false);
+  const [showReconcileIndexesModal, setShowReconcileIndexesModal] = useState<boolean>(false);
   const [resolvedConflicts, setResolvedConflicts] = useState<Record<string, boolean>>({});
+  const [resolvedConstraintConflicts, setResolvedConstraintConflicts] = useState<Record<string, boolean>>({});
 
   const handleMergeConflictGroup = (groupId: string, indexNamesToPrune: string[]) => {
     setResolvedConflicts((prev) => ({ ...prev, [groupId]: true }));
@@ -1353,6 +1386,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       indexes: [
         { name: 'PRIMARY KEY (id)', type: 'B-Tree (Clustered)', columns: ['id'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: !removedIndexes.includes('PRIMARY KEY (id)') },
         { name: 'idx_orders_status_cat', type: 'Composite B-Tree', columns: ['status', 'category'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_status_cat') },
+        { name: 'idx_orders_cat_status', type: 'Composite B-Tree (Inverted Covering)', columns: ['category', 'status'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: flags.btreeIndexing && !removedIndexes.includes('idx_orders_cat_status') && !resolvedConstraintConflicts['transactions-category-status'] },
         { name: 'idx_transactions_date', type: 'B-Tree', columns: ['created_at'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: !removedIndexes.includes('idx_transactions_date') },
         { name: 'idx_transactions_email_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['customer_email'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('customer_email') && !removedIndexes.includes('idx_transactions_email_missing') },
         { name: 'idx_transactions_amount_missing', type: 'B-Tree (Missing Bottleneck)', columns: ['amount'], targetTable: 'transactions', targetEntity: 'Transactions Entity', active: createdCustomIndexes.includes('amount') && !removedIndexes.includes('idx_transactions_amount_missing') },
@@ -1434,6 +1468,72 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   ];
 
   const currentTableData = tables.find((t) => t.name === selectedTable) || tables[0];
+
+  interface ConstraintConflictPair {
+    id: string;
+    tableName: string;
+    entityName: string;
+    indexA: { name: string; type: string; columns: string[] };
+    indexB: { name: string; type: string; columns: string[] };
+    columnsSet: string[];
+    columnOrderA: string;
+    columnOrderB: string;
+    writeAmplificationPercent: number;
+    wastedStorageMb: number;
+    recommendedKeep: string;
+    reason: string;
+  }
+
+  // Constraint Conflict Monitor: Watches active indexes for overlapping covering indexes with different column ordering
+  const detectedConstraintConflicts = useMemo<ConstraintConflictPair[]>(() => {
+    const conflicts: ConstraintConflictPair[] = [];
+
+    tables.forEach((tbl) => {
+      const activeIdxs = tbl.indexes.filter(
+        (i) => i.active && !removedIndexes.includes(i.name)
+      );
+
+      for (let i = 0; i < activeIdxs.length; i++) {
+        for (let j = i + 1; j < activeIdxs.length; j++) {
+          const a = activeIdxs[i];
+          const b = activeIdxs[j];
+
+          if (a.columns.length < 2 || b.columns.length < 2) continue;
+          if (a.columns.length !== b.columns.length) continue;
+
+          // Check if same set of columns
+          const setA = new Set(a.columns);
+          const hasSameCols = b.columns.every((col) => setA.has(col));
+
+          // Check if different ordering
+          const orderA = a.columns.join(', ');
+          const orderB = b.columns.join(', ');
+
+          if (hasSameCols && orderA !== orderB) {
+            const conflictId = `${tbl.name}-${[...a.columns].sort().join('-')}`;
+            if (!resolvedConstraintConflicts[conflictId]) {
+              conflicts.push({
+                id: conflictId,
+                tableName: tbl.name,
+                entityName: tbl.entityName,
+                indexA: { name: a.name, type: a.type, columns: a.columns },
+                indexB: { name: b.name, type: b.type, columns: b.columns },
+                columnsSet: [...a.columns].sort(),
+                columnOrderA: orderA,
+                columnOrderB: orderB,
+                writeAmplificationPercent: 22,
+                wastedStorageMb: 6.4,
+                recommendedKeep: a.name,
+                reason: `Both '${a.name}' and '${b.name}' cover columns (${orderA}) vs (${orderB}). Due to B-Tree leftmost prefix traversal, maintaining dual inverted covering indexes doubles WAL logging and write lock contention.`
+              });
+            }
+          }
+        }
+      }
+    });
+
+    return conflicts;
+  }, [tables, removedIndexes, resolvedConstraintConflicts]);
 
   const speedUpPercent = React.useMemo(() => {
     let score = 0;
@@ -2247,6 +2347,108 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     };
   };
 
+  // Calculates inactivity duration (days), query hit metrics, and flags low usage indexes
+  const getIndexInactivityStats = (
+    idxName: string,
+    active: boolean,
+    tableName: string
+  ) => {
+    let daysInactive = 0;
+    let queryHits = 500;
+    let readWriteRatio = 6.4;
+    let lastScanLabel = 'Active in past 24h';
+    let inactivityReason = 'Actively scanned by production queries within the last 24 hours.';
+
+    if (idxName === 'idx_transactions_date') {
+      daysInactive = 14;
+      queryHits = 0;
+      readWriteRatio = 0.2;
+      lastScanLabel = '14 days ago';
+      inactivityReason = 'No query predicates hit created_at for 14 days. Queries favor sequential scans or composite indexes.';
+    } else if (idxName === 'idx_orders_cat_status') {
+      daysInactive = 19;
+      queryHits = 0;
+      readWriteRatio = 0.1;
+      lastScanLabel = '19 days ago';
+      inactivityReason = 'Inverted covering index unused for 19 days. Query planner prefers canonical idx_orders_status_cat.';
+    } else if (idxName.includes('amount_missing') || (idxName.includes('amount') && !idxName.includes('category_amount'))) {
+      daysInactive = 12;
+      queryHits = 0;
+      readWriteRatio = 0.4;
+      lastScanLabel = '12 days ago';
+      inactivityReason = 'Standalone amount filter unutilized for 12 days; 0 scan hits recorded in audit window.';
+    } else if (idxName.includes('email_missing') || (idxName.includes('customer_email') && !idxName.includes('email_status'))) {
+      daysInactive = 9;
+      queryHits = 0;
+      readWriteRatio = 0.5;
+      lastScanLabel = '9 days ago';
+      inactivityReason = 'Shadowed by composite (customer_email, status); 0 hits over the last 9 days.';
+    } else if (!active) {
+      if (idxName.includes('orders_status_cat')) {
+        daysInactive = 8;
+        queryHits = 0;
+        readWriteRatio = 0.0;
+        lastScanLabel = '8 days ago';
+        inactivityReason = 'Optimization flag disabled for 8 days. Queries degraded to sequential scans.';
+      } else if (idxName.includes('line_items_tx')) {
+        daysInactive = 11;
+        queryHits = 0;
+        readWriteRatio = 0.0;
+        lastScanLabel = '11 days ago';
+        inactivityReason = 'Batch eager loading flag disabled for 11 days. Causing N+1 nested loop scans.';
+      } else {
+        daysInactive = 10;
+        queryHits = 0;
+        readWriteRatio = 0.3;
+        lastScanLabel = '10 days ago';
+        inactivityReason = 'Disabled index with 0 queries recorded over the past 10 days.';
+      }
+    } else if (idxName.includes('PRIMARY KEY')) {
+      daysInactive = 0;
+      queryHits = 22000;
+      readWriteRatio = 24.5;
+      lastScanLabel = 'Today (Continuous)';
+      inactivityReason = 'Clustered primary key actively queried in every lookup.';
+    } else if (idxName.includes('email_status') || idxName.includes('category_amount') || idxName.includes('tx_price') || idxName.includes('tier_created')) {
+      daysInactive = 0;
+      queryHits = 14250;
+      readWriteRatio = 18.0;
+      lastScanLabel = 'Today';
+      inactivityReason = 'Composite index handling high-throughput queries.';
+    } else if (idxName.includes('customers_email')) {
+      daysInactive = 1;
+      queryHits = 8400;
+      readWriteRatio = 12.0;
+      lastScanLabel = 'Yesterday';
+      inactivityReason = 'Customer unique email lookup actively accessed.';
+    } else {
+      const charCode = (idxName.charCodeAt(0) + idxName.length * 7) % 15;
+      daysInactive = charCode > 9 ? charCode : 2;
+      queryHits = daysInactive > 7 ? 0 : 450;
+      readWriteRatio = daysInactive > 7 ? 0.9 : 5.8;
+      lastScanLabel = daysInactive > 7 ? `${daysInactive} days ago` : 'Past 48h';
+      inactivityReason = daysInactive > 7 ? `No scans in ${daysInactive} days.` : 'Regular query traffic.';
+    }
+
+    const isInactiveOver7Days = daysInactive > 7;
+    const isFlaggedLowUsage = lowUsageConfig.enabled && (
+      daysInactive > 7 || 
+      daysInactive >= lowUsageConfig.daysInactive || 
+      queryHits < lowUsageConfig.minQueryHits || 
+      readWriteRatio < lowUsageConfig.minReadWriteRatio
+    );
+
+    return {
+      daysInactive,
+      queryHits,
+      readWriteRatio,
+      lastScanLabel,
+      inactivityReason,
+      isInactiveOver7Days,
+      isFlaggedLowUsage
+    };
+  };
+
   // Calculates an 'Index Impact Score' using a weighted average of query performance improvement and write-latency penalty
   const calculateIndexImpactScore = (
     idxName: string,
@@ -2786,12 +2988,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       health: ReturnType<typeof getIndexHealthScore>;
       impact: ReturnType<typeof calculateIndexImpactScore>;
       latencyHeat: ReturnType<typeof calculateIndexLatencyContribution>;
+      inactivityStats: ReturnType<typeof getIndexInactivityStats>;
       isRemoved: boolean;
       isLocked: boolean;
     }> = [];
 
     tables
-      .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
+      .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === 'low-usage' || indexCategoryFilter === tbl.name)
       .forEach((tbl) => {
         const queryLower = indexSearchQuery.trim().toLowerCase();
         tbl.indexes.forEach((idx) => {
@@ -2812,6 +3015,11 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           const health = getIndexHealthScore(idx.name, idx.active, tbl.name);
           const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
           const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
+          const inactivityStats = getIndexInactivityStats(idx.name, idx.active, tbl.name);
+
+          if (indexCategoryFilter === 'low-usage' && !inactivityStats.isInactiveOver7Days) {
+            return;
+          }
 
           list.push({
             table: tbl.name,
@@ -2820,6 +3028,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             health,
             impact,
             latencyHeat,
+            inactivityStats,
             isRemoved,
             isLocked
           });
@@ -2840,7 +3049,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     });
 
     return list;
-  }, [tables, indexCategoryFilter, indexSearchQuery, removedIndexes, lockedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, indexRankSort]);
+  }, [tables, indexCategoryFilter, indexSearchQuery, removedIndexes, lockedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, indexRankSort, lowUsageConfig]);
 
   const groupedByTableIndexes = useMemo(() => {
     const map = new Map<string, typeof allRankedSchemaIndexes>();
@@ -2856,6 +3065,18 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       avgHealth: Math.round(indexes.reduce((sum, i) => sum + i.health.score, 0) / (indexes.length || 1))
     }));
   }, [allRankedSchemaIndexes]);
+
+  // Total count of indexes inactive for more than 7 days
+  const lowUsageFlaggedCount = useMemo(() => {
+    let count = 0;
+    tables.forEach((tbl) => {
+      tbl.indexes.forEach((idx) => {
+        const stats = getIndexInactivityStats(idx.name, idx.active, tbl.name);
+        if (stats.isInactiveOver7Days) count++;
+      });
+    });
+    return count;
+  }, [tables, lowUsageConfig]);
 
   // Single button handler to apply all calculated optimal improvements at once with sequential transition animation
   const handleApplyBulkOptimize = () => {
@@ -4918,6 +5139,26 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               >
                 All Entities ({tables.reduce((acc, t) => acc + t.indexes.length, 0)})
               </button>
+              <button
+                type="button"
+                id="filter-entity-low-usage"
+                data-testid="filter-entity-low-usage"
+                onClick={() => setIndexCategoryFilter(indexCategoryFilter === 'low-usage' ? 'all' : 'low-usage')}
+                className={`px-2.5 py-1 rounded-lg font-mono text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  indexCategoryFilter === 'low-usage'
+                    ? 'bg-amber-600 text-white shadow-2xs font-bold'
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200'
+                }`}
+                title="Filter indexes flagged as low usage (inactive for >7 days)"
+              >
+                <Clock className="w-3 h-3 text-amber-700 shrink-0" />
+                <span>Flagged Low Usage (&gt;7d)</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                  indexCategoryFilter === 'low-usage' ? 'bg-amber-700 text-white' : 'bg-amber-200 text-amber-950'
+                }`}>
+                  {lowUsageFlaggedCount}
+                </span>
+              </button>
               {tables.map((t) => {
                 const count = t.indexes.length;
                 const isSelected = indexCategoryFilter === t.name;
@@ -5040,7 +5281,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                 </thead>
                                 <tbody className="divide-y divide-zinc-100">
                                   {indexes.map((item, idx) => {
-                                    const { index, health, impact, latencyHeat, isRemoved, isLocked } = item;
+                                    const { index, health, impact, latencyHeat, inactivityStats, isRemoved, isLocked } = item;
                                     const isSelected = selectedIndexes.includes(index.name);
                                     return (
                                       <tr
@@ -5087,6 +5328,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                             {isRemoved && (
                                               <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
                                                 Pruned
+                                              </span>
+                                            )}
+                                            {inactivityStats && inactivityStats.daysInactive > 7 && (
+                                              <span
+                                                id={`badge-low-usage-${index.name}`}
+                                                data-testid={`badge-low-usage-${index.name}`}
+                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs animate-fadeIn shrink-0"
+                                                title={`Low Usage: Inactive for ${inactivityStats.daysInactive} days (>7d threshold). Last scan: ${inactivityStats.lastScanLabel}. ${inactivityStats.inactivityReason}`}
+                                              >
+                                                <Clock className="w-3 h-3 text-amber-700 shrink-0" />
+                                                <span>Inactive &gt;7d ({inactivityStats.daysInactive}d)</span>
                                               </span>
                                             )}
                                           </div>
@@ -5275,7 +5527,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                         </tr>
                       ) : (
                         allRankedSchemaIndexes.map((item, idx) => {
-                          const { index, table, entityBadge, health, impact, latencyHeat, isRemoved, isLocked } = item;
+                          const { index, table, entityBadge, health, impact, latencyHeat, inactivityStats, isRemoved, isLocked } = item;
                           const isSelected = selectedIndexes.includes(index.name);
                           return (
                             <tr
@@ -5331,6 +5583,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   {isLocked && (
                                     <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
                                       LOCKED
+                                    </span>
+                                  )}
+                                  {inactivityStats && inactivityStats.daysInactive > 7 && (
+                                    <span
+                                      id={`badge-low-usage-${index.name}`}
+                                      data-testid={`badge-low-usage-${index.name}`}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs animate-fadeIn shrink-0"
+                                      title={`Low Usage: Inactive for ${inactivityStats.daysInactive} days (>7d threshold). Last scan: ${inactivityStats.lastScanLabel}. ${inactivityStats.inactivityReason}`}
+                                    >
+                                      <Clock className="w-3 h-3 text-amber-700 shrink-0" />
+                                      <span>Inactive &gt;7d ({inactivityStats.daysInactive}d)</span>
                                     </span>
                                   )}
                                   {showIndexImpactHeatmap && (
@@ -5940,6 +6203,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                             LOCKED
                                           </span>
                                         )}
+                                        {(() => {
+                                          const cardInactivity = getIndexInactivityStats(idx.name, idx.active, tbl.name);
+                                          if (cardInactivity.daysInactive > 7) {
+                                            return (
+                                              <span
+                                                id={`card-badge-low-usage-${idx.name}`}
+                                                data-testid={`card-badge-low-usage-${idx.name}`}
+                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs animate-fadeIn shrink-0"
+                                                title={`Low Usage: Inactive for ${cardInactivity.daysInactive} days (>7d threshold). Last scan: ${cardInactivity.lastScanLabel}. ${cardInactivity.inactivityReason}`}
+                                              >
+                                                <Clock className="w-3 h-3 text-amber-700 shrink-0" />
+                                                <span>Inactive &gt;7d ({cardInactivity.daysInactive}d)</span>
+                                              </span>
+                                            );
+                                          }
+                                          return null;
+                                        })()}
                                         {/* Color-Coded Index Health Score Badge (0-100) */}
                                         <span
                                           id={`health-score-${idx.name}`}
@@ -7049,11 +7329,42 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             <Database className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-zinc-900 tracking-tight flex items-center gap-2">
+            <h2 className="text-lg font-bold text-zinc-900 tracking-tight flex items-center gap-2 flex-wrap">
               <span>Database Schema Explorer</span>
               <span className="text-xs font-mono font-bold px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
                 ER Diagram &amp; Index Audit
               </span>
+
+              {/* Constraint Conflict Monitor Warning Badge */}
+              {detectedConstraintConflicts.length > 0 ? (
+                <button
+                  type="button"
+                  id="badge-constraint-conflict-monitor"
+                  data-testid="badge-constraint-conflict-monitor"
+                  onClick={() => setShowReconcileIndexesModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white shadow-sm ring-2 ring-amber-300 animate-pulse transition-all cursor-pointer select-none"
+                  title="Constraint Conflict Monitor: Overlapping covering indexes with different column ordering detected. Click to reconcile."
+                  aria-label="Constraint Conflict Monitor Warning"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 fill-amber-200 text-amber-950 shrink-0" />
+                  <span>Constraint Conflict ({detectedConstraintConflicts.length} Overlapping)</span>
+                  <span className="text-[10px] bg-amber-900/60 text-amber-100 px-1.5 py-0.2 rounded-full font-mono">
+                    Reconcile
+                  </span>
+                </button>
+              ) : Object.keys(resolvedConstraintConflicts).length > 0 ? (
+                <button
+                  type="button"
+                  id="badge-constraint-conflict-monitor-resolved"
+                  data-testid="badge-constraint-conflict-monitor"
+                  onClick={() => setShowReconcileIndexesModal(true)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-pointer shadow-2xs select-none"
+                  title="All overlapping covering index constraint conflicts reconciled."
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Covering Constraints: Reconciled</span>
+                </button>
+              ) : null}
             </h2>
             <p className="text-xs text-zinc-500 mt-0.5">
               Visualize relational table foreign keys, current B-Tree index coverage, and resolve missing index bottlenecks.
@@ -10955,6 +11266,200 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-xs"
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reconcile Indexes Modal (Constraint Conflict Monitor) */}
+      {showReconcileIndexesModal && (
+        <div
+          id="modal-reconcile-indexes-backdrop"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowReconcileIndexesModal(false);
+          }}
+        >
+          <div
+            id="modal-reconcile-indexes"
+            data-testid="modal-reconcile-indexes"
+            className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col my-8 animate-scaleIn max-h-[90vh]"
+            role="dialog"
+            aria-modal="true"
+          >
+            {/* Header */}
+            <div className="px-6 py-4 bg-gradient-to-r from-amber-500/15 via-rose-500/10 to-indigo-500/15 border-b border-zinc-200 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500 text-white rounded-xl shadow-xs">
+                  <GitMerge className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900 flex items-center gap-2">
+                    <span>Reconcile Indexes</span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-bold">
+                      Constraint Conflict Monitor
+                    </span>
+                  </h3>
+                  <p className="text-xs text-zinc-600">
+                    Resolves overlapping covering indexes that index the same column sets with inverted order.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReconcileIndexesModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg cursor-pointer transition-colors"
+                title="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4 text-xs text-zinc-700 overflow-y-auto">
+              {/* B-Tree Leftmost Prefix Rule Explainer */}
+              <div className="p-4 bg-amber-50/90 border border-amber-200 rounded-xl space-y-2 text-amber-950">
+                <div className="flex items-center gap-2 font-bold text-xs text-amber-900">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>B-Tree Leftmost Prefix &amp; Write Amplification Audit</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-amber-900">
+                  Composite indexes rely on the <strong>Leftmost Prefix Rule</strong>: an index on <code className="font-mono bg-white px-1 py-0.5 rounded font-bold">(A, B)</code> can satisfy queries on <code className="font-mono bg-white px-1 py-0.5 rounded">WHERE A = ?</code> and <code className="font-mono bg-white px-1 py-0.5 rounded">WHERE A = ? AND B = ?</code>, but cannot efficiently satisfy <code className="font-mono bg-white px-1 py-0.5 rounded">WHERE B = ?</code>. Maintaining two inverted covering indexes on the same columns <code className="font-mono bg-white px-1 py-0.5 rounded">(A, B)</code> and <code className="font-mono bg-white px-1 py-0.5 rounded">(B, A)</code> creates <strong>duplicate WAL logging, doubles write lock overhead (+22%), and consumes redundant disk space</strong>.
+                </p>
+              </div>
+
+              {/* Conflict Pairs List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-[11px] font-bold text-zinc-800 uppercase tracking-wider">
+                  <span>Detected Overlapping Covering Index Pairs ({detectedConstraintConflicts.length}):</span>
+                  {detectedConstraintConflicts.length === 0 && (
+                    <span className="text-emerald-700 font-normal">All conflicts resolved!</span>
+                  )}
+                </div>
+
+                {detectedConstraintConflicts.length === 0 ? (
+                  <div className="p-6 text-center bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
+                    <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+                    <h4 className="font-bold text-emerald-950 text-sm">No Active Constraint Conflicts</h4>
+                    <p className="text-xs text-emerald-800 max-w-md mx-auto">
+                      All active indexes have unique column footprints or aligned prefix hierarchies. No redundant write amplification detected.
+                    </p>
+                  </div>
+                ) : (
+                  detectedConstraintConflicts.map((conflict) => (
+                    <div
+                      key={conflict.id}
+                      className="p-4 rounded-xl border border-amber-300 bg-amber-50/40 space-y-3.5 shadow-2xs"
+                    >
+                      {/* Table Banner */}
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-zinc-900 flex items-center gap-1.5">
+                          <Database className="w-4 h-4 text-indigo-600" />
+                          <span>Table: <strong className="font-mono text-indigo-900">{conflict.tableName}</strong> ({conflict.entityName})</span>
+                        </span>
+                        <span className="font-mono text-[10px] px-2 py-0.5 rounded font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                          +{conflict.writeAmplificationPercent}% Write Overhead
+                        </span>
+                      </div>
+
+                      {/* Side-by-Side Comparison */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* Index A */}
+                        <div className="p-3 bg-white border border-zinc-200 rounded-lg space-y-1.5 shadow-3xs">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono font-bold text-[11px] text-zinc-900 truncate">
+                              {conflict.indexA.name}
+                            </span>
+                            <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.2 rounded font-bold">
+                              Primary
+                            </span>
+                          </div>
+                          <div className="text-[11px] font-mono flex items-center gap-1 text-zinc-600">
+                            <span>Order:</span>
+                            <span className="bg-zinc-100 px-1.5 py-0.5 rounded text-indigo-950 font-bold border border-zinc-200">
+                              {conflict.columnOrderA}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-500">
+                            Optimal for queries filtering by <strong>{conflict.indexA.columns[0]}</strong> first.
+                          </p>
+                        </div>
+
+                        {/* Index B */}
+                        <div className="p-3 bg-white border border-amber-300 rounded-lg space-y-1.5 shadow-3xs ring-1 ring-amber-300/50">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono font-bold text-[11px] text-amber-950 truncate">
+                              {conflict.indexB.name}
+                            </span>
+                            <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-bold">
+                              Inverted
+                            </span>
+                          </div>
+                          <div className="text-[11px] font-mono flex items-center gap-1 text-zinc-600">
+                            <span>Order:</span>
+                            <span className="bg-amber-100/70 px-1.5 py-0.5 rounded text-amber-950 font-bold border border-amber-200">
+                              {conflict.columnOrderB}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-500">
+                            Overlapping duplicate for queries filtering by <strong>{conflict.indexB.columns[0]}</strong> first.
+                          </p>
+                        </div>
+                      </div>
+
+                      <p className="text-[11px] text-zinc-600 leading-relaxed">
+                        {conflict.reason} Wasted storage: <strong className="font-mono text-zinc-800">{conflict.wastedStorageMb} MB</strong>.
+                      </p>
+
+                      {/* Action Buttons */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-amber-200">
+                        <span className="text-[10px] font-mono text-zinc-500">
+                          Recommendation: Keep primary, drop inverted
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResolvedConstraintConflicts((prev) => ({ ...prev, [conflict.id]: true }));
+                              setRemovedIndexes((prev) => Array.from(new Set([...prev, conflict.indexB.name])));
+                              setImportSuccessNotice(`✓ Reconciled: Kept '${conflict.indexA.name}' and dropped redundant inverted index '${conflict.indexB.name}'. Reclaimed +${conflict.writeAmplificationPercent}% write throughput.`);
+                            }}
+                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Keep Primary &amp; Drop Inverted</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResolvedConstraintConflicts((prev) => ({ ...prev, [conflict.id]: true }));
+                              setImportSuccessNotice(`✓ Marked conflict on '${conflict.tableName}' as reconciled for dual-direction point lookup workload.`);
+                            }}
+                            className="px-2.5 py-1.5 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded-lg text-xs font-medium cursor-pointer transition-colors"
+                          >
+                            Mark as Reconciled
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-500 font-mono">
+                Constraint Conflict Monitor • {detectedConstraintConflicts.length} Active / {Object.keys(resolvedConstraintConflicts).length} Reconciled
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowReconcileIndexesModal(false)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-xs"
+              >
+                Close Monitor
               </button>
             </div>
           </div>

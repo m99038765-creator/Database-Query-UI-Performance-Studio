@@ -1,12 +1,39 @@
 import React, { useState, useEffect } from 'react';
-import { OptimizationFlags } from '../types';
-import { Check, X, Layers, Cpu, Database, Eye, Gauge, Bookmark, Plus, Trash2, Sparkles, Sliders, Clock } from 'lucide-react';
+import { OptimizationFlags, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS } from '../types';
+import {
+  Check,
+  X,
+  Layers,
+  Cpu,
+  Database,
+  Eye,
+  Gauge,
+  Bookmark,
+  Plus,
+  Trash2,
+  Sparkles,
+  Sliders,
+  Clock,
+  Lightbulb,
+  CheckCircle2,
+  RefreshCw,
+  Zap,
+  AlertTriangle,
+  TrendingDown,
+  ArrowRight,
+  Calendar,
+  Target,
+  TrendingUp,
+  AlertCircle
+} from 'lucide-react';
 
 interface OptimizationControlsProps {
   flags?: OptimizationFlags;
   onToggleFlag: (flag: keyof OptimizationFlags) => void;
   onResetAll?: () => void;
   onApplyFlags?: (flags: OptimizationFlags) => void;
+  lowUsageThresholds?: LowUsageThresholdsConfig;
+  onLowUsageThresholdsChange?: (config: LowUsageThresholdsConfig) => void;
 }
 
 interface ScenarioPreset {
@@ -61,7 +88,9 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
   flags,
   onToggleFlag,
   onResetAll,
-  onApplyFlags
+  onApplyFlags,
+  lowUsageThresholds,
+  onLowUsageThresholdsChange
 }) => {
   const safeFlags = flags || {
     batchEagerLoading: true,
@@ -69,6 +98,52 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
     queryCaching: true,
     virtualizedDOM: true,
     deferredRendering: true,
+  };
+
+  // Low Usage Thresholds Configuration State
+  const [lowUsageConfig, setLowUsageConfig] = useState<LowUsageThresholdsConfig>(() => {
+    if (lowUsageThresholds) return lowUsageThresholds;
+    try {
+      const saved = localStorage.getItem('enterprise_low_usage_thresholds');
+      return saved ? JSON.parse(saved) : DEFAULT_LOW_USAGE_THRESHOLDS;
+    } catch {
+      return DEFAULT_LOW_USAGE_THRESHOLDS;
+    }
+  });
+
+  useEffect(() => {
+    if (lowUsageThresholds) {
+      setLowUsageConfig(lowUsageThresholds);
+    }
+  }, [lowUsageThresholds]);
+
+  const updateLowUsageConfig = (newConfig: LowUsageThresholdsConfig) => {
+    setLowUsageConfig(newConfig);
+    try {
+      localStorage.setItem('enterprise_low_usage_thresholds', JSON.stringify(newConfig));
+    } catch (e) {
+      console.error(e);
+    }
+    if (onLowUsageThresholdsChange) {
+      onLowUsageThresholdsChange(newConfig);
+    }
+    window.dispatchEvent(new CustomEvent('low-usage-thresholds-updated', { detail: newConfig }));
+  };
+
+  const handleDaysInactiveChange = (val: number) => {
+    updateLowUsageConfig({ ...lowUsageConfig, daysInactive: val });
+  };
+
+  const handleMinHitsChange = (val: number) => {
+    updateLowUsageConfig({ ...lowUsageConfig, minQueryHits: val });
+  };
+
+  const handleMinRatioChange = (val: number) => {
+    updateLowUsageConfig({ ...lowUsageConfig, minReadWriteRatio: val });
+  };
+
+  const handleToggleLowUsageEnabled = (enabled: boolean) => {
+    updateLowUsageConfig({ ...lowUsageConfig, enabled });
   };
 
   const [customPresets, setCustomPresets] = useState<ScenarioPreset[]>(() => {
@@ -265,6 +340,101 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
         }
       });
     }
+  };
+
+  // Index Recommendation Engine State
+  const [engineAutoScan, setEngineAutoScan] = useState<boolean>(true);
+  const [engineScanIteration, setEngineScanIteration] = useState<number>(1);
+  const [lastScanTimestamp, setLastScanTimestamp] = useState<string>('Just now');
+  const [isScanning, setIsScanning] = useState<boolean>(false);
+  const [appliedEngineRecIds, setAppliedEngineRecIds] = useState<string[]>([]);
+  const [engineAlertNotice, setEngineAlertNotice] = useState<string | null>(null);
+
+  // Periodic recommendation engine evaluation
+  useEffect(() => {
+    if (!engineAutoScan) return;
+
+    const interval = setInterval(() => {
+      setEngineScanIteration((prev) => prev + 1);
+      setLastScanTimestamp(new Date().toLocaleTimeString());
+    }, 12000); // Periodically evaluates every 12 seconds
+
+    return () => clearInterval(interval);
+  }, [engineAutoScan]);
+
+  const handleManualScan = () => {
+    setIsScanning(true);
+    setTimeout(() => {
+      setEngineScanIteration((prev) => prev + 1);
+      setLastScanTimestamp(new Date().toLocaleTimeString());
+      setIsScanning(false);
+    }, 500);
+  };
+
+  const engineRecommendations = [
+    {
+      id: 'rec-engine-1',
+      name: 'idx_transactions_status_cat_created',
+      tableName: 'transactions',
+      columns: ['status', 'category', 'created_at DESC'],
+      includeColumns: ['amount', 'customer_name'],
+      priority: safeFlags.btreeIndexing ? 'OPTIMIZED' : 'CRITICAL',
+      targetFlag: 'btreeIndexing' as keyof OptimizationFlags,
+      bottleneck: safeFlags.btreeIndexing
+        ? 'Covering index active: Point lookups operating at sub-millisecond seek latency'
+        : 'Full sequential scan bottleneck: Scanning 50,000 heap rows without index guidance (Cost: 48.50)',
+      detectedPlan: 'EXPLAIN Seq Scan on transactions (status = completed, category = Cloud Infrastructure)',
+      projectedDrop: '45.0ms ➔ 1.2ms (-97.3%)',
+      costReduction: '48.50 ➔ 2.15 (-95.6%)',
+      isAutoApplied: appliedEngineRecIds.includes('rec-engine-1') || safeFlags.btreeIndexing,
+      explanation: 'Constructs composite B-Tree leaf pages on high-cardinality equality predicates (status, category) followed by pre-sorted created_at order.'
+    },
+    {
+      id: 'rec-engine-2',
+      name: 'idx_order_items_fk_composite',
+      tableName: 'order_items',
+      columns: ['order_id', 'sku'],
+      includeColumns: ['unit_price', 'quantity', 'name'],
+      priority: safeFlags.batchEagerLoading ? 'OPTIMIZED' : 'CRITICAL',
+      targetFlag: 'batchEagerLoading' as keyof OptimizationFlags,
+      bottleneck: safeFlags.batchEagerLoading
+        ? 'Batch eager join active: Single roundtrip resolving child items'
+        : 'N+1 Subquery Cascade: Synchronous nested queries exhausting connection pool (Cost: 25.40)',
+      detectedPlan: 'Subquery Scan on order_items (SELECT * FROM order_items WHERE order_id = ?)',
+      projectedDrop: '18.2ms ➔ 0.35ms (-98.1%)',
+      costReduction: '25.40 ➔ 0.85 (-96.7%)',
+      isAutoApplied: appliedEngineRecIds.includes('rec-engine-2') || safeFlags.batchEagerLoading,
+      explanation: 'Composite foreign key index enables PostgreSQL to execute a single batched WHERE order_id IN (...) seek with zero heap read amplification.'
+    },
+    {
+      id: 'rec-engine-3',
+      name: 'idx_transactions_customer_covering',
+      tableName: 'transactions',
+      columns: ['customer_name', 'status'],
+      includeColumns: ['amount', 'created_at'],
+      priority: 'HIGH',
+      bottleneck: 'High frequency ILIKE customer filter incurring random heap page fetch I/O',
+      detectedPlan: 'Filter node on customer_name (Heap Fetches: 4,820)',
+      projectedDrop: '6.4ms ➔ 0.8ms (-87.5%)',
+      costReduction: '18.40 ➔ 3.20 (-82.6%)',
+      isAutoApplied: appliedEngineRecIds.includes('rec-engine-3'),
+      explanation: 'Covering index stores customer name and status with projection payload, satisfying customer lookups directly from RAM buffer cache without table access.'
+    }
+  ];
+
+  const handleAutoApplyRecommendation = (rec: typeof engineRecommendations[0]) => {
+    // If there is an associated flag that is currently off, enable it!
+    if (rec.targetFlag && !safeFlags[rec.targetFlag]) {
+      if (onApplyFlags) {
+        onApplyFlags({ ...safeFlags, [rec.targetFlag]: true });
+      } else {
+        onToggleFlag(rec.targetFlag);
+      }
+    }
+
+    setAppliedEngineRecIds((prev) => Array.from(new Set([...prev, rec.id])));
+    setEngineAlertNotice(`✓ Auto-Applied: Successfully created index '${rec.name}' on table '${rec.tableName}'! Projected latency reduced to ${rec.projectedDrop.split('➔')[1] || '1.2ms'}.`);
+    setTimeout(() => setEngineAlertNotice(null), 5000);
   };
 
   const controls = [
@@ -475,7 +645,411 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
         })}
       </div>
 
-      {/* Query Throttler Configuration Panel */}
+      {/* Index Recommendation Engine Panel */}
+      <div
+        id="panel-index-recommendation-engine"
+        data-testid="panel-index-recommendation-engine"
+        className="p-4 bg-gradient-to-r from-indigo-50/90 via-purple-50/70 to-indigo-50/90 rounded-xl border-2 border-indigo-200 shadow-sm space-y-3.5 animate-fadeIn"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-indigo-200 pb-2.5 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 bg-indigo-600 text-white rounded-xl shadow-xs">
+              <Sparkles className="w-4 h-4 text-amber-300" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-indigo-950 uppercase tracking-wider">
+                  Index Recommendation Engine
+                </h3>
+                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-200 text-indigo-900 border border-indigo-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span>Autonomous Analyzer</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-indigo-900 mt-0.5">
+                Periodically analyzes historical query execution plans and active system bottlenecks to recommend optimal composite indexes.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-mono text-[10px] text-zinc-500 bg-white/80 px-2.5 py-1 rounded-lg border border-indigo-100 font-semibold">
+              Cycle #{engineScanIteration} • {lastScanTimestamp}
+            </span>
+
+            <label className="flex items-center gap-1.5 font-semibold text-[11px] text-indigo-950 cursor-pointer bg-white/90 hover:bg-white px-2.5 py-1 rounded-lg border border-indigo-200 shadow-2xs">
+              <input
+                type="checkbox"
+                id="checkbox-engine-auto-scan"
+                data-testid="checkbox-engine-auto-scan"
+                checked={engineAutoScan}
+                onChange={(e) => setEngineAutoScan(e.target.checked)}
+                className="rounded text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
+              />
+              <span>Periodic Auto-Scan (12s)</span>
+            </label>
+
+            <button
+              type="button"
+              id="btn-engine-scan-now"
+              data-testid="btn-engine-scan-now"
+              disabled={isScanning}
+              onClick={handleManualScan}
+              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg font-bold text-[11px] transition-all cursor-pointer shadow-2xs flex items-center gap-1 disabled:opacity-50"
+              title="Trigger immediate analysis of historical query plans and system bottlenecks"
+            >
+              <RefreshCw className={`w-3 h-3 ${isScanning ? 'animate-spin' : ''}`} />
+              <span>{isScanning ? 'Scanning...' : 'Scan Plans Now'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Success Alert Toast */}
+        {engineAlertNotice && (
+          <div className="p-2.5 bg-emerald-100 border border-emerald-300 rounded-lg text-xs font-semibold text-emerald-950 flex items-center justify-between animate-fadeIn shadow-2xs">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+              <span>{engineAlertNotice}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEngineAlertNotice(null)}
+              className="text-emerald-700 hover:text-emerald-950 font-bold ml-2 cursor-pointer"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Recommendations Cards Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {engineRecommendations.map((rec) => {
+            const isCritical = rec.priority === 'CRITICAL';
+            const isOptimized = rec.priority === 'OPTIMIZED';
+
+            return (
+              <div
+                key={rec.id}
+                id={`card-${rec.id}`}
+                data-testid={`card-${rec.id}`}
+                className={`p-3.5 rounded-xl border flex flex-col justify-between space-y-3 transition-all ${
+                  rec.isAutoApplied || isOptimized
+                    ? 'bg-white/95 border-emerald-300 shadow-2xs'
+                    : isCritical
+                    ? 'bg-white/95 border-rose-300 ring-2 ring-rose-400/20 shadow-sm'
+                    : 'bg-white/95 border-indigo-200 shadow-2xs'
+                }`}
+              >
+                <div className="space-y-2">
+                  {/* Top Badges */}
+                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                    <span
+                      className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                        rec.isAutoApplied || isOptimized
+                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                          : isCritical
+                          ? 'bg-rose-100 text-rose-800 border-rose-300 animate-pulse'
+                          : 'bg-amber-100 text-amber-800 border-amber-300'
+                      }`}
+                    >
+                      {rec.isAutoApplied ? '✓ Applied & Active' : `${rec.priority} Bottleneck`}
+                    </span>
+                    <span className="font-mono text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                      {rec.projectedDrop.split(' ')[2] || 'High Gain'}
+                    </span>
+                  </div>
+
+                  {/* Index Name & Table */}
+                  <div>
+                    <h4 className="font-mono font-bold text-xs text-indigo-950 truncate" title={rec.name}>
+                      {rec.name}
+                    </h4>
+                    <span className="text-[11px] text-zinc-500 font-medium">
+                      Target Table: <strong className="text-zinc-800">{rec.tableName}</strong>
+                    </span>
+                  </div>
+
+                  {/* Columns Tags */}
+                  <div className="flex flex-wrap gap-1">
+                    {rec.columns.map((col, idx) => (
+                      <span key={idx} className="font-mono text-[10px] bg-indigo-50 text-indigo-900 px-1.5 py-0.2 rounded border border-indigo-200 font-semibold">
+                        {col}
+                      </span>
+                    ))}
+                    {rec.includeColumns && (
+                      <span className="font-mono text-[9px] bg-emerald-50 text-emerald-800 px-1 py-0.2 rounded border border-emerald-200">
+                        +{rec.includeColumns.length} payload
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Bottleneck Evidence */}
+                  <div className="p-2 bg-zinc-50 rounded-lg border border-zinc-100 text-[11px] space-y-1">
+                    <div className="text-zinc-700 leading-snug">
+                      <strong className="text-zinc-900 block text-[10px] uppercase font-bold text-indigo-900">Detected System Bottleneck:</strong>
+                      {rec.bottleneck}
+                    </div>
+                    <div className="text-[10px] font-mono text-zinc-500 pt-0.5 border-t border-zinc-200/60 truncate" title={rec.detectedPlan}>
+                      Plan: {rec.detectedPlan}
+                    </div>
+                  </div>
+
+                  {/* Metric Projection */}
+                  <div className="flex justify-between items-center text-[10px] font-mono px-1">
+                    <span className="text-zinc-500">Latency Drop:</span>
+                    <span className="font-bold text-emerald-700">{rec.projectedDrop}</span>
+                  </div>
+                </div>
+
+                {/* Card Action Button: Auto-Apply */}
+                <div className="pt-2 border-t border-zinc-100 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-mono text-zinc-500">
+                    Cost: {rec.costReduction}
+                  </span>
+
+                  <button
+                    type="button"
+                    id={`btn-auto-apply-${rec.id}`}
+                    data-testid={`btn-auto-apply-${rec.id}`}
+                    onClick={() => handleAutoApplyRecommendation(rec)}
+                    disabled={rec.isAutoApplied}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs ${
+                      rec.isAutoApplied
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default opacity-90'
+                        : isCritical
+                        ? 'bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-700 hover:to-indigo-700 text-white border border-rose-700 shadow-xs'
+                        : 'bg-indigo-600 hover:bg-indigo-700 text-white border border-indigo-700'
+                    }`}
+                    title={rec.isAutoApplied ? 'Index recommendation has already been applied' : 'Auto-Apply: Automatically configure index and activate system optimization'}
+                  >
+                    {rec.isAutoApplied ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Auto-Applied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-3.5 h-3.5 fill-current" />
+                        <span>Auto-Apply</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Low Usage & Index Inactivity Thresholds Configuration Panel */}
+      <div
+        id="panel-low-usage-thresholds"
+        data-testid="panel-low-usage-thresholds"
+        className="p-4 bg-gradient-to-r from-amber-50/90 via-orange-50/60 to-amber-50/90 rounded-xl border-2 border-amber-200 shadow-sm space-y-3.5 animate-fadeIn"
+      >
+        <div className="flex items-center justify-between border-b border-amber-200 pb-2.5 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 bg-amber-600 text-white rounded-xl shadow-xs">
+              <Calendar className="w-4 h-4" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-amber-950 uppercase tracking-wider">
+                  Low Usage &amp; Index Inactivity Thresholds
+                </h3>
+                <span className={`inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                  lowUsageConfig.enabled
+                    ? 'bg-amber-100 text-amber-900 border-amber-300'
+                    : 'bg-zinc-100 text-zinc-600 border-zinc-200'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${lowUsageConfig.enabled ? 'bg-amber-500 animate-pulse' : 'bg-zinc-400'}`}></span>
+                  <span>{lowUsageConfig.enabled ? 'Active Audit Policy' : 'Auditing Suspended'}</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-900 mt-0.5">
+                Define the criteria used to detect unutilized indexes. Indexes inactive for more than the configured threshold (e.g. &gt;7 days) receive prominent warning badges in the Schema Explorer.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold bg-amber-200 text-amber-950 px-2.5 py-1 rounded-lg border border-amber-300 shadow-2xs">
+              Threshold: &gt;{lowUsageConfig.daysInactive} Days Inactive
+            </span>
+            <label className="flex items-center gap-1.5 font-semibold text-[11px] text-amber-950 cursor-pointer bg-white/90 hover:bg-white px-2.5 py-1 rounded-lg border border-amber-200 shadow-2xs">
+              <input
+                type="checkbox"
+                id="checkbox-low-usage-enabled"
+                data-testid="checkbox-low-usage-enabled"
+                checked={lowUsageConfig.enabled}
+                onChange={(e) => handleToggleLowUsageEnabled(e.target.checked)}
+                className="rounded text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
+              />
+              <span>Enable Inactivity Badging</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-1">
+          {/* 1. Inactivity Days Threshold Slider & Quick Presets */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-amber-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Clock className="w-3.5 h-3.5 text-amber-600" />
+                <span>Inactivity Period (Days)</span>
+              </span>
+              <span className="font-mono text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded text-[11px] border border-amber-200">
+                &gt;{lowUsageConfig.daysInactive} Days
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Indexes with zero query scans exceeding this threshold are flagged in the Schema Explorer.
+            </p>
+            <input
+              type="range"
+              id="slider-low-usage-days"
+              data-testid="slider-low-usage-days"
+              min="1"
+              max="60"
+              step="1"
+              value={lowUsageConfig.daysInactive}
+              onChange={(e) => handleDaysInactiveChange(Number(e.target.value))}
+              className="w-full accent-amber-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>1 Day</span>
+              <span>7d (Standard)</span>
+              <span>14d</span>
+              <span>60 Days</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 pt-1.5 border-t border-zinc-100">
+              {[3, 7, 14, 30].map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  id={`btn-preset-days-${d}`}
+                  data-testid={`btn-preset-days-${d}`}
+                  onClick={() => handleDaysInactiveChange(d)}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    lowUsageConfig.daysInactive === d
+                      ? 'bg-amber-600 text-white border-amber-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                  title={`Set inactivity threshold to ${d} days`}
+                >
+                  {d}d{d === 7 ? ' (Std)' : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 2. Minimum Query Scan Hits in Audit Window */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-amber-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <Target className="w-3.5 h-3.5 text-amber-600" />
+                <span>Min Query Scan Hits</span>
+              </span>
+              <span className="font-mono text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded text-[11px] border border-amber-200">
+                &lt;{lowUsageConfig.minQueryHits} Hits
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Minimum query execution hits required over the 100-query audit rolling window.
+            </p>
+            <input
+              type="range"
+              id="slider-low-usage-hits"
+              data-testid="slider-low-usage-hits"
+              min="0"
+              max="100"
+              step="5"
+              value={lowUsageConfig.minQueryHits}
+              onChange={(e) => handleMinHitsChange(Number(e.target.value))}
+              className="w-full accent-amber-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>0 (Strict)</span>
+              <span>10 Hits</span>
+              <span>50 Hits</span>
+              <span>100 Hits</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 pt-1.5 border-t border-zinc-100">
+              {[0, 10, 25, 50].map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  id={`btn-preset-hits-${h}`}
+                  data-testid={`btn-preset-hits-${h}`}
+                  onClick={() => handleMinHitsChange(h)}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    lowUsageConfig.minQueryHits === h
+                      ? 'bg-amber-600 text-white border-amber-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                  title={`Set minimum query hits threshold to ${h}`}
+                >
+                  {h === 0 ? 'Zero Hits' : `${h} Hits`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 3. Read-to-Write Ratio Threshold */}
+          <div className="space-y-2 bg-white/95 p-3.5 rounded-xl border border-amber-200 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span className="flex items-center gap-1.5 text-zinc-900">
+                <TrendingUp className="w-3.5 h-3.5 text-amber-600" />
+                <span>Read/Write Ratio Floor</span>
+              </span>
+              <span className="font-mono text-amber-900 font-bold bg-amber-100 px-2 py-0.5 rounded text-[11px] border border-amber-200">
+                &lt;{lowUsageConfig.minReadWriteRatio.toFixed(1)}x Ratio
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Flag indexes whose write lock penalties exceed read benefits (write amplification).
+            </p>
+            <input
+              type="range"
+              id="slider-low-usage-ratio"
+              data-testid="slider-low-usage-ratio"
+              min="0.5"
+              max="10.0"
+              step="0.5"
+              value={lowUsageConfig.minReadWriteRatio}
+              onChange={(e) => handleMinRatioChange(Number(e.target.value))}
+              className="w-full accent-amber-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>0.5x</span>
+              <span>3.0x (Std)</span>
+              <span>5.0x</span>
+              <span>10.0x</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 pt-1.5 border-t border-zinc-100">
+              {[1.0, 2.0, 3.0, 5.0].map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  id={`btn-preset-ratio-${r}`}
+                  data-testid={`btn-preset-ratio-${r}`}
+                  onClick={() => handleMinRatioChange(r)}
+                  className={`py-1 text-center font-mono font-semibold text-[10px] rounded border transition-colors cursor-pointer ${
+                    lowUsageConfig.minReadWriteRatio === r
+                      ? 'bg-amber-600 text-white border-amber-700 shadow-2xs font-bold'
+                      : 'bg-zinc-50 hover:bg-zinc-100 text-zinc-700 border-zinc-200'
+                  }`}
+                  title={`Set read/write ratio threshold to ${r.toFixed(1)}x`}
+                >
+                  {r.toFixed(1)}x
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="p-4 bg-gradient-to-r from-blue-50/80 via-indigo-50/50 to-blue-50/80 rounded-xl border border-blue-200 shadow-2xs space-y-3">
         <div className="flex items-center justify-between border-b border-blue-200 pb-2">
           <div className="flex items-center gap-2">
