@@ -82,6 +82,95 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
 
   const [newPresetName, setNewPresetName] = useState('');
   const [isSavingPreset, setIsSavingPreset] = useState(false);
+  const [maxConcurrencyLimit, setMaxConcurrencyLimit] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_query_concurrency_limit');
+      return saved ? Number(saved) : 10;
+    } catch {
+      return 10;
+    }
+  });
+
+  const [governorMemoryLimitMb, setGovernorMemoryLimitMb] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_governor_memory_limit_mb');
+      return saved ? Number(saved) : 384;
+    } catch {
+      return 384;
+    }
+  });
+
+  const [governorCpuLimitPct, setGovernorCpuLimitPct] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_governor_cpu_limit_pct');
+      return saved ? Number(saved) : 80;
+    } catch {
+      return 80;
+    }
+  });
+
+  const [diskTier, setDiskTier] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_global_disk_tier');
+      return saved || 'NVMe';
+    } catch {
+      return 'NVMe';
+    }
+  });
+
+  const handleDiskTierChange = (tier: string) => {
+    setDiskTier(tier);
+    try {
+      localStorage.setItem('enterprise_global_disk_tier', tier);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleConcurrencyChange = (val: number) => {
+    setMaxConcurrencyLimit(val);
+    try {
+      localStorage.setItem('enterprise_query_concurrency_limit', String(val));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleGovernorMemoryChange = (val: number) => {
+    setGovernorMemoryLimitMb(val);
+    try {
+      localStorage.setItem('enterprise_governor_memory_limit_mb', String(val));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleGovernorCpuChange = (val: number) => {
+    setGovernorCpuLimitPct(val);
+    try {
+      localStorage.setItem('enterprise_governor_cpu_limit_pct', String(val));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const [performanceBudgetMs, setPerformanceBudgetMs] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_table_performance_budget_ms');
+      return saved ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  const handlePerformanceBudgetChange = (val: number) => {
+    setPerformanceBudgetMs(val);
+    try {
+      localStorage.setItem('enterprise_table_performance_budget_ms', String(val));
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const handleSavePreset = () => {
     if (!newPresetName.trim()) return;
@@ -330,6 +419,324 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
             </button>
           );
         })}
+      </div>
+
+      {/* Query Throttler Configuration Panel */}
+      <div className="p-4 bg-gradient-to-r from-blue-50/80 via-indigo-50/50 to-blue-50/80 rounded-xl border border-blue-200 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between border-b border-blue-200 pb-2">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-blue-600 text-white rounded-lg shadow-2xs">
+              <Sliders className="w-4 h-4" />
+            </span>
+            <div>
+              <h3 className="text-xs font-bold text-blue-950 uppercase tracking-wider">
+                Query Throttler &amp; Concurrency Limiter
+              </h3>
+              <p className="text-[11px] text-blue-700 mt-0.5">
+                Set maximum concurrent background queries to prevent database socket exhaustion during heavy batch operations.
+              </p>
+            </div>
+          </div>
+          <span className="font-mono text-xs font-bold bg-blue-200 text-blue-900 px-2.5 py-1 rounded-lg border border-blue-300">
+            Limit: {maxConcurrencyLimit} Queries
+          </span>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+          <div className="w-full flex-1 space-y-1">
+            <div className="flex justify-between text-[11px] font-mono font-bold text-zinc-700">
+              <span>1 Query (Strict)</span>
+              <span>10 (Recommended)</span>
+              <span>50 Queries (High Throughput)</span>
+            </div>
+            <input
+              type="range"
+              id="slider-query-concurrency"
+              data-testid="slider-query-concurrency"
+              min="1"
+              max="50"
+              step="1"
+              value={maxConcurrencyLimit}
+              onChange={(e) => handleConcurrencyChange(Number(e.target.value))}
+              className="w-full accent-blue-600 cursor-pointer"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleConcurrencyChange(5)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                maxConcurrencyLimit === 5 ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+              }`}
+            >
+              5
+            </button>
+            <button
+              type="button"
+              onClick={() => handleConcurrencyChange(10)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                maxConcurrencyLimit === 10 ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+              }`}
+            >
+              10
+            </button>
+            <button
+              type="button"
+              onClick={() => handleConcurrencyChange(25)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                maxConcurrencyLimit === 25 ? 'bg-blue-600 text-white border-blue-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+              }`}
+            >
+              25
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Resource Usage Governor Configuration Panel */}
+      <div className="p-4 bg-gradient-to-r from-emerald-50/80 via-teal-50/50 to-emerald-50/80 rounded-xl border border-emerald-200 shadow-2xs space-y-3.5">
+        <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-emerald-600 text-white rounded-lg shadow-2xs">
+              <Cpu className="w-4 h-4" />
+            </span>
+            <div>
+              <h3 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
+                Resource Usage Governor &amp; Bounds Enforcement
+              </h3>
+              <p className="text-[11px] text-emerald-700 mt-0.5">
+                Configure hard memory and CPU concurrency ceilings to govern resource utilization during intense query workloads.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded border border-emerald-300">
+              RAM: {governorMemoryLimitMb} MB
+            </span>
+            <span className="font-mono text-xs font-bold bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded border border-emerald-300">
+              CPU: {governorCpuLimitPct}%
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Memory Governor Limit */}
+          <div className="space-y-1.5 bg-white/90 p-3 rounded-xl border border-emerald-100 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span>Max Buffer RAM Ceiling</span>
+              <span className="font-mono text-emerald-800">{governorMemoryLimitMb} MB / 512 MB</span>
+            </div>
+            <input
+              type="range"
+              id="slider-governor-memory"
+              data-testid="slider-governor-memory"
+              min="128"
+              max="512"
+              step="16"
+              value={governorMemoryLimitMb}
+              onChange={(e) => handleGovernorMemoryChange(Number(e.target.value))}
+              className="w-full accent-emerald-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>128 MB</span>
+              <span>256 MB</span>
+              <span>384 MB</span>
+              <span>512 MB</span>
+            </div>
+          </div>
+
+          {/* CPU Concurrency Governor Limit */}
+          <div className="space-y-1.5 bg-white/90 p-3 rounded-xl border border-emerald-100 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span>Max CPU Concurrency Ceiling</span>
+              <span className="font-mono text-emerald-800">{governorCpuLimitPct}% Utilization</span>
+            </div>
+            <input
+              type="range"
+              id="slider-governor-cpu"
+              data-testid="slider-governor-cpu"
+              min="20"
+              max="100"
+              step="5"
+              value={governorCpuLimitPct}
+              onChange={(e) => handleGovernorCpuChange(Number(e.target.value))}
+              className="w-full accent-emerald-600 cursor-pointer"
+            />
+            <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono">
+              <span>20%</span>
+              <span>50%</span>
+              <span>80%</span>
+              <span>100%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Performance Budget Configuration Panel */}
+      <div className="p-4 bg-gradient-to-r from-purple-50/80 via-indigo-50/50 to-purple-50/80 rounded-xl border border-purple-200 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between border-b border-purple-200 pb-2">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-purple-600 text-white rounded-lg shadow-2xs">
+              <Sparkles className="w-4 h-4" />
+            </span>
+            <div>
+              <h3 className="text-xs font-bold text-purple-950 uppercase tracking-wider">
+                Performance Budget &amp; Table Latency Ceiling
+              </h3>
+              <p className="text-[11px] text-purple-700 mt-0.5">
+                Define a total latency budget per table. Records exceeding this threshold will display breach warning indicators in the VirtualizedTable.
+              </p>
+            </div>
+          </div>
+          <span className="font-mono text-xs font-bold bg-purple-200 text-purple-900 px-2.5 py-1 rounded-lg border border-purple-300">
+            Budget: {performanceBudgetMs}ms / Table
+          </span>
+        </div>
+
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+          <div className="w-full flex-1 space-y-1">
+            <div className="flex justify-between text-[11px] font-mono font-bold text-zinc-700">
+              <span>25ms (Strict SLA)</span>
+              <span>100ms (Standard)</span>
+              <span>300ms (Lenient)</span>
+            </div>
+            <input
+              type="range"
+              id="slider-performance-budget"
+              data-testid="slider-performance-budget"
+              min="10"
+              max="300"
+              step="10"
+              value={performanceBudgetMs}
+              onChange={(e) => handlePerformanceBudgetChange(Number(e.target.value))}
+              className="w-full accent-purple-600 cursor-pointer"
+            />
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => handlePerformanceBudgetChange(25)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                performanceBudgetMs === 25 ? 'bg-purple-600 text-white border-purple-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+              }`}
+            >
+              25ms
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePerformanceBudgetChange(100)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                performanceBudgetMs === 100 ? 'bg-purple-600 text-white border-purple-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+              }`}
+            >
+              100ms
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePerformanceBudgetChange(200)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                performanceBudgetMs === 200 ? 'bg-purple-600 text-white border-purple-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+              }`}
+            >
+              200ms
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Global IOPS Simulator & Disk Speed Tier */}
+      <div className="p-4 bg-gradient-to-r from-cyan-50/80 via-teal-50/50 to-cyan-50/80 rounded-xl border border-cyan-200 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between border-b border-cyan-200 pb-2">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-cyan-600 text-white rounded-lg shadow-2xs">
+              <Database className="w-4 h-4" />
+            </span>
+            <div>
+              <h3 className="text-xs font-bold text-cyan-950 uppercase tracking-wider">
+                Global IOPS Simulator &amp; Disk Speed Tier
+              </h3>
+              <p className="text-[11px] text-cyan-800 mt-0.5">
+                Simulate underlying storage I/O performance. Adjusting disk speed tiers dynamically scales index re-build times and query seek latency across the ExplainPlanViewer.
+              </p>
+            </div>
+          </div>
+          <span className="font-mono text-xs font-bold bg-cyan-200 text-cyan-950 px-2.5 py-1 rounded-lg border border-cyan-300">
+            Tier: {diskTier} ({diskTier === 'NVMe' ? '500k IOPS' : diskTier === 'SSD' ? '10k IOPS' : '250 IOPS'})
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+          {/* HDD Tier */}
+          <button
+            type="button"
+            id="btn-disk-tier-hdd"
+            data-testid="btn-disk-tier-hdd"
+            onClick={() => handleDiskTierChange('HDD')}
+            className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-1.5 ${
+              diskTier === 'HDD'
+                ? 'bg-amber-600 text-white border-amber-700 shadow-md ring-2 ring-amber-300'
+                : 'bg-white hover:bg-amber-50/50 text-zinc-800 border-zinc-300'
+            }`}
+          >
+            <div className="flex items-center justify-between font-bold text-xs">
+              <span>💽 HDD (Magnetic)</span>
+              <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded ${diskTier === 'HDD' ? 'bg-amber-950 text-amber-200' : 'bg-zinc-100 text-zinc-700'}`}>
+                250 IOPS
+              </span>
+            </div>
+            <div className={`text-[10px] ${diskTier === 'HDD' ? 'text-amber-100' : 'text-zinc-500'}`}>
+              Seek Latency: ~15.0ms • Rebuild: ~10x Slower
+            </div>
+          </button>
+
+          {/* SSD Tier */}
+          <button
+            type="button"
+            id="btn-disk-tier-ssd"
+            data-testid="btn-disk-tier-ssd"
+            onClick={() => handleDiskTierChange('SSD')}
+            className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-1.5 ${
+              diskTier === 'SSD'
+                ? 'bg-teal-600 text-white border-teal-700 shadow-md ring-2 ring-teal-300'
+                : 'bg-white hover:bg-teal-50/50 text-zinc-800 border-zinc-300'
+            }`}
+          >
+            <div className="flex items-center justify-between font-bold text-xs">
+              <span>💾 SSD (SATA/PCIe)</span>
+              <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded ${diskTier === 'SSD' ? 'bg-teal-950 text-teal-200' : 'bg-zinc-100 text-zinc-700'}`}>
+                10k IOPS
+              </span>
+            </div>
+            <div className={`text-[10px] ${diskTier === 'SSD' ? 'text-teal-100' : 'text-zinc-500'}`}>
+              Seek Latency: ~0.8ms • Rebuild: ~2.5x Slower
+            </div>
+          </button>
+
+          {/* NVMe Tier */}
+          <button
+            type="button"
+            id="btn-disk-tier-nvme"
+            data-testid="btn-disk-tier-nvme"
+            onClick={() => handleDiskTierChange('NVMe')}
+            className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-1.5 ${
+              diskTier === 'NVMe'
+                ? 'bg-cyan-600 text-white border-cyan-700 shadow-md ring-2 ring-cyan-300'
+                : 'bg-white hover:bg-cyan-50/50 text-zinc-800 border-zinc-300'
+            }`}
+          >
+            <div className="flex items-center justify-between font-bold text-xs">
+              <span>⚡ NVMe (PCIe 4.0)</span>
+              <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded ${diskTier === 'NVMe' ? 'bg-cyan-950 text-cyan-200' : 'bg-zinc-100 text-zinc-700'}`}>
+                500k IOPS
+              </span>
+            </div>
+            <div className={`text-[10px] ${diskTier === 'NVMe' ? 'text-cyan-100' : 'text-zinc-500'}`}>
+              Seek Latency: ~0.05ms • Rebuild: 1.0x Baseline
+            </div>
+          </button>
+        </div>
       </div>
     </div>
   );

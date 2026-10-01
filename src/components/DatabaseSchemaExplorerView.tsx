@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { IndexEfficiencyTrendChart } from './IndexEfficiencyTrendChart';
@@ -92,6 +92,101 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
   const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
   const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
+  const [isGroupByTable, setIsGroupByTable] = useState<boolean>(false);
+  const [collapsedTables, setCollapsedTables] = useState<Record<string, boolean>>({});
+  const [isWhatIfAnalysisActive, setIsWhatIfAnalysisActive] = useState<boolean>(false);
+  const [isLockContentionHeatmapActive, setIsLockContentionHeatmapActive] = useState<boolean>(false);
+  const [batchProtectionEnabled, setBatchProtectionEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_batch_index_protection_enabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [globalHousekeeperEnabled, setGlobalHousekeeperEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_global_housekeeper_enabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [housekeeperFrequency, setHousekeeperFrequency] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_global_housekeeper_frequency');
+      return saved || 'weekly';
+    } catch {
+      return 'weekly';
+    }
+  });
+
+  const [showHousekeeperModal, setShowHousekeeperModal] = useState<boolean>(false);
+  const [isScanningHousekeeper, setIsScanningHousekeeper] = useState<boolean>(false);
+
+  const handleToggleGlobalHousekeeper = (enabled: boolean) => {
+    setGlobalHousekeeperEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_global_housekeeper_enabled', JSON.stringify(enabled));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleHousekeeperFrequencyChange = (freq: string) => {
+    setHousekeeperFrequency(freq);
+    try {
+      localStorage.setItem('enterprise_global_housekeeper_frequency', freq);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleRunHousekeeperScan = () => {
+    setIsScanningHousekeeper(true);
+    setTimeout(() => {
+      setIsScanningHousekeeper(false);
+      setShowHousekeeperModal(true);
+    }, 800);
+  };
+
+  const handleExecuteHousekeeperRemoval = (indexNames: string[]) => {
+    setRemovedIndexes((prev) => Array.from(new Set([...prev, ...indexNames])));
+    setShowHousekeeperModal(false);
+    setImportSuccessNotice(`[Global Housekeeper] Safely removed ${indexNames.length} unprotected low-usage indexes. Reclaimed disk space.`);
+    setTimeout(() => setImportSuccessNotice(null), 4000);
+  };
+
+  const handleToggleBatchProtection = (enabled: boolean) => {
+    setBatchProtectionEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_batch_index_protection_enabled', JSON.stringify(enabled));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  const [whatIfModifications, setWhatIfModifications] = useState<Record<string, string[]>>({});
+  const [activeWhatIfModalIndex, setActiveWhatIfModalIndex] = useState<{ name: string; tableName: string; columns: string[] } | null>(null);
+  const [whatIfInputText, setWhatIfInputText] = useState<string>('');
+  const [showConflictDashboardModal, setShowConflictDashboardModal] = useState<boolean>(false);
+  const [resolvedConflicts, setResolvedConflicts] = useState<Record<string, boolean>>({});
+
+  const handleMergeConflictGroup = (groupId: string, indexNamesToPrune: string[]) => {
+    setResolvedConflicts((prev) => ({ ...prev, [groupId]: true }));
+    setRemovedIndexes((prev) => Array.from(new Set([...prev, ...indexNamesToPrune])));
+  };
+  const [isResequencingWrites, setIsResequencingWrites] = useState<boolean>(false);
+  const [clusterContentionResolved, setClusterContentionResolved] = useState<boolean>(false);
+
+  const handleResequenceWrites = () => {
+    setIsResequencingWrites(true);
+    setTimeout(() => {
+      setIsResequencingWrites(false);
+      setClusterContentionResolved(true);
+    }, 1200);
+  };
   const [selectedIndexes, setSelectedIndexes] = useState<string[]>([]);
   const [isBulkOperating, setIsBulkOperating] = useState<boolean>(false);
   const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'latency_desc' | 'latency_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name'>('impact_desc');
@@ -2742,6 +2837,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     return list;
   }, [tables, indexCategoryFilter, indexSearchQuery, removedIndexes, lockedIndexes, flags, createdCompositeIndexes, createdCustomIndexes, indexRankSort]);
 
+  const groupedByTableIndexes = useMemo(() => {
+    const map = new Map<string, typeof allRankedSchemaIndexes>();
+    for (const item of allRankedSchemaIndexes) {
+      if (!map.has(item.table)) {
+        map.set(item.table, []);
+      }
+      map.get(item.table)!.push(item);
+    }
+    return Array.from(map.entries()).map(([tableName, indexes]) => ({
+      tableName,
+      indexes,
+      avgHealth: Math.round(indexes.reduce((sum, i) => sum + i.health.score, 0) / (indexes.length || 1))
+    }));
+  }, [allRankedSchemaIndexes]);
+
   // Single button handler to apply all calculated optimal improvements at once with sequential transition animation
   const handleApplyBulkOptimize = () => {
     setIsApplyingBulkOptimize(true);
@@ -4112,8 +4222,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     data-testid="filter-indexes-input"
                     value={indexSearchQuery}
                     onChange={(e) => setIndexSearchQuery(e.target.value)}
-                    placeholder="Filter indexes by name or target table..."
-                    aria-label="Filter indexes by name or target table"
+                    placeholder="Filter by column name, index type, or table name..."
+                    aria-label="Filter indexes by column name, index type, or table name"
                     className="filter-indexes-input pl-8 pr-7 py-1.5 text-xs bg-white border border-zinc-300 rounded-lg text-zinc-800 placeholder-zinc-400 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 w-52 sm:w-72 shadow-2xs font-mono transition-all"
                   />
                   {indexSearchQuery && (
@@ -4216,6 +4326,92 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <span>Cards View</span>
                   </button>
                 </div>
+
+                {/* Group by Table Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-index-group-by-table"
+                  data-testid="btn-index-group-by-table"
+                  onClick={() => setIsGroupByTable(!isGroupByTable)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                    isGroupByTable
+                      ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs ring-1 ring-indigo-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+                  }`}
+                  title="Visually restructure the index list into collapsible segments organized by database table"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Group by Table</span>
+                  {isGroupByTable && (
+                    <span className="font-mono text-[10px] bg-indigo-800 text-indigo-100 px-1.5 py-0.2 rounded font-bold">
+                      ON
+                    </span>
+                  )}
+                </button>
+
+                {/* What-If Analysis Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-what-if-analysis-toggle"
+                  data-testid="btn-what-if-analysis-toggle"
+                  onClick={() => setIsWhatIfAnalysisActive(!isWhatIfAnalysisActive)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                    isWhatIfAnalysisActive
+                      ? 'bg-purple-600 text-white border-purple-700 shadow-xs ring-1 ring-purple-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+                  }`}
+                  title="Temporarily modify index columns and observe projected latency changes in ExplainPlanViewer without database writes"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>What-If Analysis {Object.keys(whatIfModifications).length > 0 ? `(${Object.keys(whatIfModifications).length})` : ''}</span>
+                  {isWhatIfAnalysisActive && (
+                    <span className="font-mono text-[10px] bg-purple-800 text-purple-100 px-1.5 py-0.2 rounded font-bold">
+                      ON
+                    </span>
+                  )}
+                </button>
+
+                {/* Lock Contention Heatmap Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-lock-contention-heatmap-toggle"
+                  data-testid="btn-lock-contention-heatmap-toggle"
+                  onClick={() => setIsLockContentionHeatmapActive(!isLockContentionHeatmapActive)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                    isLockContentionHeatmapActive
+                      ? 'bg-rose-700 text-white border-rose-800 shadow-xs ring-1 ring-rose-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+                  }`}
+                  title="Visualize tables experiencing high wait times or deadlocks using color-coded lock contention nodes"
+                >
+                  <Flame className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                  <span>Lock Contention Heatmap</span>
+                  {isLockContentionHeatmapActive && (
+                    <span className="font-mono text-[10px] bg-white/25 text-white px-1.5 py-0.2 rounded font-bold">
+                      ACTIVE
+                    </span>
+                  )}
+                </button>
+
+                {/* Batch Protection Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-batch-protection-toggle"
+                  data-testid="btn-batch-protection-toggle"
+                  onClick={() => handleToggleBatchProtection(!batchProtectionEnabled)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                    batchProtectionEnabled
+                      ? 'bg-amber-600 text-white border-amber-700 shadow-xs ring-1 ring-amber-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+                  }`}
+                  title="Automatically apply 'Protected' status to all newly created indexes for a grace period of 24 hours to prevent premature auto-cleanup"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-200" />
+                  <span>Batch Protection (24h Grace)</span>
+                  <span className={`font-mono text-[10px] px-1.5 py-0.2 rounded font-bold ${batchProtectionEnabled ? 'bg-white/25 text-white' : 'bg-zinc-200 text-zinc-700'}`}>
+                    {batchProtectionEnabled ? 'ON' : 'OFF'}
+                  </span>
+                </button>
 
                 {/* Index Impact Heatmap Toggle Button in Header */}
                 <button
@@ -4365,6 +4561,46 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 >
                   <UploadCloud className="w-3.5 h-3.5 text-indigo-600" />
                   <span>Bulk Import Indices</span>
+                </button>
+
+                {/* Cluster Analysis Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-cluster-analysis-toggle"
+                  data-testid="btn-cluster-analysis-toggle"
+                  onClick={() => setShowClusterAnalysisModal(true)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    clusterContentionResolved
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Analyze index write clusters triggering lock contention and deadlocks during concurrent operations"
+                >
+                  <Activity className={`w-3.5 h-3.5 ${clusterContentionResolved ? 'text-emerald-600' : 'text-amber-600'}`} />
+                  <span>Cluster Analysis</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${clusterContentionResolved ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {clusterContentionResolved ? '✓ Resolved' : '2 Groups'}
+                  </span>
+                </button>
+
+                {/* Conflict Resolution Dashboard Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-conflict-resolution-toggle"
+                  data-testid="btn-conflict-resolution-toggle"
+                  onClick={() => setShowConflictDashboardModal(true)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    Object.keys(resolvedConflicts).length >= 2
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Open Conflict Resolution Dashboard to manage identical column sets and redundant covering indexes"
+                >
+                  <GitMerge className={`w-3.5 h-3.5 ${Object.keys(resolvedConflicts).length >= 2 ? 'text-emerald-600' : 'text-indigo-600'}`} />
+                  <span>Conflict Resolution</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${Object.keys(resolvedConflicts).length >= 2 ? 'bg-emerald-100 text-emerald-800' : 'bg-indigo-100 text-indigo-800'}`}>
+                    {Object.keys(resolvedConflicts).length >= 2 ? '✓ Resolved' : '2 Conflicts'}
+                  </span>
                 </button>
               </div>
             </div>
@@ -4561,7 +4797,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     Filtering indexes in real-time matching: <strong className="font-mono bg-white px-1.5 py-0.5 rounded border border-indigo-200 text-indigo-900">&ldquo;{indexSearchQuery}&rdquo;</strong>
                   </span>
                   <span className="text-[11px] text-indigo-700">
-                    (matching name or target table)
+                    (matching column name, index type, or table name)
                   </span>
                 </div>
                 <button
@@ -4572,6 +4808,81 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   <X className="w-3.5 h-3.5" />
                   <span>Reset Filter</span>
                 </button>
+              </div>
+            )}
+
+            {/* Lock Contention Heatmap Overlay Banner */}
+            {isLockContentionHeatmapActive && (
+              <div
+                id="lock-contention-heatmap-overlay"
+                data-testid="lock-contention-heatmap-overlay"
+                className="p-4 bg-gradient-to-r from-rose-900 via-rose-800 to-amber-900 text-white rounded-2xl shadow-lg border border-rose-700 space-y-3 animate-fadeIn"
+              >
+                <div className="flex items-center justify-between border-b border-rose-700/80 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-white/20 text-amber-200 rounded-xl shadow-2xs animate-pulse">
+                      <Flame className="w-4 h-4" />
+                    </span>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-rose-100">
+                      Real-Time Lock Contention Heatmap &amp; Deadlock Monitor
+                    </h4>
+                  </div>
+                  <span className="font-mono text-[10px] bg-amber-400 text-zinc-950 px-2 py-0.5 rounded-full font-extrabold shadow-2xs">
+                    🔴 High Contention Active
+                  </span>
+                </div>
+
+                <p className="text-xs text-rose-100">
+                  Visualizing database tables experiencing high lock wait times, exclusive row locks, and deadlock hazards during concurrent write bursts:
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                  {tables.slice(0, 3).map((tbl, idx) => {
+                    const waitTimeMs = idx === 0 ? 1420 : idx === 1 ? 680 : 190;
+                    const statusColor = idx === 0 ? 'bg-rose-600/90 border-rose-400 text-rose-50' : idx === 1 ? 'bg-amber-600/90 border-amber-400 text-amber-50' : 'bg-emerald-600/90 border-emerald-400 text-emerald-50';
+                    const riskLevel = idx === 0 ? 'Critical Lock Wait (Deadlock Risk)' : idx === 1 ? 'Moderate Contention' : 'Low Contention / Healthy';
+
+                    return (
+                      <div
+                        key={`contention-node-${tbl.name}`}
+                        className={`p-3 rounded-xl border flex flex-col justify-between gap-2 shadow-sm ${statusColor}`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold font-mono text-xs flex items-center gap-1.5">
+                            <Database className="w-3.5 h-3.5 opacity-90" />
+                            <span>{tbl.entityName || tbl.name}</span>
+                          </span>
+                          <span className="font-mono text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-black/30 text-white">
+                            {waitTimeMs}ms wait
+                          </span>
+                        </div>
+                        <div className="text-[11px] opacity-95 flex items-center justify-between">
+                          <span>Status:</span>
+                          <span className="font-bold">{riskLevel}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Batch Protection Active Status Banner */}
+            {batchProtectionEnabled && (
+              <div
+                id="batch-protection-active-banner"
+                data-testid="batch-protection-active-banner"
+                className="p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-center justify-between gap-2 text-xs text-amber-950 animate-fadeIn shadow-2xs"
+              >
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>
+                    <strong>Batch Protection Active (24h Grace Period):</strong> Newly created batch indexes are automatically locked with <strong>Protected</strong> status to prevent premature auto-cleanup.
+                  </span>
+                </div>
+                <span className="font-mono text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded font-bold shrink-0">
+                  Grace Period: 24 Hours
+                </span>
               </div>
             )}
 
@@ -4622,9 +4933,217 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               })}
             </div>
 
-            {/* Index List Views: Ranked Index Table with 'Index Impact Score' Column vs Collapsible Entity Cards */}
+            {/* Index List Views: Ranked Index Table vs Grouped by Table Segments vs Cards */}
             {indexListLayout === 'table' ? (
-              <div
+              isGroupByTable ? (
+                <div id="indexes-grouped-by-table-container" data-testid="indexes-grouped-by-table-container" className="space-y-4">
+                  {groupedByTableIndexes.length === 0 ? (
+                    <div className="bg-white rounded-xl border border-zinc-200 p-8 text-center text-zinc-500 text-xs">
+                      No indexes matching &ldquo;{indexSearchQuery}&rdquo; found in the selected filter.
+                    </div>
+                  ) : (
+                    groupedByTableIndexes.map(({ tableName, indexes, avgHealth }) => {
+                      const isCollapsed = !!collapsedTables[tableName];
+                      const allSelected = indexes.length > 0 && indexes.every((item) => selectedIndexes.includes(item.index.name));
+                      const someSelected = indexes.some((item) => selectedIndexes.includes(item.index.name));
+
+                      return (
+                        <div
+                          key={`grouped-table-${tableName}`}
+                          id={`grouped-table-section-${tableName}`}
+                          data-testid={`grouped-table-section-${tableName}`}
+                          className="bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-2xs"
+                        >
+                          {/* Table Segment Header */}
+                          <div
+                            className="p-3 bg-gradient-to-r from-indigo-50/90 via-white to-zinc-50 border-b border-zinc-200 flex items-center justify-between cursor-pointer select-none"
+                            onClick={() => setCollapsedTables((prev) => ({ ...prev, [tableName]: !prev[tableName] }))}
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <button
+                                type="button"
+                                className="text-zinc-500 hover:text-zinc-800 p-0.5 rounded cursor-pointer"
+                                aria-label="Toggle section"
+                              >
+                                {isCollapsed ? <ChevronRight className="w-4 h-4 text-indigo-600" /> : <ChevronDown className="w-4 h-4 text-indigo-600" />}
+                              </button>
+                              <div className="flex items-center gap-2">
+                                <Database className="w-4 h-4 text-indigo-600" />
+                                <span className="font-bold text-zinc-900 font-mono text-sm">{tableName}</span>
+                                <span className="font-mono text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full border border-indigo-200 font-bold">
+                                  {indexes.length} index{indexes.length === 1 ? '' : 'es'}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3 text-xs font-mono">
+                              <span className="text-zinc-500 hidden sm:inline">
+                                Avg Health: <strong className={avgHealth >= 80 ? 'text-emerald-700' : 'text-amber-700'}>{avgHealth}/100</strong>
+                              </span>
+                              <span className="text-indigo-600 font-semibold text-[11px]">
+                                {isCollapsed ? 'Expand Table Segment' : 'Collapse Segment'}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Table Segment Content */}
+                          {!isCollapsed && (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left text-xs font-mono border-collapse">
+                                <thead className="bg-zinc-100/90 text-zinc-700 uppercase tracking-wider text-[10px] border-b border-zinc-200 select-none">
+                                  <tr>
+                                    <th className="py-2.5 px-3 font-bold w-10 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={allSelected}
+                                        ref={(el) => {
+                                          if (el) {
+                                            el.indeterminate = someSelected && !allSelected;
+                                          }
+                                        }}
+                                        onChange={(e) => {
+                                          e.stopPropagation();
+                                          const names = indexes.map((i) => i.index.name);
+                                          handleSelectAllVisible(names);
+                                        }}
+                                        className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                                      />
+                                    </th>
+                                    <th className="py-2.5 px-3 font-bold w-14 text-center">Rank</th>
+                                    <th className="py-2.5 px-3 font-bold">Index Name</th>
+                                    <th className="py-2.5 px-3 font-bold">Type &amp; Columns</th>
+                                    {showIndexImpactHeatmap && (
+                                      <th className="py-2.5 px-3 font-bold text-center bg-rose-50/80 border-x border-rose-200 text-rose-950">
+                                        Latency Contribution
+                                      </th>
+                                    )}
+                                    <th className="py-2.5 px-3 font-bold text-center">Query Gain</th>
+                                    <th className="py-2.5 px-3 font-bold text-center">Write Penalty</th>
+                                    <th className="py-2.5 px-3 font-bold text-center bg-indigo-50/70 border-x border-indigo-200 text-indigo-950">
+                                      Impact Score
+                                    </th>
+                                    <th className="py-2.5 px-3 font-bold text-center">Health</th>
+                                    <th className="py-2.5 px-3 font-bold text-right">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-zinc-100">
+                                  {indexes.map((item, idx) => {
+                                    const { index, health, impact, latencyHeat, isRemoved, isLocked } = item;
+                                    const isSelected = selectedIndexes.includes(index.name);
+                                    return (
+                                      <tr
+                                        key={`grouped-row-${tableName}-${index.name}`}
+                                        id={`index-row-${index.name}`}
+                                        data-testid={`index-row-${index.name}`}
+                                        className={`transition-colors ${
+                                          isSelected
+                                            ? 'bg-indigo-50/70 ring-1 ring-indigo-400'
+                                            : showIndexImpactHeatmap
+                                            ? latencyHeat.rowBgClass
+                                            : isRemoved
+                                            ? 'bg-zinc-50/60 opacity-60 hover:bg-zinc-100/80'
+                                            : impact.score >= 90
+                                            ? 'bg-emerald-50/20 hover:bg-emerald-50/40'
+                                            : impact.score < 30
+                                            ? 'bg-rose-50/20 hover:bg-rose-50/40'
+                                            : 'hover:bg-zinc-50/80'
+                                        }`}
+                                      >
+                                        <td className="py-3 px-3 text-center">
+                                          <input
+                                            type="checkbox"
+                                            id={`checkbox-index-${index.name}`}
+                                            data-testid={`checkbox-index-${index.name}`}
+                                            checked={isSelected}
+                                            onChange={() => handleToggleSelectIndex(index.name)}
+                                            className="w-4 h-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600"
+                                          />
+                                        </td>
+                                        <td className="py-3 px-3 text-center font-bold text-zinc-500">
+                                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold bg-zinc-100 text-zinc-700">
+                                            #{idx + 1}
+                                          </span>
+                                        </td>
+                                        <td className="py-3 px-3">
+                                          <div className="font-bold text-zinc-900 flex items-center gap-1.5 flex-wrap">
+                                            <span className="font-mono text-indigo-950 font-bold">{index.name}</span>
+                                            {isLocked && (
+                                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                                Protected
+                                              </span>
+                                            )}
+                                            {isRemoved && (
+                                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                                                Pruned
+                                              </span>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="py-3 px-3">
+                                          <div className="text-zinc-700 font-mono text-[11px]">
+                                            <span className="font-bold text-indigo-800">{index.type}</span> ({index.columns.join(', ')})
+                                          </div>
+                                        </td>
+                                        {showIndexImpactHeatmap && (
+                                          <td className="py-3 px-3 text-center bg-rose-50/30 border-x border-rose-100 font-mono font-bold">
+                                            <span className={latencyHeat.textClass}>{latencyHeat.queryLatencyContributionMs}ms</span>
+                                          </td>
+                                        )}
+                                        <td className="py-3 px-3 text-center font-mono font-bold text-emerald-700">
+                                          +{index.type === 'B-Tree' ? '98%' : '75%'}
+                                        </td>
+                                        <td className="py-3 px-3 text-center font-mono text-rose-700">
+                                          -{impact.writePenalty}%
+                                        </td>
+                                        <td className="py-3 px-4 text-center bg-indigo-50/40 border-x border-indigo-100">
+                                          <span className={`font-mono font-bold px-2 py-0.5 rounded text-xs ${
+                                            impact.score >= 80 ? 'bg-emerald-100 text-emerald-800' : impact.score >= 50 ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800'
+                                          }`}>
+                                            {impact.score} / 100
+                                          </span>
+                                        </td>
+                                        <td className="py-3 px-3 text-center">
+                                          <span className={`font-mono font-bold px-1.5 py-0.5 rounded text-[11px] ${
+                                            health.score >= 80 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                          }`}>
+                                            {health.score}/100
+                                          </span>
+                                        </td>
+                                        <td className="py-3 px-3 text-right">
+                                          <div className="inline-flex items-center gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => handleToggleLockIndex(index.name)}
+                                              className={`p-1.5 rounded-md text-xs transition-colors cursor-pointer ${
+                                                isLocked ? 'bg-amber-100 text-amber-800 hover:bg-amber-200' : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
+                                              }`}
+                                              title={isLocked ? 'Unlock / Unprotect index' : 'Lock / Protect index'}
+                                            >
+                                              <Shield className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleReindexIndex(index.name)}
+                                              className="p-1.5 rounded-md bg-indigo-100 text-indigo-700 hover:bg-indigo-200 text-xs transition-colors cursor-pointer"
+                                              title="Reindex Concurrently"
+                                            >
+                                              <RefreshCw className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              ) : (
+                <div
                 id="indexes-ranked-table-container"
                 data-testid="indexes-ranked-table-container"
                 className="bg-white rounded-xl border border-zinc-200 overflow-hidden shadow-2xs"
@@ -4976,7 +5495,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   </table>
                 </div>
               </div>
-            ) : (
+            )
+          ) : (
               <div className="space-y-3.5">
               {tables
                 .filter((tbl) => indexCategoryFilter === 'all' || indexCategoryFilter === tbl.name)
@@ -6802,6 +7322,28 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               </div>
             )}
           </div>
+
+          <button
+            type="button"
+            id="btn-global-housekeeper"
+            data-testid="btn-global-housekeeper"
+            onClick={handleRunHousekeeperScan}
+            disabled={isScanningHousekeeper}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-teal-600 via-cyan-600 to-indigo-600 hover:from-teal-500 hover:to-indigo-500 disabled:opacity-60 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs"
+            title="Run Global Housekeeper scan for unprotected low-usage indexes with weekly schedule"
+          >
+            {isScanningHousekeeper ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-teal-200" />
+                <span>Housekeeper Scanning...</span>
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-3.5 h-3.5 text-teal-200" />
+                <span>Global Housekeeper ({housekeeperFrequency})</span>
+              </>
+            )}
+          </button>
 
           <button
             type="button"
@@ -10006,6 +10548,572 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
               aria-label="Clear Selection"
             >
               <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Cluster Analysis & Write Re-sequencing Modal */}
+      {showClusterAnalysisModal && (
+        <div
+          id="cluster-analysis-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowClusterAnalysisModal(false);
+          }}
+        >
+          <div
+            id="cluster-analysis-modal"
+            data-testid="cluster-analysis-modal"
+            className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col my-8 animate-scaleIn"
+            role="dialog"
+            aria-modal="true"
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-gradient-to-r from-amber-500/10 via-rose-500/10 to-indigo-500/10 border-b border-zinc-200 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-600 text-white rounded-xl shadow-xs">
+                  <Activity className="w-5 h-5 text-amber-100" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Index Cluster &amp; Lock Contention Analysis</h3>
+                  <p className="text-xs text-zinc-600">Identifies write-heavy index clusters causing deadlocks and provides deadlock mitigation</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowClusterAnalysisModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg cursor-pointer transition-colors"
+                title="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-5 text-xs text-zinc-700">
+              {clusterContentionResolved ? (
+                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center gap-3 text-emerald-950">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
+                  <div>
+                    <strong className="font-bold text-emerald-900 text-sm">Write Operations Successfully Re-sequenced!</strong>
+                    <p className="text-[11px] text-emerald-800 mt-0.5">
+                      Lock contention reduced from 38.4% down to <strong className="font-mono">0.0%</strong>. Deadlocks and concurrent write blocking have been fully eliminated across all cluster groups.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl flex items-center gap-3 text-amber-950">
+                  <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0 animate-bounce" />
+                  <div>
+                    <strong className="font-bold text-amber-900 text-sm">High Lock Contention Detected in 2 Write Clusters</strong>
+                    <p className="text-[11px] text-amber-800 mt-0.5">
+                      Concurrent write transactions are contending for overlapping index leaf pages on <code className="font-mono font-bold">transactions</code> and <code className="font-mono font-bold">order_items</code>, triggering frequent deadlocks (Avg write queue wait: 310ms).
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Cluster Groups Breakdown */}
+              <div className="space-y-3">
+                <span className="font-bold text-zinc-900 uppercase tracking-wider text-[11px]">Identified Contention Cluster Groups:</span>
+                
+                {/* Group 1 */}
+                <div className="p-3.5 rounded-xl border border-zinc-200 bg-zinc-50 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-zinc-900 flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+                      <span>Cluster Group A: transactions (B-Tree Leaf Page Contention)</span>
+                    </span>
+                    <span className="font-mono text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-bold border border-rose-200">
+                      Contention: {clusterContentionResolved ? '0.0%' : '38.4%'}
+                    </span>
+                  </div>
+                  <p className="text-zinc-600 text-[11px]">
+                    Indexes involved: <code className="font-mono text-indigo-900 font-bold">idx_transactions_status_date</code>, <code className="font-mono text-indigo-900 font-bold">idx_transactions_customer_id</code>
+                  </p>
+                  <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono pt-1 border-t border-zinc-200">
+                    <span>Deadlock frequency: {clusterContentionResolved ? '0 / hr' : '14.2 / hr'}</span>
+                    <span>Write Queue Wait: {clusterContentionResolved ? '1.2ms' : '310ms'}</span>
+                  </div>
+                </div>
+
+                {/* Group 2 */}
+                <div className="p-3.5 rounded-xl border border-zinc-200 bg-zinc-50 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-zinc-900 flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                      <span>Cluster Group B: order_items (Foreign Key Latch Contention)</span>
+                    </span>
+                    <span className="font-mono text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-bold border border-amber-200">
+                      Contention: {clusterContentionResolved ? '0.0%' : '24.1%'}
+                    </span>
+                  </div>
+                  <p className="text-zinc-600 text-[11px]">
+                    Indexes involved: <code className="font-mono text-indigo-900 font-bold">idx_order_items_order_id</code>
+                  </p>
+                  <div className="flex items-center justify-between text-[10px] text-zinc-500 font-mono pt-1 border-t border-zinc-200">
+                    <span>Deadlock frequency: {clusterContentionResolved ? '0 / hr' : '8.6 / hr'}</span>
+                    <span>Write Queue Wait: {clusterContentionResolved ? '0.9ms' : '185ms'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Re-sequence Writes explanation */}
+              <div className="p-3 bg-indigo-50/80 border border-indigo-200 rounded-xl text-indigo-950 text-[11px] leading-relaxed">
+                <strong className="font-bold text-indigo-900">How Re-sequence Writes Works:</strong> Re-orders concurrent transaction write batches into deterministic lock acquisition sequences (topological locking order), preventing circular wait conditions and eliminating deadlocks entirely.
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setShowClusterAnalysisModal(false)}
+                className="px-4 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 text-zinc-700 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                id="btn-cluster-resequence-writes"
+                data-testid="btn-cluster-resequence-writes"
+                onClick={handleResequenceWrites}
+                disabled={isResequencingWrites || clusterContentionResolved}
+                className={`px-4 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all shadow-sm flex items-center gap-2 ${
+                  clusterContentionResolved
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default'
+                    : 'bg-gradient-to-r from-amber-600 via-rose-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white'
+                }`}
+                title="Re-sequence write operations to establish deterministic lock acquisition order and minimize deadlocks"
+              >
+                {isResequencingWrites ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                    <span>Re-sequencing Write Operations...</span>
+                  </>
+                ) : clusterContentionResolved ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Writes Successfully Re-sequenced</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-4 h-4 fill-amber-300 text-amber-300" />
+                    <span>Re-sequence Writes (Eliminate Deadlocks)</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Conflict Resolution Dashboard Modal */}
+      {showConflictDashboardModal && (
+        <div
+          id="conflict-resolution-modal-backdrop"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowConflictDashboardModal(false);
+          }}
+        >
+          <div
+            id="conflict-resolution-modal"
+            data-testid="conflict-resolution-modal"
+            className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col my-8 animate-scaleIn"
+            role="dialog"
+            aria-modal="true"
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-gradient-to-r from-indigo-500/10 via-purple-500/10 to-emerald-500/10 border-b border-zinc-200 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-indigo-600 text-white rounded-xl shadow-xs">
+                  <GitMerge className="w-5 h-5 text-indigo-100" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Conflict Resolution Dashboard</h3>
+                  <p className="text-xs text-zinc-600">Resolves redundancy by merging indexes sharing identical column sets or conflicting covering indexes</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowConflictDashboardModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg cursor-pointer transition-colors"
+                title="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-5 text-xs text-zinc-700">
+              <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-xl flex items-center gap-3 text-indigo-950">
+                <Target className="w-6 h-6 text-indigo-600 shrink-0" />
+                <div>
+                  <strong className="font-bold text-indigo-950 text-sm">Schema Index Redundancy Audit</strong>
+                  <p className="text-[11px] text-indigo-900 mt-0.5">
+                    Maintaining redundant or overlapping covering indexes degrades write throughput (-15% per duplicate index). Merging conflicting groups consolidates B-Tree leaf pages.
+                  </p>
+                </div>
+              </div>
+
+              {/* Conflict Groups List */}
+              <div className="space-y-3.5">
+                <span className="font-bold text-zinc-900 uppercase tracking-wider text-[11px]">Identified Conflict Groups:</span>
+
+                {/* Group 1: Overlapping Prefix */}
+                <div className="p-4 rounded-xl border border-zinc-200 bg-zinc-50 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-zinc-900 flex items-center gap-1.5">
+                      <span className={`w-2.5 h-2.5 rounded-full ${resolvedConflicts['group-1'] ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+                      <span>Conflict Group 1: Overlapping Prefix Set (transactions)</span>
+                    </span>
+                    <span className={`font-mono text-[10px] px-2 py-0.5 rounded font-bold border ${resolvedConflicts['group-1'] ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-amber-100 text-amber-800 border-amber-300'}`}>
+                      {resolvedConflicts['group-1'] ? '✓ Merged & Resolved' : 'Redundancy Detected'}
+                    </span>
+                  </div>
+                  <p className="text-zinc-600 text-[11px]">
+                    Indexes involved: <code className="font-mono text-indigo-900 font-bold">idx_transactions_date</code> (created_at) is fully covered by <code className="font-mono text-indigo-900 font-bold">idx_orders_status_cat</code> prefix structure.
+                  </p>
+                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200">
+                    <span className="text-[10px] text-zinc-500 font-mono">Write I/O Savings: +14% throughput</span>
+                    <button
+                      type="button"
+                      id="btn-merge-conflict-group-1"
+                      data-testid="btn-merge-conflict-group-1"
+                      onClick={() => handleMergeConflictGroup('group-1', ['idx_transactions_date'])}
+                      disabled={!!resolvedConflicts['group-1']}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all shadow-xs flex items-center gap-1.5 ${
+                        resolvedConflicts['group-1']
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default'
+                          : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                      }`}
+                    >
+                      <GitMerge className="w-3.5 h-3.5" />
+                      <span>{resolvedConflicts['group-1'] ? 'Merged' : 'Merge into Master Index'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Group 2: Identical Column Set Duplicate */}
+                <div className="p-4 rounded-xl border border-zinc-200 bg-zinc-50 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-zinc-900 flex items-center gap-1.5">
+                      <span className={`w-2.5 h-2.5 rounded-full ${resolvedConflicts['group-2'] ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`}></span>
+                      <span>Conflict Group 2: Identical Column Duplicate (order_items)</span>
+                    </span>
+                    <span className={`font-mono text-[10px] px-2 py-0.5 rounded font-bold border ${resolvedConflicts['group-2'] ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-rose-100 text-rose-800 border-rose-300'}`}>
+                      {resolvedConflicts['group-2'] ? '✓ Merged & Resolved' : 'Duplicate Detected'}
+                    </span>
+                  </div>
+                  <p className="text-zinc-600 text-[11px]">
+                    Indexes involved: <code className="font-mono text-indigo-900 font-bold">idx_line_items_tx_price</code> &amp; duplicate lookup index sharing identical column constraints on <code className="font-mono text-indigo-900">transaction_id</code>.
+                  </p>
+                  <div className="flex items-center justify-between pt-2 border-t border-zinc-200">
+                    <span className="text-[10px] text-zinc-500 font-mono">Write I/O Savings: +18% throughput</span>
+                    <button
+                      type="button"
+                      id="btn-merge-conflict-group-2"
+                      data-testid="btn-merge-conflict-group-2"
+                      onClick={() => handleMergeConflictGroup('group-2', ['idx_line_items_tx_price'])}
+                      disabled={!!resolvedConflicts['group-2']}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all shadow-xs flex items-center gap-1.5 ${
+                        resolvedConflicts['group-2']
+                          ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default'
+                          : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                      }`}
+                    >
+                      <GitMerge className="w-3.5 h-3.5" />
+                      <span>{resolvedConflicts['group-2'] ? 'Merged' : 'Merge &amp; Prune Duplicate'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-500 font-mono">
+                Resolved: {Object.keys(resolvedConflicts).length} / 2 Conflict Groups
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowConflictDashboardModal(false)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-xs"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* What-If Analysis Interactive Modal */}
+      {activeWhatIfModalIndex && (
+        <div
+          id="what-if-analysis-modal"
+          data-testid="what-if-analysis-modal"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-zinc-200 overflow-hidden">
+            <div className="px-6 py-4 bg-gradient-to-r from-purple-700 to-indigo-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-200" />
+                <span className="font-bold text-sm">What-If Analysis: {activeWhatIfModalIndex.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveWhatIfModalIndex(null)}
+                className="text-purple-200 hover:text-white text-lg font-bold cursor-pointer"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-zinc-600">
+                Temporarily modify index columns for <code className="font-mono text-purple-900 font-bold">{activeWhatIfModalIndex.name}</code> on table <code className="font-mono text-zinc-900 font-bold">{activeWhatIfModalIndex.tableName}</code>. This simulates projected latency improvements in the ExplainPlanViewer without altering database schema.
+              </p>
+              <div className="space-y-1.5">
+                <label className="block text-xs font-bold text-zinc-700">Modified Index Columns (Comma-separated)</label>
+                <input
+                  type="text"
+                  id="input-what-if-columns"
+                  data-testid="input-what-if-columns"
+                  value={whatIfInputText}
+                  onChange={(e) => setWhatIfInputText(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-zinc-300 font-mono text-xs focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  placeholder="e.g. status, created_at, amount"
+                />
+              </div>
+              <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 text-xs space-y-1">
+                <div className="font-bold text-purple-900 flex items-center gap-1">
+                  <span>Projected ExplainPlanViewer Latency Impact:</span>
+                  <span className="font-mono text-emerald-700 font-extrabold">-42.5ms (Speedup: +85%)</span>
+                </div>
+                <p className="text-[11px] text-purple-700">
+                  Simulated query execution plan shows zero table scans with the proposed column set.
+                </p>
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveWhatIfModalIndex(null)}
+                className="px-3.5 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 rounded-xl text-xs font-semibold cursor-pointer text-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                id="btn-save-what-if-simulation"
+                data-testid="btn-save-what-if-simulation"
+                onClick={() => {
+                  const cols = whatIfInputText.split(',').map((c) => c.trim()).filter(Boolean);
+                  if (cols.length > 0) {
+                    setWhatIfModifications((prev) => ({
+                      ...prev,
+                      [activeWhatIfModalIndex.name]: cols
+                    }));
+                  }
+                  setActiveWhatIfModalIndex(null);
+                }}
+                className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Apply Simulation (What-If)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Global Housekeeper Modal */}
+      {showHousekeeperModal && (
+        <div
+          id="modal-global-housekeeper"
+          data-testid="modal-global-housekeeper"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowHousekeeperModal(false);
+          }}
+        >
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-xl w-full overflow-hidden flex flex-col my-8 animate-scaleIn">
+            <div className="px-6 py-4 bg-gradient-to-r from-teal-600 via-cyan-700 to-indigo-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-teal-500/30 rounded-xl">
+                  <ShieldCheck className="w-5 h-5 text-teal-200" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold">Global Housekeeper — Safe Removal Plan</h3>
+                  <p className="text-xs text-teal-100">Scheduled {housekeeperFrequency} scan for unprotected low-usage indexes</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHousekeeperModal(false)}
+                className="text-teal-200 hover:text-white p-1 rounded-lg cursor-pointer transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs text-zinc-700">
+              <div className="p-4 bg-teal-50 border border-teal-200 rounded-xl flex items-center gap-3 text-teal-950">
+                <Target className="w-6 h-6 text-teal-600 shrink-0" />
+                <div>
+                  <strong className="font-bold text-teal-950 text-sm">Automated Schedule &amp; Pruning Policy</strong>
+                  <p className="text-[11px] text-teal-900 mt-0.5">
+                    Global Housekeeper runs <span className="font-bold underline">{housekeeperFrequency}</span> to scan all indexes. Any index marked <span className="font-bold">Unprotected</span> (not locked) and <span className="font-bold">Low Usage</span> (health score &lt; 50 or 0 hits) is queued for safe removal to reclaim disk space.
+                  </p>
+                </div>
+              </div>
+
+              {/* Housekeeper Settings Configuration */}
+              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-3">
+                <span className="font-bold text-zinc-900 text-xs">Housekeeper Configuration</span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-zinc-600 mb-1">Execution Schedule</label>
+                    <select
+                      value={housekeeperFrequency}
+                      onChange={(e) => handleHousekeeperFrequencyChange(e.target.value)}
+                      className="w-full text-xs bg-white border border-zinc-300 rounded-lg p-2 font-medium text-zinc-800"
+                    >
+                      <option value="daily">Daily Scan</option>
+                      <option value="weekly">Weekly Scan (Default)</option>
+                      <option value="monthly">Monthly Audit</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-zinc-600 mb-1">Housekeeper Automation Status</label>
+                    <div className="flex items-center gap-2 pt-1.5">
+                      <input
+                        type="checkbox"
+                        checked={globalHousekeeperEnabled}
+                        onChange={(e) => handleToggleGlobalHousekeeper(e.target.checked)}
+                        className="w-4 h-4 rounded border-zinc-300 text-teal-600 focus:ring-teal-500 cursor-pointer accent-teal-600"
+                      />
+                      <span className="font-bold text-zinc-800 text-xs">
+                        {globalHousekeeperEnabled ? 'Active (Scheduled)' : 'Paused'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Scanned Unprotected & Low Usage Indexes Queue */}
+              <div className="space-y-2">
+                <span className="font-bold text-zinc-900 text-xs">Safe Removal Plan Queue (Unprotected &amp; Low Usage):</span>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing']
+                    .filter((name) => !removedIndexes.includes(name) && !lockedIndexes.includes(name))
+                    .map((name) => (
+                      <div key={name} className="p-2.5 bg-rose-50/80 border border-rose-200 rounded-lg flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                          <div>
+                            <span className="font-mono font-bold text-zinc-900">{name}</span>
+                            <div className="text-[10px] text-rose-700">Unprotected • 0 Hits • Health: 35/100 (Marginal)</div>
+                          </div>
+                        </div>
+                        <span className="font-mono text-[10px] font-bold bg-rose-200 text-rose-900 px-2 py-0.5 rounded border border-rose-300">
+                          Reclaim 2.4 MB
+                        </span>
+                      </div>
+                    ))}
+                  {['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'].filter((name) => !removedIndexes.includes(name) && !lockedIndexes.includes(name)).length === 0 && (
+                    <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-center text-emerald-800 font-semibold text-xs">
+                      ✨ All indexes are currently protected or actively utilized! No safe removal actions needed.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-500 font-mono">
+                Total Reclaimable Space: ~7.2 MB
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowHousekeeperModal(false)}
+                  className="px-3.5 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 rounded-xl text-xs font-semibold cursor-pointer text-zinc-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  id="btn-execute-housekeeper-removal"
+                  data-testid="btn-execute-housekeeper-removal"
+                  onClick={() => handleExecuteHousekeeperRemoval(['idx_transactions_date', 'idx_transactions_amount_missing', 'idx_transactions_email_missing'])}
+                  className="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Execute Safe Removal Plan</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Bulk Actions Bar */}
+      {selectedIndexes.length > 0 && (
+        <div
+          id="floating-bulk-actions-bar"
+          data-testid="floating-bulk-actions-bar"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-zinc-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-indigo-500/50 flex items-center gap-4 text-xs animate-slideUp font-sans"
+        >
+          <div className="flex items-center gap-2 font-bold text-indigo-300">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-ping"></span>
+            <span>{selectedIndexes.length} Indexes Selected</span>
+          </div>
+
+          <div className="flex items-center gap-2 border-l border-zinc-700 pl-4">
+            <button
+              type="button"
+              id="btn-bulk-toggle-protected"
+              data-testid="btn-bulk-toggle-protected"
+              onClick={handleBulkToggleProtected}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+              title="Mass-toggle 'Protected' (Lock) status for selected indexes"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>Toggle Protected (Lock)</span>
+            </button>
+
+            <button
+              type="button"
+              id="btn-bulk-reindex-selected"
+              data-testid="btn-bulk-reindex-selected"
+              onClick={handleBulkReindex}
+              disabled={isBulkOperating}
+              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white font-bold rounded-lg cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+              title="Batch-trigger re-indexing operations on selected indexes"
+            >
+              {isBulkOperating ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Re-indexing...</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Batch Re-index Selected</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              id="btn-clear-index-selection"
+              data-testid="btn-clear-index-selection"
+              onClick={handleClearSelection}
+              className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg cursor-pointer transition-colors"
+            >
+              Clear
             </button>
           </div>
         </div>

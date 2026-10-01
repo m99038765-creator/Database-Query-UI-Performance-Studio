@@ -45,7 +45,8 @@ import {
   SkipForward,
   SkipBack,
   Monitor,
-  Sparkles
+  Sparkles,
+  TrendingUp
 } from 'lucide-react';
 import {
   exportRecords,
@@ -106,6 +107,7 @@ interface VirtualizedTableProps {
   onAutoOptimize?: () => void;
   showLatencyHeatmapProp?: boolean;
   onToggleLatencyHeatmap?: (enabled: boolean) => void;
+  executionTimeMs?: number;
 }
 
 const getRowSparklinePoints = (recordId: string, baseLatency: number, isUnoptimized: boolean) => {
@@ -701,6 +703,74 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     }
   };
 
+  // Time Machine State & Historical Checkpoints
+  const [timeMachineSnapshots] = useState<Array<{
+    id: string;
+    label: string;
+    timestamp: string;
+    searchTerm: string;
+    statusFilter: string;
+    categoryFilter: string;
+    recordCount: number;
+    sampleSlice: TransactionRecord[];
+  }>>(() => {
+    return [
+      {
+        id: 'tm-1',
+        label: 'Checkpoint #1 (Initial Load)',
+        timestamp: '15 mins ago',
+        searchTerm: '',
+        statusFilter: 'all',
+        categoryFilter: 'all',
+        recordCount: records.length || 50000,
+        sampleSlice: records.slice(0, 100)
+      },
+      {
+        id: 'tm-2',
+        label: 'Checkpoint #2 (Mid-Optimization)',
+        timestamp: '10 mins ago',
+        searchTerm: 'alice',
+        statusFilter: 'completed',
+        categoryFilter: 'Cloud Infrastructure',
+        recordCount: Math.round((records.length || 50000) * 0.8),
+        sampleSlice: records.filter(r => r.status === 'completed').slice(0, 100)
+      },
+      {
+        id: 'tm-3',
+        label: 'Checkpoint #3 (Peak Ingestion Surge)',
+        timestamp: '5 mins ago',
+        searchTerm: 'corp.com',
+        statusFilter: 'processing',
+        categoryFilter: 'Enterprise License',
+        recordCount: Math.round((records.length || 50000) * 1.1),
+        sampleSlice: records.filter(r => r.category === 'Enterprise License').slice(0, 100)
+      },
+      {
+        id: 'tm-4',
+        label: 'Checkpoint #4 (Post-Cleanup Audit)',
+        timestamp: '2 mins ago',
+        searchTerm: '',
+        statusFilter: 'all',
+        categoryFilter: 'Database Cluster',
+        recordCount: Math.round((records.length || 50000) * 0.95),
+        sampleSlice: records.filter(r => r.category === 'Database Cluster').slice(0, 100)
+      },
+      {
+        id: 'tm-5',
+        label: 'Checkpoint #5 (Live Current State)',
+        timestamp: 'Just now',
+        searchTerm: '',
+        statusFilter: 'all',
+        categoryFilter: 'all',
+        recordCount: records.length,
+        sampleSlice: records
+      }
+    ];
+  });
+
+  const [timeMachineIndex, setTimeMachineIndex] = useState<number>(4);
+  const activeTimeMachineSnapshot = timeMachineSnapshots[timeMachineIndex] || timeMachineSnapshots[timeMachineSnapshots.length - 1];
+
   // 'Show Selected Only' toggle state for reviewing batch selections
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
 
@@ -711,9 +781,11 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     }
   }, [selectedRowIds.size, showSelectedOnly]);
 
-  // Filter records by selected rows and/or latency threshold filter
+  // Filter records by selected rows and/or latency threshold filter & Time Machine snapshot
   const displayRecords = useMemo(() => {
-    let list = records;
+    let list = timeMachineIndex < timeMachineSnapshots.length - 1
+      ? activeTimeMachineSnapshot.sampleSlice
+      : records;
     if (showSelectedOnly) {
       list = list.filter((r) => selectedRowIds.has(r.id));
     }
@@ -727,7 +799,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       });
     }
     return list;
-  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, timeMachineIndex, activeTimeMachineSnapshot]);
 
   // Rolling Z-scores and anomaly detection service for displayed records
   const anomalyMap = useMemo(() => {
@@ -747,6 +819,14 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     }
     return total / displayRecords.length;
   }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+
+  const historicalAverageLatency = 24.5;
+  const isPerformanceRegressed = averageTableLatencyMs > historicalAverageLatency * 1.20;
+
+  // Query Hotspot detection for tables undergoing unusually high write operations causing lock contention
+  const isQueryHotspotDetected = averageTableLatencyMs > 65.0 || (!safeFlags.btreeIndexing && displayRecords.length > 5);
+  const hotspotTableName = displayRecords.length > 0 && displayRecords[0].tableName ? displayRecords[0].tableName : 'transactions_audit_log';
+  const hotspotWriteOpsPerSec = isQueryHotspotDetected ? Math.round(1450 + averageTableLatencyMs * 18) : 210;
 
   // Query execution cost bounds for relative heatmap shading across displayed records
   const { minRowCost, maxRowCost } = useMemo(() => {
@@ -1219,6 +1299,70 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             <span className="text-zinc-700 font-medium">Red (&gt; 150ms)</span>
             <span className="text-zinc-400 text-[10px]">Critical Bottleneck</span>
           </div>
+        </div>
+      </div>
+
+      {/* Time Machine UI State Snapshot Bar */}
+      <div className="bg-gradient-to-r from-indigo-900 via-slate-900 to-purple-950 px-4 py-3 border-b border-indigo-500/30 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-inner">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-xs">
+            <Clock className="w-4 h-4 text-amber-300 animate-pulse" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-indigo-200">
+                Time Machine UI State Replay
+              </span>
+              <span
+                id="timemachine-checkpoint-badge"
+                data-testid="timemachine-checkpoint-badge"
+                className="font-mono text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-400 text-zinc-950 border border-amber-300"
+              >
+                {activeTimeMachineSnapshot.label}
+              </span>
+            </div>
+            <p className="text-[11px] text-zinc-300 mt-0.5">
+              Move slider to travel through historical UI checkpoints. Re-renders table state exactly as it was at <strong className="text-amber-300">{activeTimeMachineSnapshot.timestamp}</strong>.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 w-48 sm:w-64">
+            <button
+              type="button"
+              onClick={() => setTimeMachineIndex((prev) => Math.max(0, prev - 1))}
+              disabled={timeMachineIndex === 0}
+              className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 cursor-pointer"
+              title="Jump to previous historical checkpoint"
+            >
+              ◀
+            </button>
+            <input
+              type="range"
+              id="time-machine-slider"
+              data-testid="time-machine-slider"
+              min="0"
+              max={timeMachineSnapshots.length - 1}
+              step="1"
+              value={timeMachineIndex}
+              onChange={(e) => setTimeMachineIndex(Number(e.target.value))}
+              className="w-full accent-amber-400 cursor-pointer"
+            />
+            <button
+              type="button"
+              onClick={() => setTimeMachineIndex((prev) => Math.min(timeMachineSnapshots.length - 1, prev + 1))}
+              disabled={timeMachineIndex === timeMachineSnapshots.length - 1}
+              className="p-1 rounded bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 cursor-pointer"
+              title="Jump to next historical checkpoint"
+            >
+              ▶
+            </button>
+          </div>
+
+          <span className="font-mono text-xs font-bold text-amber-300 shrink-0">
+            {timeMachineIndex + 1} / {timeMachineSnapshots.length}
+          </span>
         </div>
       </div>
 
@@ -2286,6 +2430,86 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         </div>
       )}
 
+      {/* Performance Regression Alert Banner */}
+      {isPerformanceRegressed && (
+        <div
+          id="performance-regression-banner"
+          data-testid="performance-regression-banner"
+          className="px-4 py-2.5 bg-amber-600 text-white flex flex-wrap items-center justify-between gap-3 text-xs shadow-md animate-fadeIn"
+        >
+          <div className="flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white/20 text-white animate-pulse">
+              <TrendingUp className="w-4 h-4 text-white" />
+            </span>
+            <div>
+              <div className="font-bold flex items-center gap-1.5">
+                <span>Performance Regression Alert!</span>
+                <span className="text-[10px] font-mono bg-white/20 px-1.5 py-0.2 rounded font-bold">
+                  Current Avg: {averageTableLatencyMs.toFixed(1)}ms (&gt;20% over historical baseline {historicalAverageLatency}ms)
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-100 mt-0.5">
+                Query latency has increased significantly compared to historical averages. Use the performance diff tool to compare execution plans.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="btn-open-performance-diff"
+              onClick={() => setIsCompareModalOpen(true)}
+              className="px-3 py-1 bg-white text-amber-900 hover:bg-amber-50 font-bold rounded shadow-xs transition-colors cursor-pointer inline-flex items-center gap-1.5"
+            >
+              <Sliders className="w-3.5 h-3.5 text-amber-700" />
+              <span>Side-by-Side Performance Diff</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Real-Time Query Hotspot Banner */}
+      {isQueryHotspotDetected && (
+        <div
+          id="query-hotspot-banner"
+          data-testid="query-hotspot-banner"
+          className="px-4 py-2.5 bg-rose-700 text-white flex flex-wrap items-center justify-between gap-3 text-xs shadow-md animate-fadeIn border-t border-rose-800"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white/25 text-white animate-bounce">
+              <Flame className="w-4 h-4 text-amber-200" />
+            </span>
+            <div>
+              <div className="font-bold flex items-center gap-1.5">
+                <span>Query Hotspot &amp; Lock Contention Warning!</span>
+                <span className="text-[10px] font-mono bg-white/20 px-1.5 py-0.2 rounded font-bold">
+                  Table: {hotspotTableName}
+                </span>
+                <span className="text-[10px] font-mono bg-amber-400 text-zinc-950 px-1.5 py-0.2 rounded font-extrabold">
+                  {hotspotWriteOpsPerSec} writes/sec
+                </span>
+              </div>
+              <p className="text-[11px] text-rose-100 mt-0.5">
+                Unusually high write volume detected on <span className="font-mono font-bold">{hotspotTableName}</span>. This is causing row-level lock contention and queuing delays.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="btn-re-sequence-writes"
+              data-testid="btn-re-sequence-writes"
+              onClick={() => {
+                alert(`Successfully re-sequenced write operations for table '${hotspotTableName}' to mitigate lock contention and deadlock hazards.`);
+              }}
+              className="px-3 py-1 bg-white text-rose-800 hover:bg-rose-50 font-bold rounded shadow-xs transition-colors cursor-pointer inline-flex items-center gap-1"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-600" />
+              <span>Re-sequence Writes</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Real-Time Latency Heatmap Overlay Control Banner (Active when batchEagerLoading is disabled) */}
       {!safeFlags.batchEagerLoading && (
         <div
@@ -3233,6 +3457,13 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         onTogglePlay={handleToggleReplayPlay}
         playbackSpeed={replaySpeed}
         onChangePlaybackSpeed={(spd) => setReplaySpeed(spd)}
+      />
+
+      {/* Side-by-Side Performance Diff Modal */}
+      <CompareLatencyModal
+        isOpen={isCompareModalOpen}
+        onClose={() => setIsCompareModalOpen(false)}
+        initialFlags={safeFlags}
       />
     </div>
   );

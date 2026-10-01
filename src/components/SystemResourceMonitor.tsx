@@ -22,6 +22,16 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
   const [simulateLeak, setSimulateLeak] = useState<boolean>(false);
   const [accumulatedSurge, setAccumulatedSurge] = useState<number>(0);
   const [hasAutoCaptured, setHasAutoCaptured] = useState<boolean>(false);
+  const [killToast, setKillToast] = useState<string | null>(null);
+
+  const handleKillLongRunningQueries = () => {
+    setActiveThreads(1);
+    setCpuUsage((prev) => Math.max(12, Math.round(prev * 0.3)));
+    setKillToast('Successfully terminated all queries exceeding 500ms latency threshold!');
+    setTimeout(() => {
+      setKillToast(null);
+    }, 3500);
+  };
 
   // 60-second historical history buffers (sampled every 3 seconds -> 20 points)
   const [cpuHistory, setCpuHistory] = useState<number[]>([14, 15, 14, 16, 18, 14, 15, 15, 14, 16, 15, 14, 15, 14, 16, 15, 14, 15, 14, 14]);
@@ -387,6 +397,26 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
                 {cacheHit ? 'LRU Hit (<0.2ms)' : 'Direct Disk Read'}
               </div>
             </div>
+          </div>
+
+          {/* Kill Long-Running Queries Action Button */}
+          <div className="pt-1">
+            <button
+              type="button"
+              id="btn-kill-long-running-queries"
+              data-testid="btn-kill-long-running-queries"
+              onClick={handleKillLongRunningQueries}
+              className="w-full py-2 bg-rose-700 hover:bg-rose-600 active:bg-rose-800 text-white rounded-lg text-xs font-bold font-sans shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              title="Terminate any active queries currently exceeding the 500ms latency threshold"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-200" />
+              <span>Kill Long-Running Queries (&gt;500ms)</span>
+            </button>
+            {killToast && (
+              <div className="mt-2 p-2 bg-emerald-950/90 text-emerald-200 border border-emerald-700 rounded-lg text-[10px] font-mono text-center animate-fadeIn">
+                {killToast}
+              </div>
+            )}
           </div>
         </div>
       )}

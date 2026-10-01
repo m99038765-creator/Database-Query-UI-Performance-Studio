@@ -173,7 +173,7 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
 }) => {
   const safeLogs = logs || [];
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
-  const [activeMainTab, setActiveMainTab] = useState<'errors' | 'lifecycle'>('errors');
+  const [activeMainTab, setActiveMainTab] = useState<'errors' | 'lifecycle' | 'reasoning'>('errors');
 
   // Serialization Errors Tab Filters
   const [severityFilter, setSeverityFilter] = useState<SerializationLogSeverity | 'all'>('all');
@@ -702,6 +702,29 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
               className="bg-emerald-100 text-emerald-800 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full border border-emerald-200"
             >
               {activeLifecycleEvents.length}
+            </span>
+          </button>
+
+          {/* Tab 3: Reasoning Log */}
+          <button
+            type="button"
+            id="tab-reasoning-log"
+            data-testid="tab-reasoning-log"
+            onClick={() => setActiveMainTab('reasoning')}
+            className={`px-3.5 py-2 text-xs font-bold border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
+              activeMainTab === 'reasoning'
+                ? 'border-purple-600 text-purple-950 bg-white shadow-2xs'
+                : 'border-transparent text-zinc-500 hover:text-zinc-800'
+            }`}
+          >
+            <Terminal className={`w-3.5 h-3.5 ${activeMainTab === 'reasoning' ? 'text-purple-600' : 'text-zinc-400'}`} />
+            <span>Reasoning Log</span>
+            <span
+              id="tab-reasoning-count-badge"
+              data-testid="tab-reasoning-count-badge"
+              className="bg-purple-100 text-purple-800 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full border border-purple-200"
+            >
+              3
             </span>
           </button>
         </div>
@@ -1319,6 +1342,137 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* TAB 3: Reasoning Log View */}
+          {activeMainTab === 'reasoning' && (
+            <div className="space-y-3">
+              <div className="p-3 bg-purple-50/80 border border-purple-200 rounded-xl flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 text-purple-900">
+                  <Terminal className="w-4 h-4 text-purple-600 shrink-0" />
+                  <div>
+                    <span className="font-bold">Autonomous Index Configuration Reasoning Trace</span>
+                    <p className="text-[11px] text-purple-700 mt-0.5">
+                      Granular step-by-step decision rationale for why specific Quick Fix index configurations were selected, referencing historical performance data of similar queries.
+                    </p>
+                  </div>
+                </div>
+                <span className="font-mono text-[10px] font-bold bg-purple-200 text-purple-900 px-2 py-1 rounded-lg border border-purple-300">
+                  3 Traces Analyzed
+                </span>
+              </div>
+
+              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                {/* Reasoning Trace 1 */}
+                <div className="p-3.5 bg-white border border-zinc-200 rounded-xl shadow-2xs space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-300">
+                        Trace #01
+                      </span>
+                      <span className="font-mono text-xs font-bold text-zinc-900">
+                        idx_transactions_email_status
+                      </span>
+                      <span className="text-[10px] text-zinc-500 font-sans">
+                        on table: <strong className="font-mono text-zinc-800">transactions</strong>
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
+                      Speedup: 99.6% Faster (395ms → 1.6ms)
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-zinc-900 text-purple-200 font-mono text-xs rounded-lg border border-zinc-800">
+                    SELECT * FROM transactions WHERE customer_email = ? AND status = ?
+                  </div>
+
+                  <div className="space-y-1.5 text-xs">
+                    <div className="font-semibold text-zinc-800 flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                      <span>Step-by-Step Decision Trace &amp; Historical Rationale:</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-1 text-zinc-600 text-[11px] pl-1 font-mono">
+                      <li><strong>Step 1 (Query Signature Parsing):</strong> Filter predicate detected on high-cardinality <code className="text-zinc-800">customer_email</code> combined with order <code className="text-zinc-800">status</code>.</li>
+                      <li><strong>Step 2 (Cost Model Estimation):</strong> Sequential scan cost (412.5 CPU units) exceeded B-Tree index seek cost (1.2 units) by 344x across 50,000 historical records.</li>
+                      <li><strong>Step 3 (Write Overhead Check):</strong> Verified +4.5% controlled insertion cost remains safely below the governor ceiling (max 15%).</li>
+                      <li><strong>Step 4 (Execution Safety):</strong> Issued <code className="text-emerald-700">CREATE INDEX CONCURRENTLY</code> to prevent table write locks during synthesis.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Reasoning Trace 2 */}
+                <div className="p-3.5 bg-white border border-zinc-200 rounded-xl shadow-2xs space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-900 border border-teal-300">
+                        Trace #02
+                      </span>
+                      <span className="font-mono text-xs font-bold text-zinc-900">
+                        idx_line_items_tx
+                      </span>
+                      <span className="text-[10px] text-zinc-500 font-sans">
+                        on table: <strong className="font-mono text-zinc-800">line_items</strong>
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
+                      Speedup: 99.6% Faster (840ms → 3.2ms)
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-zinc-900 text-teal-200 font-mono text-xs rounded-lg border border-zinc-800">
+                    SELECT * FROM line_items WHERE transaction_id = ?
+                  </div>
+
+                  <div className="space-y-1.5 text-xs">
+                    <div className="font-semibold text-zinc-800 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Step-by-Step Decision Trace &amp; Historical Rationale:</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-1 text-zinc-600 text-[11px] pl-1 font-mono">
+                      <li><strong>Step 1 (Relationship Mapping):</strong> Foreign key dependency analyzer flagged unindexed join relationship between <code className="text-zinc-800">transactions</code> and <code className="text-zinc-800">line_items</code> causing N+1 query storms.</li>
+                      <li><strong>Step 2 (Loop Join Cost Analysis):</strong> Nested loop degradation scaled linearly with relation record count.</li>
+                      <li><strong>Step 3 (Auto-Healing Synthesis):</strong> Synthesized B-Tree index on <code className="text-zinc-800">transaction_id</code>, converting sequential scans into batch hash joins in 29.5ms.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Reasoning Trace 3 */}
+                <div className="p-3.5 bg-white border border-zinc-200 rounded-xl shadow-2xs space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-900 border border-rose-300">
+                        Trace #03
+                      </span>
+                      <span className="font-mono text-xs font-bold text-zinc-900">
+                        idx_transactions_date (Pruned)
+                      </span>
+                      <span className="text-[10px] text-zinc-500 font-sans">
+                        on table: <strong className="font-mono text-zinc-800">transactions</strong>
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-bold">
+                      +14% Write Throughput Unlocked
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-zinc-900 text-rose-200 font-mono text-xs rounded-lg border border-zinc-800">
+                    DROP INDEX CONCURRENTLY idx_transactions_date;
+                  </div>
+
+                  <div className="space-y-1.5 text-xs">
+                    <div className="font-semibold text-zinc-800 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-rose-600" />
+                      <span>Step-by-Step Decision Trace &amp; Historical Rationale:</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-1 text-zinc-600 text-[11px] pl-1 font-mono">
+                      <li><strong>Step 1 (Usage Telemetry Audit):</strong> Housekeeper tracked 0 query seeks on <code className="text-zinc-800">idx_transactions_date</code> over 24 hours.</li>
+                      <li><strong>Step 2 (Write Contention Assessment):</strong> Dead index maintenance incurred 14% write amplification delay on high-volume batch inserts.</li>
+                      <li><strong>Step 3 (Safe Removal):</strong> Executed concurrent drop to reclaim 4.2 MB memory and restore 100% write performance.</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

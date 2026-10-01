@@ -1,5 +1,5 @@
-import React from 'react';
-import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight } from 'lucide-react';
+import React, { useState } from 'react';
+import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square } from 'lucide-react';
 import { OptimizationFlags, DataTapeEntry } from '../types';
 
 interface HeaderProps {
@@ -23,6 +23,7 @@ interface HeaderProps {
   onOpenWizard?: () => void;
   dataTapeEntries?: DataTapeEntry[];
   onSelectTapeEntry?: (entry: DataTapeEntry) => void;
+  onExportDiagnosticPackage?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -51,7 +52,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenPdfPreview,
   onOpenWizard,
   dataTapeEntries = [],
-  onSelectTapeEntry
+  onSelectTapeEntry,
+  onExportDiagnosticPackage
 }) => {
   const currentFlags = flags || {
     batchEagerLoading: true,
@@ -62,8 +64,50 @@ export const Header: React.FC<HeaderProps> = ({
   };
   const allOptimized = Object.values(currentFlags || {}).every(Boolean);
 
+  const [showBulkRevertModal, setShowBulkRevertModal] = useState<boolean>(false);
+  const [recentOperations, setRecentOperations] = useState<Array<{ id: string; name: string; type: string; timestamp: string; impact: string }>>([
+    { id: 'op-1', name: 'Composite Index: idx_transactions_email_status', type: 'Index Creation', timestamp: '2 mins ago', impact: 'High Gain (240x)' },
+    { id: 'op-2', name: 'Composite Index: idx_transactions_category_amount', type: 'Index Creation', timestamp: '5 mins ago', impact: 'High Gain (210x)' },
+    { id: 'op-3', name: 'Optimization Flag: btreeIndexing (Enabled)', type: 'Flag Toggle', timestamp: '12 mins ago', impact: 'System Optimization' },
+    { id: 'op-4', name: 'Composite Index: idx_line_items_tx_price', type: 'Index Creation', timestamp: '18 mins ago', impact: 'High Gain (253x)' },
+    { id: 'op-5', name: 'Optimization Flag: batchEagerLoading (Enabled)', type: 'Flag Toggle', timestamp: '25 mins ago', impact: 'N+1 Elimination' }
+  ]);
+  const [selectedOperationIds, setSelectedOperationIds] = useState<string[]>(['op-1', 'op-2']);
+  const [revertSuccessNotice, setRevertSuccessNotice] = useState<string | null>(null);
+
+  const handleToggleSelectOperation = (id: string) => {
+    setSelectedOperationIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllOperations = () => {
+    setSelectedOperationIds(recentOperations.map((o) => o.id));
+  };
+
+  const handleDeselectAllOperations = () => {
+    setSelectedOperationIds([]);
+  };
+
+  const handleExecuteBulkRevert = () => {
+    if (selectedOperationIds.length === 0) return;
+    setRecentOperations((prev) => prev.filter((o) => !selectedOperationIds.includes(o.id)));
+    const count = selectedOperationIds.length;
+    setSelectedOperationIds([]);
+    setShowBulkRevertModal(false);
+    setRevertSuccessNotice(`Successfully batch-reverted ${count} optimization operations.`);
+    setTimeout(() => setRevertSuccessNotice(null), 4000);
+  };
+
   return (
     <header className="border-b border-zinc-200 bg-white/95 backdrop-blur-sm sticky top-0 z-30">
+      {revertSuccessNotice && (
+        <div className="bg-emerald-600 text-white px-4 py-2 text-xs font-bold text-center flex items-center justify-center gap-2 animate-fadeIn shadow-md">
+          <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+          <span>{revertSuccessNotice}</span>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         {/* Branding & Status */}
         <div className="flex items-center gap-3">
@@ -105,7 +149,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="header-nav-grid"
               type="button"
-              onClick={() => onSelectView('grid')}
+              onClick={() => onSelectView?.('grid')}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
                 activeView === 'grid'
                   ? 'bg-white text-zinc-900 font-semibold shadow-xs'
@@ -118,7 +162,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="header-nav-trends"
               type="button"
-              onClick={() => onSelectView('trends')}
+              onClick={() => onSelectView?.('trends')}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
                 activeView === 'trends'
                   ? 'bg-white text-emerald-900 font-semibold shadow-xs'
@@ -134,7 +178,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="header-nav-comparison"
               type="button"
-              onClick={() => onSelectView('comparison')}
+              onClick={() => onSelectView?.('comparison')}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
                 activeView === 'comparison'
                   ? 'bg-white text-blue-900 font-semibold shadow-xs'
@@ -147,7 +191,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="header-nav-schema"
               type="button"
-              onClick={() => onSelectView('schema')}
+              onClick={() => onSelectView?.('schema')}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-all cursor-pointer ${
                 activeView === 'schema'
                   ? 'bg-white text-indigo-900 font-semibold shadow-xs'
@@ -158,6 +202,21 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Schema Explorer</span>
             </button>
           </div>
+
+          <button
+            id="btn-header-bulk-revert"
+            data-testid="btn-header-bulk-revert"
+            type="button"
+            onClick={() => setShowBulkRevertModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 shadow-xs transition-colors cursor-pointer"
+            title="Open Bulk Revert operations list to batch-undo multiple recent schema changes in one click"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
+            <span>Bulk Revert</span>
+            <span className="font-mono text-[10px] bg-amber-200 text-amber-950 px-1.5 py-0.2 rounded font-bold">
+              {recentOperations.length} Ops
+            </span>
+          </button>
 
           {onOpenBulkImport && (
             <button
@@ -202,6 +261,20 @@ export const Header: React.FC<HeaderProps> = ({
             )}
             <span>{isBenchmarking ? 'Running...' : 'Benchmark'}</span>
           </button>
+
+          {onExportDiagnosticPackage && (
+            <button
+              id="btn-export-diagnostic-package"
+              data-testid="btn-export-diagnostic-package"
+              type="button"
+              onClick={onExportDiagnosticPackage}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-300 shadow-xs transition-colors cursor-pointer"
+              title="Export snapshot of current system state (logs, performance trends, error counts) into a downloadable JSON package"
+            >
+              <Download className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Export Diagnostic Package</span>
+            </button>
+          )}
 
           {allOptimized ? (
             <button
@@ -282,6 +355,133 @@ export const Header: React.FC<HeaderProps> = ({
                 View Full Tape ({dataTapeEntries.length})
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Revert Modal */}
+      {showBulkRevertModal && (
+        <div
+          id="modal-bulk-revert"
+          data-testid="modal-bulk-revert"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowBulkRevertModal(false);
+          }}
+        >
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-xl w-full overflow-hidden flex flex-col my-8 animate-scaleIn">
+            <div className="px-6 py-4 bg-gradient-to-r from-amber-600 via-orange-600 to-indigo-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/30 rounded-xl">
+                  <RotateCcw className="w-5 h-5 text-amber-200" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold">Bulk Revert — Recent Optimization Operations</h3>
+                  <p className="text-xs text-amber-100">Select multiple recent schema changes or index creations to batch-undo in one click</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBulkRevertModal(false)}
+                className="text-amber-200 hover:text-white p-1 rounded-lg cursor-pointer transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs text-zinc-700">
+              <div className="flex items-center justify-between border-b border-zinc-200 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-zinc-900 text-xs">Recent Operations Log ({recentOperations.length}):</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSelectAllOperations}
+                    className="text-indigo-600 hover:underline font-semibold text-[11px] cursor-pointer"
+                  >
+                    Select All
+                  </button>
+                  <span className="text-zinc-300">|</span>
+                  <button
+                    type="button"
+                    onClick={handleDeselectAllOperations}
+                    className="text-zinc-500 hover:underline font-semibold text-[11px] cursor-pointer"
+                  >
+                    Deselect All
+                  </button>
+                </div>
+              </div>
+
+              {recentOperations.length === 0 ? (
+                <div className="p-6 bg-zinc-50 rounded-xl border border-zinc-200 text-center text-zinc-500 font-medium">
+                  ✨ No recent optimization operations available to revert. All operations are currently in baseline state.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                  {recentOperations.map((op) => {
+                    const isSelected = selectedOperationIds.includes(op.id);
+                    return (
+                      <div
+                        key={op.id}
+                        onClick={() => handleToggleSelectOperation(op.id)}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                          isSelected
+                            ? 'bg-amber-50/90 border-amber-300 text-amber-950 shadow-2xs'
+                            : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectOperation(op.id)}
+                            className="w-4 h-4 rounded border-zinc-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                          />
+                          <div>
+                            <div className="font-mono font-bold text-xs">{op.name}</div>
+                            <div className="text-[10px] text-zinc-500 flex items-center gap-2 mt-0.5">
+                              <span>Type: {op.type}</span>
+                              <span>•</span>
+                              <span>{op.timestamp}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <span className="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-200 shrink-0">
+                          {op.impact}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between">
+              <span className="text-[11px] text-zinc-500 font-mono">
+                Selected for Revert: {selectedOperationIds.length} operations
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBulkRevertModal(false)}
+                  className="px-3.5 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 rounded-xl text-xs font-semibold cursor-pointer text-zinc-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  id="btn-execute-bulk-revert"
+                  data-testid="btn-execute-bulk-revert"
+                  onClick={handleExecuteBulkRevert}
+                  disabled={selectedOperationIds.length === 0}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Batch Undo Selected ({selectedOperationIds.length})</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

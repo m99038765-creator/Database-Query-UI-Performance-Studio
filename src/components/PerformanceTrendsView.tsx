@@ -79,6 +79,8 @@ interface PerformanceTrendsViewProps {
   }>;
   mutationThreshold?: number;
   mutationHistory?: DatabaseMutationHistoryEntry[];
+  alertThresholdMs?: number;
+  onAlertThresholdChange?: (val: number) => void;
 }
 
 
@@ -429,7 +431,9 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
   onSimulateFault,
   thresholdViolations = [],
   mutationThreshold = 5,
-  mutationHistory = []
+  mutationHistory = [],
+  alertThresholdMs = 100,
+  onAlertThresholdChange
 }) => {
   const safeCurrentFlags = currentFlags || {
     batchEagerLoading: true,
@@ -2180,7 +2184,7 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
       </div>
 
       {/* 2. Interactive Flag Toggles Toolbar & Simulation Trigger */}
-      <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-zinc-200 shadow-xs space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div>
             <h3 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
@@ -2359,6 +2363,89 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
               </button>
             );
           })}
+        </div>
+
+        {/* Custom Latency Alert Threshold Configuration Panel */}
+        <div className="p-3.5 bg-gradient-to-r from-rose-50/80 via-amber-50/50 to-rose-50/80 rounded-xl border border-rose-200 shadow-2xs space-y-2 mt-4 pt-4 border-t border-zinc-100">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="p-1.5 bg-rose-600 text-white rounded-lg shadow-2xs">
+                <Bell className="w-4 h-4" />
+              </span>
+              <div>
+                <h4 className="text-xs font-bold text-rose-950 uppercase tracking-wider">
+                  Custom Latency Spike Alert Threshold Configuration
+                </h4>
+                <p className="text-[11px] text-rose-700 mt-0.5">
+                  Set custom alert thresholds for latency spikes. Breaches instantly trigger visual warning banners in the MetricsBar.
+                </p>
+              </div>
+            </div>
+            <span className="font-mono text-xs font-bold bg-rose-200 text-rose-900 px-2.5 py-1 rounded-lg border border-rose-300">
+              Threshold: {alertThresholdMs}ms
+            </span>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
+            <div className="w-full flex-1 space-y-1">
+              <div className="flex justify-between text-[11px] font-mono font-bold text-zinc-700">
+                <span>10ms (Strict)</span>
+                <span>100ms (Default)</span>
+                <span>500ms (Relaxed)</span>
+              </div>
+              <input
+                type="range"
+                id="slider-custom-alert-threshold"
+                data-testid="slider-custom-alert-threshold"
+                min="10"
+                max="500"
+                step="10"
+                value={alertThresholdMs}
+                onChange={(e) => {
+                  if (onAlertThresholdChange) {
+                    onAlertThresholdChange(Number(e.target.value));
+                  }
+                }}
+                className="w-full accent-rose-600 cursor-pointer"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  if (onAlertThresholdChange) onAlertThresholdChange(25);
+                }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                  alertThresholdMs === 25 ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+                }`}
+              >
+                25ms
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onAlertThresholdChange) onAlertThresholdChange(100);
+                }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                  alertThresholdMs === 100 ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+                }`}
+              >
+                100ms
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onAlertThresholdChange) onAlertThresholdChange(250);
+                }}
+                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-semibold cursor-pointer border ${
+                  alertThresholdMs === 250 ? 'bg-rose-600 text-white border-rose-700' : 'bg-white text-zinc-700 border-zinc-300 hover:bg-zinc-50'
+                }`}
+              >
+                250ms
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 

@@ -364,6 +364,33 @@ export default function App() {
     exportRecordsToCsv(queryResult.records);
   };
 
+  const handleExportDiagnosticPackage = () => {
+    const diagnosticPackage = {
+      packageVersion: 'v1.0.0',
+      exportTimestamp: new Date().toISOString(),
+      systemState: {
+        flags,
+        totalRecords: queryResult.totalCount || 50000,
+        cacheHit: queryResult.cacheHit,
+        executionTimeMs: queryResult.executionTimeMs,
+        activeErrorsCount: queryResult.simulatedError ? 1 : 0
+      },
+      performanceTrends: trendHistory.slice(-20),
+      auditDataTapes: dataTapeEntries.slice(-10),
+      serializationLogsCount: serializationLogs.length
+    };
+
+    const blob = new Blob([JSON.stringify(diagnosticPackage, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `system_diagnostic_package_${new Date().toISOString().split('T')[0]}_${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col selection:bg-amber-500/30 selection:text-amber-200">
       <Header
@@ -398,6 +425,7 @@ export default function App() {
           setSelectedTapeEntry(entry);
           setIsHistoricalDataTapeOpen(true);
         }}
+        onExportDiagnosticPackage={handleExportDiagnosticPackage}
       />
 
       <OptimizationControls
@@ -474,6 +502,7 @@ export default function App() {
               })}
               onOpenBulkImport={() => setIsBulkImportOpen(true)}
               cacheHit={queryResult.cacheHit}
+              executionTimeMs={queryResult.executionTimeMs}
             />
 
             <SerializationErrorLogPanel
@@ -516,6 +545,8 @@ export default function App() {
             mutationThreshold={mutationThreshold}
             mutationHistory={mutationHistory}
             dataTapeEntries={dataTapeEntries}
+            alertThresholdMs={alertThresholdMs}
+            onAlertThresholdChange={(val) => setAlertThresholdMs(val)}
           />
         )}
       </main>
@@ -549,6 +580,8 @@ export default function App() {
         mutationThreshold={mutationThreshold}
         mutationHistory={mutationHistory}
         dataTapeEntries={dataTapeEntries}
+        alertThresholdMs={alertThresholdMs}
+        onAlertThresholdChange={(val) => setAlertThresholdMs(val)}
       />
 
       <BulkImportModal
