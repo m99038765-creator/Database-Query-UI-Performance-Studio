@@ -373,6 +373,25 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
   const activeExporting = isExportingProp ?? isExporting;
+  const [isCompactView, setIsCompactView] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_table_compact_view_enabled');
+      return saved !== null ? JSON.parse(saved) : false;
+    } catch {
+      return false;
+    }
+  });
+
+  const handleToggleCompactView = (val: boolean) => {
+    setIsCompactView(val);
+    try {
+      localStorage.setItem('enterprise_table_compact_view_enabled', JSON.stringify(val));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const ROW_HEIGHT = isCompactView ? 38 : 56;
 
   // Selection & Batch Operations State
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
@@ -1522,6 +1541,33 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               <option value={500}>500 rows</option>
               <option value={1000}>1,000 rows (Heavy)</option>
             </select>
+          </div>
+
+          {/* Compact View Mode Toggle */}
+          <div className="flex items-center gap-1 text-xs">
+            <label
+              id="label-toggle-compact-view"
+              htmlFor="toggle-compact-view"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium cursor-pointer transition-all border shadow-2xs select-none ${
+                isCompactView
+                  ? 'bg-indigo-950 border-indigo-500 text-indigo-300 ring-1 ring-indigo-500/40'
+                  : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+              }`}
+              title="Compact View mode reduces row vertical padding by 30-35%, fitting more database records on screen"
+            >
+              <input
+                id="toggle-compact-view"
+                data-testid="toggle-compact-view"
+                type="checkbox"
+                checked={isCompactView}
+                onChange={(e) => handleToggleCompactView(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-zinc-400 text-indigo-600 focus:ring-indigo-500/30 accent-indigo-600 cursor-pointer shrink-0"
+              />
+              <span className="flex items-center gap-1">
+                <Sliders className="w-3.5 h-3.5 text-indigo-500" />
+                <span>Compact View</span>
+              </span>
+            </label>
           </div>
 
           {/* Selected Rows Counter Chip & 'Show Selected Only' Toggle in Top Header */}
@@ -2691,7 +2737,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       <div
         id="table-column-header"
         data-testid="table-column-header"
-        className="grid grid-cols-12 px-4 py-3 bg-zinc-100/80 border-b border-zinc-200 text-xs font-semibold text-zinc-600 select-none items-center"
+        className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-1.5' : 'py-3'} bg-zinc-100/80 border-b border-zinc-200 text-xs font-semibold text-zinc-600 select-none items-center`}
       >
         <div className="col-span-1 flex items-center gap-1.5">
           <label
@@ -2965,7 +3011,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                           ? `Database Fetch Latency: ${nPlusOneLatencyMs.toFixed(1)}ms | Relative Query Cost: ${Math.round(relativeCostRatio * 100)}% (Z-score: ${zScoreVal.toFixed(2)}σ)`
                           : undefined
                       }
-                      className={`grid grid-cols-12 px-4 py-3 items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
+                      className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-1.5' : 'py-3'} items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
                       style={heatmapRowStyle}
                     >
                       {/* Row Hover Latency & Z-Score Anomaly Tooltip */}

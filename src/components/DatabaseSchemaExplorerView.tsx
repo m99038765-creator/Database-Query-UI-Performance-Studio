@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge, PieChart, BarChart2 } from 'lucide-react';
 import { OptimizationFlags } from '../types';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { IndexEfficiencyTrendChart } from './IndexEfficiencyTrendChart';
+import { IndexPerformanceDeltaBarChart } from './IndexPerformanceDeltaBarChart';
 import { ComplexityHeatmapPanel } from './ComplexityHeatmapPanel';
+import { IndexLifecycleAnalyticsPanel } from './IndexLifecycleAnalyticsPanel';
+import { IndexUsageOverviewDashboard } from './IndexUsageOverviewDashboard';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -82,7 +85,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
   const [animatingBulkIndexName, setAnimatingBulkIndexName] = useState<string | null>(null);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
-  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap'>('complexity-heatmap');
+  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap' | 'lifecycle-analytics' | 'index-usage'>('complexity-heatmap');
   const [disabledImpactEdges, setDisabledImpactEdges] = useState<Record<string, boolean>>({});
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
   const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
@@ -6515,6 +6518,34 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 <span>AI Suggestions</span>
                 <span className="font-mono text-[9px] bg-white/20 px-1 rounded">4</span>
               </button>
+              <button
+                type="button"
+                id="btn-side-panel-tab-lifecycle"
+                data-testid="btn-side-panel-tab-lifecycle"
+                onClick={() => setSidePanelViewMode('lifecycle-analytics')}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  sidePanelViewMode === 'lifecycle-analytics'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/50'
+                }`}
+              >
+                <PieChart className="w-3.5 h-3.5" />
+                <span>Lifecycle</span>
+              </button>
+              <button
+                type="button"
+                id="btn-side-panel-tab-usage"
+                data-testid="btn-side-panel-tab-usage"
+                onClick={() => setSidePanelViewMode('index-usage')}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  sidePanelViewMode === 'index-usage'
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/50'
+                }`}
+              >
+                <BarChart2 className="w-3.5 h-3.5" />
+                <span>Index Usage</span>
+              </button>
             </div>
 
             {sidePanelViewMode === 'complexity-heatmap' ? (
@@ -6531,6 +6562,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 onSelectIndexDetail={(indexName) => {
                   setSelectedCompositeSuggestionId(indexName);
                 }}
+              />
+            ) : sidePanelViewMode === 'lifecycle-analytics' ? (
+              <IndexLifecycleAnalyticsPanel
+                tables={tables}
+                lockedIndexes={lockedIndexes}
+                createdCompositeIndexes={createdCompositeIndexes}
+                createdCustomIndexes={createdCustomIndexes}
+                batchProtectionEnabled={batchProtectionEnabled}
+              />
+            ) : sidePanelViewMode === 'index-usage' ? (
+              <IndexUsageOverviewDashboard
+                tables={tables}
+                lockedIndexes={lockedIndexes}
+                createdCompositeIndexes={createdCompositeIndexes}
+                createdCustomIndexes={createdCustomIndexes}
               />
             ) : (
               <>
@@ -6633,6 +6679,12 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
 
             {/* 'Efficiency Trend' Chart in Index Side Panel */}
             <IndexEfficiencyTrendChart
+              selectedIndexId={selectedCompositeSuggestionId}
+              onSelectIndexId={(id) => setSelectedCompositeSuggestionId(id)}
+            />
+
+            {/* 'Performance Delta' Bar Chart in Index Side Panel */}
+            <IndexPerformanceDeltaBarChart
               selectedIndexId={selectedCompositeSuggestionId}
               onSelectIndexId={(id) => setSelectedCompositeSuggestionId(id)}
             />

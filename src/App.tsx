@@ -391,6 +391,35 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const handleQuickSnapshot = async () => {
+    try {
+      const records = queryResult.records || [];
+      const { entry } = await createDataTapeEntry({
+        records,
+        format: 'json',
+        triggerEvent: `[QUICK SNAPSHOT] Manual Header Capture at ${new Date().toLocaleTimeString()}`,
+        databaseTotalRecords: queryResult.totalCount,
+        filterSummary: {
+          searchTerm: searchQuery,
+          status: statusFilter,
+          category: selectedCategory,
+          pageSize: queryResult.records.length
+        },
+        sequenceNumber: dataTapeEntries.length + 1,
+        includeHeaders: true
+      });
+
+      setDataTapeEntries((prev) => [entry, ...prev]);
+      setProactiveToast({
+        title: 'Quick Snapshot Saved',
+        message: `System configuration and metrics persisted to Historical Data Tape (${entry.tapeId}) successfully.`
+      });
+      setTimeout(() => setProactiveToast(null), 4000);
+    } catch (err) {
+      console.error('Failed to create quick snapshot:', err);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col selection:bg-amber-500/30 selection:text-amber-200">
       <Header
@@ -426,6 +455,7 @@ export default function App() {
           setIsHistoricalDataTapeOpen(true);
         }}
         onExportDiagnosticPackage={handleExportDiagnosticPackage}
+        onQuickSnapshot={handleQuickSnapshot}
       />
 
       <OptimizationControls

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { OptimizationFlags } from '../types';
-import { Check, X, Layers, Cpu, Database, Eye, Gauge, Bookmark, Plus, Trash2, Sparkles, Sliders } from 'lucide-react';
+import { Check, X, Layers, Cpu, Database, Eye, Gauge, Bookmark, Plus, Trash2, Sparkles, Sliders, Clock } from 'lucide-react';
 
 interface OptimizationControlsProps {
   flags?: OptimizationFlags;
@@ -122,6 +122,60 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
     setDiskTier(tier);
     try {
       localStorage.setItem('enterprise_global_disk_tier', tier);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const [maintenanceEnabled, setMaintenanceEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_maintenance_window_enabled');
+      return saved !== null ? JSON.parse(saved) : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const [maintenanceStartHour, setMaintenanceStartHour] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_maintenance_start_hour');
+      return saved !== null ? Number(saved) : 2; // 02:00 UTC
+    } catch {
+      return 2;
+    }
+  });
+
+  const [maintenanceEndHour, setMaintenanceEndHour] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_maintenance_end_hour');
+      return saved !== null ? Number(saved) : 6; // 06:00 UTC
+    } catch {
+      return 6;
+    }
+  });
+
+  const handleToggleMaintenance = (enabled: boolean) => {
+    setMaintenanceEnabled(enabled);
+    try {
+      localStorage.setItem('enterprise_maintenance_window_enabled', JSON.stringify(enabled));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleMaintenanceStartChange = (hour: number) => {
+    setMaintenanceStartHour(hour);
+    try {
+      localStorage.setItem('enterprise_maintenance_start_hour', String(hour));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleMaintenanceEndChange = (hour: number) => {
+    setMaintenanceEndHour(hour);
+    try {
+      localStorage.setItem('enterprise_maintenance_end_hour', String(hour));
     } catch (e) {
       console.error(e);
     }
@@ -736,6 +790,99 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
               Seek Latency: ~0.05ms • Rebuild: 1.0x Baseline
             </div>
           </button>
+        </div>
+      </div>
+
+      {/* Maintenance Schedule & Off-Peak Re-indexing Window */}
+      <div className="p-4 bg-gradient-to-r from-amber-50/80 via-orange-50/50 to-amber-50/80 rounded-xl border border-amber-200 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between border-b border-amber-200 pb-2">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-amber-600 text-white rounded-lg shadow-2xs">
+              <Clock className="w-4 h-4" />
+            </span>
+            <div>
+              <h3 className="text-xs font-bold text-amber-950 uppercase tracking-wider">
+                Maintenance Schedule &amp; Off-Peak Re-indexing Window
+              </h3>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Define restricted maintenance hours for low-priority background re-indexing and pruning tasks, protecting production resources during peak usage hours.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`font-mono text-[10px] font-bold px-2.5 py-1 rounded-lg border ${
+              maintenanceEnabled ? 'bg-emerald-100 text-emerald-900 border-emerald-300' : 'bg-zinc-100 text-zinc-600 border-zinc-200'
+            }`}>
+              {maintenanceEnabled ? `Window: ${String(maintenanceStartHour).padStart(2, '0')}:00 - ${String(maintenanceEndHour).padStart(2, '0')}:00 UTC` : 'Window Disabled'}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+          {/* Toggle Enable */}
+          <div className="space-y-1 bg-white/90 p-3 rounded-xl border border-amber-100 shadow-2xs flex flex-col justify-between">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span>Enforce Maintenance SLA</span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  id="checkbox-maintenance-enabled"
+                  data-testid="checkbox-maintenance-enabled"
+                  checked={maintenanceEnabled}
+                  onChange={(e) => handleToggleMaintenance(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-zinc-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-600"></div>
+              </label>
+            </div>
+            <p className="text-[10px] text-zinc-500">
+              Suspends low-priority index maintenance outside designated off-peak hours.
+            </p>
+          </div>
+
+          {/* Start Hour */}
+          <div className="space-y-1.5 bg-white/90 p-3 rounded-xl border border-amber-100 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span>Window Start (UTC)</span>
+              <span className="font-mono text-amber-800">{String(maintenanceStartHour).padStart(2, '0')}:00 UTC</span>
+            </div>
+            <select
+              id="select-maintenance-start"
+              data-testid="select-maintenance-start"
+              disabled={!maintenanceEnabled}
+              value={maintenanceStartHour}
+              onChange={(e) => handleMaintenanceStartChange(Number(e.target.value))}
+              className="w-full bg-white border border-zinc-300 rounded-lg px-2.5 py-1.5 text-xs text-zinc-800 font-mono focus:outline-none focus:ring-1 focus:ring-amber-500 disabled:opacity-50 cursor-pointer"
+            >
+              {Array.from({ length: 24 }).map((_, h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, '0')}:00 UTC ({h === 0 ? 'Midnight' : h === 12 ? 'Noon' : `${h}:00`})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* End Hour */}
+          <div className="space-y-1.5 bg-white/90 p-3 rounded-xl border border-amber-100 shadow-2xs">
+            <div className="flex items-center justify-between text-xs font-bold text-zinc-800">
+              <span>Window End (UTC)</span>
+              <span className="font-mono text-amber-800">{String(maintenanceEndHour).padStart(2, '0')}:00 UTC</span>
+            </div>
+            <select
+              id="select-maintenance-end"
+              data-testid="select-maintenance-end"
+              disabled={!maintenanceEnabled}
+              value={maintenanceEndHour}
+              onChange={(e) => handleMaintenanceEndChange(Number(e.target.value))}
+              className="w-full bg-white border border-zinc-300 rounded-lg px-2.5 py-1.5 text-xs text-zinc-800 font-mono focus:outline-none focus:ring-1 focus:ring-amber-500 disabled:opacity-50 cursor-pointer"
+            >
+              {Array.from({ length: 24 }).map((_, h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, '0')}:00 UTC ({h === 0 ? 'Midnight' : h === 12 ? 'Noon' : `${h}:00`})
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
     </div>

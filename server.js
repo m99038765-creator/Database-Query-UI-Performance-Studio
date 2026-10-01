@@ -56,17 +56,26 @@ app.use((req, res, next) => {
 </html>`);
   }
 });
-var PORT = parseInt(process.env.PORT || "8080", 10);
+var isNginxProxyPresent = Boolean(process.env.NGINX_PORT || process.env.DEFAULT_APP_PORT);
+var targetPort = isNginxProxyPresent ? parseInt(process.env.DEFAULT_APP_PORT || "3000", 10) : parseInt(process.env.PORT || "8080", 10);
+var PORT = isNaN(targetPort) ? 3e3 : targetPort;
 var server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server successfully listening on http://0.0.0.0:${PORT}`);
 });
 server.on("error", (err) => {
   console.error(`Server error on port ${PORT}:`, err);
-  if (err && err.code === "EADDRINUSE" && !process.env.PORT) {
-    console.log(`Port ${PORT} in use, trying fallback port 3000...`);
-    app.listen(3e3, "0.0.0.0", () => {
-      console.log(`Server successfully listening on http://0.0.0.0:3000`);
+  if (err && err.code === "EADDRINUSE") {
+    const fallbackPort = PORT === 3e3 ? 8080 : 3e3;
+    console.log(`Port ${PORT} in use, trying fallback port ${fallbackPort}...`);
+    const fallbackServer = app.listen(fallbackPort, "0.0.0.0", () => {
+      console.log(`Server successfully listening on fallback http://0.0.0.0:${fallbackPort}`);
     });
+    fallbackServer.on("error", (fallbackErr) => {
+      console.error(`Fatal error on fallback port ${fallbackPort}:`, fallbackErr);
+      process.exit(1);
+    });
+  } else {
+    process.exit(1);
   }
 });
 var gracefulShutdown = (signal) => {

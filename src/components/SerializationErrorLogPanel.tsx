@@ -36,7 +36,8 @@ import {
   GitMerge,
   Check,
   Terminal,
-  ArrowRight
+  ArrowRight,
+  Download
 } from 'lucide-react';
 
 interface SerializationErrorLogPanelProps {
@@ -307,6 +308,56 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
     }
   };
 
+  const handleDownloadExportReport = () => {
+    const reportData = {
+      reportTitle: 'Enterprise Diagnostic Error & Optimization Lifecycle Report',
+      exportedAt: new Date().toISOString(),
+      timestamp: Date.now(),
+      summary: {
+        totalLogs: safeLogs.length,
+        errorCount: counts.errors,
+        anomalyCount: counts.anomalies,
+        warningCount: counts.warnings,
+        totalLifecycleEvents: activeLifecycleEvents.length
+      },
+      logs: safeLogs,
+      lifecycleEvents: activeLifecycleEvents,
+      reasoningTraces: [
+        {
+          traceId: 'Trace #01',
+          targetIndex: 'idx_transactions_email_status',
+          query: 'SELECT * FROM transactions WHERE customer_email = ? AND status = ?',
+          speedup: '99.6% Faster (395ms → 1.6ms)',
+          rationale: 'High cardinality filter predicate optimization.'
+        },
+        {
+          traceId: 'Trace #02',
+          targetIndex: 'idx_line_items_tx',
+          query: 'SELECT * FROM line_items WHERE transaction_id = ?',
+          speedup: '99.6% Faster (840ms → 3.2ms)',
+          rationale: 'Foreign key join optimization avoiding N+1 query storms.'
+        },
+        {
+          traceId: 'Trace #03',
+          targetIndex: 'idx_transactions_date',
+          query: 'DROP INDEX CONCURRENTLY idx_transactions_date;',
+          speedup: '+14% Write Throughput Unlocked',
+          rationale: 'Unused index auto-pruning to eliminate write WAL amplification.'
+        }
+      ]
+    };
+
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `diagnostic_optimization_report_${Date.now()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleSimulateLifecycle = (action: LifecycleActionType) => {
     let newEv: OptimizationLifecycleEvent;
     const ts = Date.now();
@@ -541,6 +592,19 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
 
         {/* Global Action Controls */}
         <div className="flex items-center gap-1.5 ml-auto sm:ml-0 flex-wrap">
+          {/* Download Export Report Button */}
+          <button
+            type="button"
+            id="btn-download-export-report"
+            data-testid="btn-download-export-report"
+            onClick={handleDownloadExportReport}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors cursor-pointer shadow-2xs mr-1"
+            title="Download current logs, lifecycle events, and reasoning analysis as a JSON diagnostic report"
+          >
+            <Download className="w-3.5 h-3.5 text-indigo-200" />
+            <span>Download Export Report</span>
+          </button>
+
           {activeMainTab === 'errors' ? (
             <>
               {/* Quick simulation buttons for Errors tab */}

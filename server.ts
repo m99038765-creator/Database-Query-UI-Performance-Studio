@@ -70,22 +70,33 @@ app.use((req, res, next) => {
 });
 
 // Determine single listening port:
-// Cloud Run always provides process.env.PORT (typically 8080).
-// In development or local testing without PORT, fallback to 8080 (or 3000 if 8080 fails).
-const PORT = parseInt(process.env.PORT || '8080', 10);
+// In AI Studio Cloud Run containers, NGINX runs on NGINX_PORT (8080) and proxies to DEFAULT_APP_PORT (3000).
+// In standalone Cloud Run environments without NGINX, the app listens directly on PORT (8080).
+const isNginxProxyPresent = Boolean(process.env.NGINX_PORT || process.env.DEFAULT_APP_PORT);
+const targetPort = isNginxProxyPresent
+  ? parseInt(process.env.DEFAULT_APP_PORT || '3000', 10)
+  : parseInt(process.env.PORT || '8080', 10);
+
+const PORT = isNaN(targetPort) ? 3000 : targetPort;
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server successfully listening on http://0.0.0.0:${PORT}`);
 });
 
-server.on('error', (err: any) => {
+server.on('error', (err) => {
   console.error(`Server error on port ${PORT}:`, err);
-  // If port is in use and PORT was not explicitly set by Cloud Run, try port 3000 as fallback
-  if (err && err.code === 'EADDRINUSE' && !process.env.PORT) {
-    console.log(`Port ${PORT} in use, trying fallback port 3000...`);
-    app.listen(3000, '0.0.0.0', () => {
-      console.log(`Server successfully listening on http://0.0.0.0:3000`);
+  if (err && (err as any).code === 'EADDRINUSE') {
+    const fallbackPort = PORT === 3000 ? 8080 : 3000;
+    console.log(`Port ${PORT} in use, trying fallback port ${fallbackPort}...`);
+    const fallbackServer = app.listen(fallbackPort, '0.0.0.0', () => {
+      console.log(`Server successfully listening on fallback http://0.0.0.0:${fallbackPort}`);
     });
+    fallbackServer.on('error', (fallbackErr) => {
+      console.error(`Fatal error on fallback port ${fallbackPort}:`, fallbackErr);
+      process.exit(1);
+    });
+  } else {
+    process.exit(1);
   }
 });
 

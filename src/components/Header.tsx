@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square } from 'lucide-react';
+import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square, Camera } from 'lucide-react';
 import { OptimizationFlags, DataTapeEntry } from '../types';
 
 interface HeaderProps {
@@ -24,6 +24,7 @@ interface HeaderProps {
   dataTapeEntries?: DataTapeEntry[];
   onSelectTapeEntry?: (entry: DataTapeEntry) => void;
   onExportDiagnosticPackage?: () => void;
+  onQuickSnapshot?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -53,7 +54,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenWizard,
   dataTapeEntries = [],
   onSelectTapeEntry,
-  onExportDiagnosticPackage
+  onExportDiagnosticPackage,
+  onQuickSnapshot
 }) => {
   const currentFlags = flags || {
     batchEagerLoading: true,
@@ -273,6 +275,20 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <Download className="w-3.5 h-3.5 text-indigo-600" />
               <span>Export Diagnostic Package</span>
+            </button>
+          )}
+
+          {onQuickSnapshot && (
+            <button
+              id="btn-quick-snapshot"
+              data-testid="btn-quick-snapshot"
+              type="button"
+              onClick={onQuickSnapshot}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-950 border border-purple-300 shadow-xs transition-colors cursor-pointer"
+              title="Quick Snapshot: Immediately persist current system configuration and performance metrics to a new Historical Data Tape entry"
+            >
+              <Camera className="w-3.5 h-3.5 text-purple-600" />
+              <span>Quick Snapshot</span>
             </button>
           )}
 
