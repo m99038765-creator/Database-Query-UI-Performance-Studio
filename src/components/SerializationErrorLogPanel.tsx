@@ -6,7 +6,8 @@ import {
   SerializationLogFormat,
   OptimizationLifecycleEvent,
   LifecycleActionType,
-  LifecycleTriggerSource
+  LifecycleTriggerSource,
+  TransactionRecord
 } from '../types';
 import { ExportFormat } from '../utils/csvExporter';
 import {
@@ -37,7 +38,8 @@ import {
   Check,
   Terminal,
   ArrowRight,
-  Download
+  Download,
+  Flame
 } from 'lucide-react';
 
 interface SerializationErrorLogPanelProps {
@@ -49,6 +51,13 @@ interface SerializationErrorLogPanelProps {
   currentRecordCount?: number;
   lifecycleEvents?: OptimizationLifecycleEvent[];
   onClearLifecycleEvents?: () => void;
+  alertThresholdMs?: number;
+  records?: TransactionRecord[];
+  flags?: {
+    batchEagerLoading?: boolean;
+    btreeIndexing?: boolean;
+    [key: string]: any;
+  };
 }
 
 const LIFECYCLE_STORAGE_KEY = 'perf_optimization_lifecycle_events_v1';
@@ -170,11 +179,67 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
   currentFormat = 'csv',
   currentRecordCount = 50000,
   lifecycleEvents: propLifecycleEvents,
-  onClearLifecycleEvents
+  onClearLifecycleEvents,
+  alertThresholdMs = 100,
+  records = [],
+  flags = {}
 }) => {
   const safeLogs = logs || [];
+  const safeRecords = records || [];
+  const alertThreshold = alertThresholdMs || 100;
+
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
-  const [activeMainTab, setActiveMainTab] = useState<'errors' | 'lifecycle' | 'reasoning'>('errors');
+  const [activeMainTab, setActiveMainTab] = useState<'errors' | 'lifecycle' | 'reasoning' | 'outliers'>('errors');
+
+  // Compute Latency Outliers exceeding alertThresholdMs
+  const outlierQueries = useMemo(() => {
+    if (!safeRecords || safeRecords.length === 0) return [];
+    const results: Array<{
+      id: string;
+      orderNumber: string;
+      customerName: string;
+      status: string;
+      category: string;
+      itemCount: number;
+      latencyMs: number;
+      sqlQuery: string;
+      table: string;
+      exceededByMs: number;
+    }> = [];
+
+    const safeFlags = (flags || {}) as { batchEagerLoading?: boolean; btreeIndexing?: boolean; [key: string]: any };
+    const batchEagerLoading = !!safeFlags.batchEagerLoading;
+    const btreeIndexing = safeFlags.btreeIndexing ?? true;
+
+    for (const r of safeRecords) {
+      const recordItemCount = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
+      const unoptimizedMultiplier = (!batchEagerLoading) ? 45.0 : 8.0;
+      const indexPenalty = (!btreeIndexing) ? 55.0 : 0.0;
+      const latencyMs = batchEagerLoading 
+        ? +(recordItemCount * 3.5 + 8.0).toFixed(1) 
+        : +(20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty).toFixed(1);
+
+      if (latencyMs > alertThreshold) {
+        const sqlQuery = batchEagerLoading
+          ? `SELECT t.id, t.order_number, t.customer_name, t.amount, i.sku, i.name\nFROM transactions t\nLEFT JOIN line_items i ON i.transaction_id = t.id\nWHERE t.id = '${r.id}' AND t.status = '${r.status}';`
+          : `SELECT * FROM transactions WHERE id = '${r.id}' AND status = '${r.status}';\n-- N+1 Subquery Storm (${recordItemCount} child lookups):\nSELECT * FROM line_items WHERE transaction_id = '${r.id}';`;
+
+        results.push({
+          id: r.id,
+          orderNumber: r.orderNumber || r.id,
+          customerName: r.customerName || 'Unknown Customer',
+          status: r.status || 'pending',
+          category: r.category || 'General',
+          itemCount: recordItemCount,
+          latencyMs,
+          sqlQuery,
+          table: r.tableName || 'transactions',
+          exceededByMs: +(latencyMs - alertThreshold).toFixed(1)
+        });
+      }
+    }
+    return results;
+  }, [safeRecords, alertThreshold, flags]);
 
   // Serialization Errors Tab Filters
   const [severityFilter, setSeverityFilter] = useState<SerializationLogSeverity | 'all'>('all');
@@ -766,6 +831,31 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
               className="bg-emerald-100 text-emerald-800 text-[10px] font-mono font-bold px-1.5 py-0.2 rounded-full border border-emerald-200"
             >
               {activeLifecycleEvents.length}
+            </span>
+          </button>
+
+          {/* Tab: Latency Outliers */}
+          <button
+            type="button"
+            id="tab-latency-outliers"
+            data-testid="tab-latency-outliers"
+            onClick={() => setActiveMainTab('outliers')}
+            className={`px-3.5 py-2 text-xs font-bold border-b-2 transition-all cursor-pointer flex items-center gap-2 ${
+              activeMainTab === 'outliers'
+                ? 'border-rose-600 text-rose-950 bg-white shadow-2xs'
+                : 'border-transparent text-zinc-500 hover:text-zinc-800'
+            }`}
+          >
+            <Flame className={`w-3.5 h-3.5 ${activeMainTab === 'outliers' ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+            <span>Latency Outliers</span>
+            <span
+              id="tab-outliers-count-badge"
+              data-testid="tab-outliers-count-badge"
+              className={`text-[10px] font-mono px-1.5 py-0.2 rounded-full border ${
+                outlierQueries.length > 0 ? 'bg-rose-100 text-rose-800 border-rose-200 font-bold' : 'bg-zinc-100 text-zinc-600 border-zinc-200'
+              }`}
+            >
+              {outlierQueries.length}
             </span>
           </button>
 
@@ -1404,6 +1494,112 @@ export const SerializationErrorLogPanel: React.FC<SerializationErrorLogPanelProp
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB: Latency Outliers View */}
+          {activeMainTab === 'outliers' && (
+            <div id="latency-outliers-tab-content" className="space-y-3 animate-fadeIn">
+              {/* Outliers Header / Stats Bar */}
+              <div className="p-3 bg-gradient-to-r from-rose-500/15 via-rose-500/10 to-amber-500/15 border border-rose-200 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs text-rose-950">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-rose-600 text-white shadow-xs">
+                    <Flame className="w-4 h-4 animate-pulse" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-zinc-900 text-xs flex items-center gap-1.5">
+                      <span>Query Latency Outliers Stream</span>
+                      <span className="px-1.5 py-0.2 rounded-full bg-rose-200 text-rose-950 font-mono font-bold text-[10px]">
+                        {outlierQueries.length} Detected
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-zinc-600">
+                      Automatically capturing queries exceeding your active alert threshold (<strong className="text-rose-700 font-bold">{alertThresholdMs}ms</strong>)
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 font-mono text-[11px]">
+                  <div className="bg-white px-2.5 py-1 rounded-lg border border-rose-200 text-zinc-700 shadow-2xs">
+                    Threshold: <strong className="text-rose-600">{alertThresholdMs}ms</strong>
+                  </div>
+                  {outlierQueries.length > 0 && (
+                    <div className="bg-white px-2.5 py-1 rounded-lg border border-rose-200 text-zinc-700 shadow-2xs">
+                      Max Latency: <strong className="text-rose-700 font-bold">{Math.max(...outlierQueries.map(o => o.latencyMs))}ms</strong>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Outlier Queries List */}
+              {outlierQueries.length === 0 ? (
+                <div className="py-12 text-center bg-zinc-50 rounded-xl border border-zinc-200 p-6">
+                  <ShieldCheck className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+                  <h5 className="font-bold text-zinc-900 text-sm">No Latency Outliers Detected</h5>
+                  <p className="text-xs text-zinc-500 mt-1 max-w-md mx-auto">
+                    All currently displayed database queries are executing within the optimal performance threshold (&lt; {alertThresholdMs}ms). Toggle off N+1 optimizations or lower the threshold to inspect query latency spikes.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5 max-h-[500px] overflow-y-auto pr-1">
+                  {outlierQueries.map((outlier) => (
+                    <div
+                      key={outlier.id}
+                      className="bg-white rounded-xl border border-rose-200/80 p-3.5 shadow-2xs hover:shadow-sm transition-all space-y-2"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-rose-600 animate-ping" />
+                          <span className="font-bold text-zinc-900 text-xs">
+                            Order #{outlier.orderNumber}
+                          </span>
+                          <span className="text-zinc-400">•</span>
+                          <span className="text-zinc-600 text-xs">{outlier.customerName}</span>
+                          <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-zinc-100 text-zinc-700 border border-zinc-200">
+                            {outlier.category}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 font-mono text-xs">
+                          <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-900 border border-rose-300 font-bold flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-rose-600" />
+                            <span>{outlier.latencyMs}ms</span>
+                          </span>
+                          <span className="text-[10px] bg-rose-950 text-rose-200 px-1.5 py-0.5 rounded font-bold">
+                            +{outlier.exceededByMs}ms over limit
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Highlighted SQL Statement */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-zinc-500 font-medium">
+                          <span>Specific SQL Statement:</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(outlier.sqlQuery);
+                              setLifecycleToast(`Copied SQL for Order #${outlier.orderNumber}`);
+                              setTimeout(() => setLifecycleToast(null), 2500);
+                            }}
+                            className="text-indigo-600 hover:text-indigo-800 font-semibold cursor-pointer text-[10px]"
+                          >
+                            Copy SQL
+                          </button>
+                        </div>
+                        <pre className="p-2.5 bg-zinc-900 text-rose-200 font-mono text-[11px] rounded-lg border border-zinc-800 overflow-x-auto leading-relaxed">
+                          {outlier.sqlQuery}
+                        </pre>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] text-zinc-500 pt-1 border-t border-zinc-100">
+                        <span>Items / Subqueries: <strong className="text-zinc-800">{outlier.itemCount} items</strong></span>
+                        <span className="text-rose-600 font-medium">Action Required: Enable B-Tree Indexing or Batch Eager Loading</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

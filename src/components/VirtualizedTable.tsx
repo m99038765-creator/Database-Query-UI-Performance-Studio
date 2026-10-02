@@ -610,7 +610,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     const rowRenderMs = +(baseRender + deferredOverhead + (recordItemCount * (safeFlags.virtualizedDOM ? 0.15 : 1.2))).toFixed(1);
 
     // 3. DOM Hydration Cost (Virtual DOM element mounting, layout calculation, item tags reflow)
-    const isRowExpanded = expandedRows.has(rec.id);
+    const isRowExpanded = expandedRowId === rec.id;
     const baseHydration = safeFlags.virtualizedDOM ? 0.5 : 4.8;
     const expansionHydration = isRowExpanded ? (recordItemCount * 0.8 + 2.4) : 0;
     const domHydrationMs = +(baseHydration + expansionHydration + (rec.status === 'flagged' ? 0.8 : 0.2)).toFixed(1);
@@ -1023,7 +1023,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       });
     }
     return list;
-  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, timeMachineIndex, activeTimeMachineSnapshot, expandedRows, cacheHit]);
+  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, timeMachineIndex, activeTimeMachineSnapshot, expandedRowId, cacheHit]);
 
   // Rolling Z-scores and anomaly detection service for displayed records
   const anomalyMap = useMemo(() => {
@@ -1039,7 +1039,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       total += effectiveLatencyMs;
     }
     return +(total / displayRecords.length).toFixed(1);
-  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRows, cacheHit]);
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRowId, cacheHit]);
 
   // Compute dataset-wide layer averages for the sub-menu indicators
   const datasetLayerAverages = useMemo(() => {
@@ -1066,7 +1066,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       avgHydrationMs: +(totalHydration / count).toFixed(1),
       avgTotalMs: +(totalActive / count).toFixed(1)
     };
-  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRows, cacheHit]);
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRowId, cacheHit]);
 
   const historicalAverageLatency = 24.5;
   const isPerformanceRegressed = averageTableLatencyMs > historicalAverageLatency * 1.20;
@@ -1090,7 +1090,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
       minRowCost: min === Infinity ? 5 : min,
       maxRowCost: max === -Infinity ? 50 : Math.max(max, min + 1)
     };
-  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRows, cacheHit]);
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRowId, cacheHit]);
 
   // Reusable sub-menu popover for Latency Heatmap Layers
   const renderHeatmapLayersPopover = (align: 'left' | 'right' = 'left') => (

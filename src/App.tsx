@@ -766,6 +766,9 @@ export default function App() {
               onSimulateFault={() => {}}
               currentFormat="csv"
               currentRecordCount={queryResult.totalCount || 50000}
+              alertThresholdMs={alertThresholdMs}
+              records={queryResult.records}
+              flags={flags}
             />
           </>
         ) : activeView === 'comparison' ? (

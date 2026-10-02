@@ -38,6 +38,203 @@ export interface SchemaSnapshot {
   totalIndexesCount?: number;
 }
 
+const IndexActivitySparkline: React.FC<{ indexName: string; reads: number; writes: number }> = ({ indexName, reads, writes }) => {
+  const hash = indexName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const readPoints = [
+    Math.round((reads / 5) * (0.6 + ((hash % 7) * 0.1))),
+    Math.round((reads / 5) * (0.8 + (((hash + 3) % 5) * 0.15))),
+    Math.round((reads / 5) * (0.5 + (((hash * 2) % 9) * 0.1))),
+    Math.round((reads / 5) * (1.1 + (((hash + 7) % 4) * 0.2))),
+    Math.round((reads / 5) * (0.9 + (((hash * 3) % 6) * 0.1)))
+  ];
+  const writePoints = [
+    Math.round((writes / 5) * (0.7 + (((hash + 1) % 6) * 0.1))),
+    Math.round((writes / 5) * (0.9 + (((hash + 4) % 4) * 0.15))),
+    Math.round((writes / 5) * (1.2 + (((hash * 5) % 3) * 0.2))),
+    Math.round((writes / 5) * (0.6 + (((hash + 2) % 8) * 0.1))),
+    Math.round((writes / 5) * (0.8 + (((hash * 4) % 5) * 0.15)))
+  ];
+
+  const maxVal = Math.max(1, ...readPoints, ...writePoints);
+  const width = 130;
+  const height = 34;
+
+  const getPointsString = (pts: number[]) => {
+    return pts.map((val, idx) => {
+      const x = (idx / (pts.length - 1)) * (width - 12) + 6;
+      const y = height - 6 - (val / maxVal) * (height - 12);
+      return `${x},${y}`;
+    }).join(' ');
+  };
+
+  const readPath = getPointsString(readPoints);
+  const writePath = getPointsString(writePoints);
+
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const labels = ['T-5m', 'T-4m', 'T-3m', 'T-2m', 'Now'];
+
+  return (
+    <div className="p-2.5 bg-white/95 rounded-xl border border-indigo-200 my-1 text-xs space-y-1 shadow-2xs font-mono">
+      <div className="flex items-center justify-between text-[10px] text-zinc-600 font-bold border-b border-zinc-100 pb-1">
+        <span className="text-indigo-950 flex items-center gap-1">
+          <Activity className="w-3 h-3 text-indigo-600 animate-pulse" />
+          <span>5-Min Read/Write Sparkline</span>
+        </span>
+        {hoverIdx !== null ? (
+          <span className="text-[9px] bg-indigo-100 text-indigo-950 px-1.5 py-0.2 rounded font-mono font-bold">
+            {labels[hoverIdx]}: {readPoints[hoverIdx]}R / {writePoints[hoverIdx]}W
+          </span>
+        ) : (
+          <span className="text-[9px] text-zinc-400">Interactive (Hover)</span>
+        )}
+      </div>
+      <div className="relative flex items-center justify-center pt-1">
+        <svg width={width} height={height} className="overflow-visible">
+          <line x1="6" y1="6" x2={width - 6} y2="6" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="2 2" />
+          <line x1="6" y1={height / 2} x2={width - 6} y2={height / 2} stroke="#f1f5f9" strokeWidth="1" strokeDasharray="2 2" />
+
+          <polyline
+            fill="none"
+            stroke="#10b981"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            points={readPath}
+          />
+          <polyline
+            fill="none"
+            stroke="#f43f5e"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            points={writePath}
+          />
+
+          {readPoints.map((val, idx) => {
+            const x = (idx / (readPoints.length - 1)) * (width - 12) + 6;
+            const yRead = height - 6 - (val / maxVal) * (height - 12);
+            const yWrite = height - 6 - (writePoints[idx] / maxVal) * (height - 12);
+            const isHovered = hoverIdx === idx;
+            return (
+              <g key={`spark-${idx}`}>
+                <circle
+                  cx={x}
+                  cy={yRead}
+                  r={isHovered ? 5 : 3}
+                  className="fill-emerald-600 stroke-white stroke-2 cursor-pointer transition-all"
+                  onMouseEnter={() => setHoverIdx(idx)}
+                  onMouseLeave={() => setHoverIdx(null)}
+                />
+                <circle
+                  cx={x}
+                  cy={yWrite}
+                  r={isHovered ? 5 : 3}
+                  className="fill-rose-600 stroke-white stroke-2 cursor-pointer transition-all"
+                  onMouseEnter={() => setHoverIdx(idx)}
+                  onMouseLeave={() => setHoverIdx(null)}
+                />
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <div className="flex items-center justify-between text-[9px] text-zinc-400 font-mono px-0.5 pt-0.5">
+        <span>T-5m</span>
+        <span className="text-emerald-700 font-semibold">Reads (—)</span>
+        <span className="text-rose-700 font-semibold">Writes (—)</span>
+        <span>Now</span>
+      </div>
+    </div>
+  );
+};
+
+const IndexSizeTrendSparkline: React.FC<{ indexName: string; baseSizeMb?: number }> = ({ indexName, baseSizeMb = 12.4 }) => {
+  const hash = indexName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const isBloated = (hash % 3 === 0) || indexName.includes('composite');
+  const growthMultiplier = isBloated ? 1.45 : 1.05;
+
+  const sizePoints = [
+    +(baseSizeMb * (0.8 + ((hash % 5) * 0.05))).toFixed(1),
+    +(baseSizeMb * (0.85 + (((hash + 2) % 6) * 0.04))).toFixed(1),
+    +(baseSizeMb * (0.9 + (((hash * 3) % 4) * 0.06))).toFixed(1),
+    +(baseSizeMb * (0.96 + (((hash + 4) % 5) * 0.05))).toFixed(1),
+    +(baseSizeMb * (1.0 + (((hash * 2) % 3) * 0.08))).toFixed(1),
+    +(baseSizeMb * growthMultiplier).toFixed(1)
+  ];
+
+  const minSize = Math.min(...sizePoints);
+  const maxSize = Math.max(...sizePoints, minSize + 0.5);
+  const width = 120;
+  const height = 30;
+
+  const getPointsString = (pts: number[]) => {
+    return pts.map((val, idx) => {
+      const x = (idx / (pts.length - 1)) * (width - 10) + 5;
+      const y = height - 5 - ((val - minSize) / (maxSize - minSize || 1)) * (height - 10);
+      return `${x},${y}`;
+    }).join(' ');
+  };
+
+  const pathStr = getPointsString(sizePoints);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const timeLabels = ['24h ago', '18h ago', '12h ago', '6h ago', '2h ago', 'Now'];
+
+  return (
+    <div className="p-2 bg-zinc-50 rounded-xl border border-zinc-200 text-xs space-y-1 shadow-2xs font-mono my-1">
+      <div className="flex items-center justify-between text-[10px] text-zinc-600 font-bold border-b border-zinc-100 pb-1">
+        <span className="flex items-center gap-1 text-zinc-800">
+          <Database className="w-3 h-3 text-cyan-600" />
+          <span>Size Trend (24h)</span>
+        </span>
+        <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+          isBloated ? 'bg-rose-100 text-rose-900 animate-pulse' : 'bg-emerald-100 text-emerald-900'
+        }`}>
+          {isBloated ? 'Bloated (+45%)' : 'Stable'}
+        </span>
+      </div>
+      <div className="relative flex items-center justify-center pt-1">
+        <svg width={width} height={height} className="overflow-visible">
+          <line x1="5" y1="5" x2={width - 5} y2="5" stroke="#e4e4e7" strokeWidth="1" strokeDasharray="2 2" />
+          <line x1="5" y1={height / 2} x2={width - 5} y2={height / 2} stroke="#e4e4e7" strokeWidth="1" strokeDasharray="2 2" />
+
+          <polyline
+            fill="none"
+            stroke={isBloated ? '#f43f5e' : '#0ea5e9'}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            points={pathStr}
+          />
+
+          {sizePoints.map((val, idx) => {
+            const x = (idx / (sizePoints.length - 1)) * (width - 10) + 5;
+            const y = height - 5 - ((val - minSize) / (maxSize - minSize || 1)) * (height - 10);
+            const isHovered = hoverIdx === idx;
+            return (
+              <circle
+                key={`size-pt-${idx}`}
+                cx={x}
+                cy={y}
+                r={isHovered ? 4.5 : 2.5}
+                className={`stroke-white stroke-2 cursor-pointer transition-all ${isHovered ? 'fill-indigo-600' : isBloated ? 'fill-rose-600' : 'fill-cyan-600'}`}
+                onMouseEnter={() => setHoverIdx(idx)}
+                onMouseLeave={() => setHoverIdx(null)}
+              >
+                <title>{timeLabels[idx]}: {val} MB</title>
+              </circle>
+            );
+          })}
+        </svg>
+      </div>
+      <div className="flex items-center justify-between text-[9px] text-zinc-500 font-mono px-0.5 pt-0.5">
+        <span>24h ago</span>
+        <strong className="text-zinc-900 font-bold">{sizePoints[sizePoints.length - 1]} MB</strong>
+        <span>Now</span>
+      </div>
+    </div>
+  );
+};
+
 export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProps> = ({
   flags,
   onToggleFlag,
@@ -4473,6 +4670,171 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             </div>
           </div>
 
+          {/* Global Index Efficiency Summary Card */}
+          {(() => {
+            const totalActiveIndexesCount = tables.reduce((acc, t) => acc + t.indexes.filter(i => i.active && !removedIndexes.includes(i.name)).length, 0);
+            const totalCompositeIndexesCount = createdCompositeIndexes.length;
+            const aggregatePerformanceGainPercent = Math.min(98.5, Math.max(12.0, speedUpPercent * 0.9 + totalActiveIndexesCount * 4.5));
+            const estimatedMaintenanceCostMb = +(totalActiveIndexesCount * 1.8 + totalCompositeIndexesCount * 3.2).toFixed(1);
+            const writeAmplificationOverhead = +(totalActiveIndexesCount * 0.6 + totalCompositeIndexesCount * 1.2).toFixed(1);
+            const netIndexEfficiencyScore = Math.min(99.0, Math.max(40.0, +(aggregatePerformanceGainPercent / Math.max(1, writeAmplificationOverhead * 0.35)).toFixed(1)));
+            return (
+              <div className="p-4 bg-gradient-to-r from-emerald-50 via-white to-teal-50 rounded-2xl border border-emerald-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-xs">
+                    <TrendingUp className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
+                      <span>Global Index Efficiency Summary</span>
+                      <span className="text-[10px] font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
+                        Score: {netIndexEfficiencyScore}%
+                      </span>
+                    </h4>
+                    <p className="text-xs text-zinc-500">
+                      Aggregate performance gain vs. storage &amp; write maintenance overhead across {totalActiveIndexesCount} active indexes.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 w-full sm:w-auto font-mono text-xs">
+                  <div className="p-2.5 bg-white rounded-xl border border-emerald-200 shadow-2xs text-center">
+                    <span className="text-[10px] text-emerald-700 block uppercase font-semibold">Perf Gain</span>
+                    <strong className="text-emerald-900 text-sm font-extrabold">+{aggregatePerformanceGainPercent.toFixed(1)}%</strong>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-zinc-200 shadow-2xs text-center">
+                    <span className="text-[10px] text-zinc-500 block uppercase font-semibold">Maint Cost</span>
+                    <strong className="text-zinc-900 text-sm font-extrabold">{estimatedMaintenanceCostMb} MB</strong>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-zinc-200 shadow-2xs text-center col-span-2 sm:col-span-1">
+                    <span className="text-[10px] text-zinc-500 block uppercase font-semibold">Write Amp</span>
+                    <strong className="text-amber-700 text-sm font-extrabold">{writeAmplificationOverhead}%</strong>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Database Storage Impact Analysis Tool Card */}
+          {(() => {
+            const allIndexesFlattened = tables.flatMap(t => t.indexes);
+            const unusedIndexesCount = allIndexesFlattened.filter(i => (!i.active || i.hitRate < 35 || removedIndexes.includes(i.name))).length + (removedIndexes.length > 0 ? 0 : 2);
+            const totalStorageMb = +(allIndexesFlattened.length * 3.4).toFixed(1);
+            const potentialDropSavingsMb = +(unusedIndexesCount * 3.1).toFixed(1);
+            const potentialCompressionSavingsMb = +(totalStorageMb * 0.38).toFixed(1);
+            const potentialDropSavingsKb = Math.round(potentialDropSavingsMb * 1024);
+            const potentialCompressionSavingsKb = Math.round(potentialCompressionSavingsMb * 1024);
+
+            return (
+              <div className="p-4 bg-gradient-to-r from-cyan-50 via-white to-indigo-50 rounded-2xl border border-cyan-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-cyan-600 text-white rounded-xl shadow-xs">
+                    <Database className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
+                      <span>Database Storage Impact Analysis</span>
+                      <span className="text-[10px] font-mono bg-cyan-100 text-cyan-900 px-2 py-0.5 rounded font-bold">
+                        {unusedIndexesCount} Unused Indexes Found
+                      </span>
+                    </h4>
+                    <p className="text-xs text-zinc-500">
+                      Calculates potential disk footprint reduction if unutilized or redundant indexes were dropped or compressed.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap font-mono text-xs">
+                  <div className="p-2.5 bg-white rounded-xl border border-cyan-200 shadow-2xs text-center">
+                    <span className="text-[10px] text-cyan-800 block uppercase font-semibold">Drop Savings</span>
+                    <strong className="text-cyan-950 text-sm font-extrabold">{potentialDropSavingsMb} MB</strong>
+                    <span className="text-[9px] text-zinc-400 block">({potentialDropSavingsKb.toLocaleString()} KB)</span>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-indigo-200 shadow-2xs text-center">
+                    <span className="text-[10px] text-indigo-700 block uppercase font-semibold">Compression Savings</span>
+                    <strong className="text-indigo-900 text-sm font-extrabold">{potentialCompressionSavingsMb} MB</strong>
+                    <span className="text-[9px] text-zinc-400 block">({potentialCompressionSavingsKb.toLocaleString()} KB)</span>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-open-index-cleanup-modal-storage"
+                    data-testid="btn-open-index-cleanup-modal-storage"
+                    onClick={() => setShowIndexCleanupModal(true)}
+                    className="px-3.5 py-2 bg-cyan-600 hover:bg-cyan-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Prune Unused</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Index Fragmentation Analysis Chart Card */}
+          {(() => {
+            const tableIndexes = currentTableData.indexes.filter(i => !removedIndexes.includes(i.name));
+            return (
+              <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-amber-600" />
+                    <h4 className="text-xs font-bold text-zinc-900 uppercase tracking-wider">
+                      Index Physical Fragmentation &amp; Reorganization Advisor
+                    </h4>
+                  </div>
+                  <span className="text-[11px] font-mono text-zinc-500">
+                    Threshold: &gt;30% triggers REORGANIZE recommendation
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {tableIndexes.map((idx, idxIdx) => {
+                    const fragPercent = +(((idx.name.length * 7 + idxIdx * 19) % 55) + (idx.active ? 8 : 42)).toFixed(1);
+                    const needsReorg = fragPercent > 30;
+
+                    return (
+                      <div key={idx.name} className={`p-3 rounded-xl border flex flex-col justify-between gap-2 text-xs font-mono ${
+                        needsReorg ? 'bg-rose-50/90 border-rose-300 text-rose-950' : 'bg-white border-zinc-200 text-zinc-900'
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold truncate" title={idx.name}>{idx.name}</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            needsReorg ? 'bg-rose-600 text-white animate-pulse' : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {fragPercent}% Frag
+                          </span>
+                        </div>
+                        <div className="w-full bg-zinc-200 h-2 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              needsReorg ? 'bg-rose-600' : fragPercent > 15 ? 'bg-amber-500' : 'bg-emerald-600'
+                            }`}
+                            style={{ width: `${Math.min(100, fragPercent)}%` }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] pt-1 border-t border-zinc-200/60 font-sans">
+                          <span className="text-zinc-500">Type: B-Tree Index</span>
+                          {needsReorg ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReindexedIndexes(prev => Array.from(new Set([...prev, idx.name])));
+                              }}
+                              disabled={reindexedIndexes.includes(idx.name)}
+                              className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded text-[10px] cursor-pointer shadow-2xs transition-all disabled:opacity-50"
+                            >
+                              {reindexedIndexes.includes(idx.name) ? 'Reorganized ✓' : 'REORGANIZE (SQL)'}
+                            </button>
+                          ) : (
+                            <span className="text-emerald-700 font-semibold text-[10px]">Optimal Health</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Table Columns & Index Coverage (Baseline vs Current Overlay) */}
           <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-200 space-y-3">
             <div className="flex items-center justify-between">
@@ -6070,6 +6432,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   >
                                     {isLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
                                   </button>
+                                  <button
+                                    type="button"
+                                    id={`table-btn-copy-sql-${index.name}`}
+                                    data-testid={`table-btn-copy-sql-${index.name}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const ddl = `CREATE INDEX CONCURRENTLY ${index.name} ON ${table} (${index.columns.join(', ')});`;
+                                      navigator.clipboard?.writeText(ddl);
+                                      setCopiedDdlIndex(index.name);
+                                      setImportSuccessNotice(`[Copied to Clipboard] CREATE SQL syntax for index "${index.name}" copied.`);
+                                      setTimeout(() => setImportSuccessNotice(null), 4000);
+                                    }}
+                                    className="p-1 text-zinc-500 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer transition-colors"
+                                    title="Copy CREATE INDEX SQL DDL statement to clipboard"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                  </button>
                                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                                     isRemoved
                                       ? 'bg-zinc-200 text-zinc-600 line-through'
@@ -6619,42 +6998,10 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       </div>
                                     </div>
 
-                                    {showUsageHeatmap && (
-                                      <div className="p-2 rounded-lg bg-white/80 border border-zinc-200/80 my-1 text-xs space-y-1">
-                                        <div className="flex items-center justify-between text-[10px] font-mono">
-                                          <span className="flex items-center gap-1 font-bold text-zinc-800">
-                                            <TrendingUp className="w-3 h-3 text-emerald-600" />
-                                            <span>Read:Write Ratio:</span>
-                                            <strong className={usageHeat.textColor}>{usageHeat.ratio}x</strong>
-                                          </span>
-                                          <span className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${
-                                            usageHeat.usageTier === 'read-heavy'
-                                              ? 'bg-emerald-100 text-emerald-900'
-                                              : usageHeat.usageTier === 'write-heavy'
-                                              ? 'bg-rose-100 text-rose-900'
-                                              : 'bg-amber-100 text-amber-900'
-                                          }`}>
-                                            {usageHeat.label}
-                                          </span>
-                                        </div>
-                                        <div className="w-full bg-zinc-200 h-2 rounded-full overflow-hidden flex shadow-inner">
-                                          <div
-                                            className="h-full bg-emerald-500 transition-all duration-300"
-                                            style={{ width: `${usageHeat.readPercentage}%` }}
-                                            title={`Reads: ${usageHeat.reads.toLocaleString()} (${usageHeat.readPercentage}%)`}
-                                          />
-                                          <div
-                                            className="h-full bg-rose-500 transition-all duration-300"
-                                            style={{ width: `${usageHeat.writePercentage}%` }}
-                                            title={`Writes: ${usageHeat.writes.toLocaleString()} (${usageHeat.writePercentage}%)`}
-                                          />
-                                        </div>
-                                        <div className="flex items-center justify-between text-[9px] font-mono text-zinc-500">
-                                          <span className="text-emerald-700 font-bold">{usageHeat.reads.toLocaleString()} reads/hr ({usageHeat.readPercentage}%)</span>
-                                          <span className="text-rose-700 font-bold">{usageHeat.writes.toLocaleString()} writes/hr ({usageHeat.writePercentage}%)</span>
-                                        </div>
-                                      </div>
-                                    )}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 my-1">
+                                      <IndexActivitySparkline indexName={idx.name} reads={usageHeat.reads} writes={usageHeat.writes} />
+                                      <IndexSizeTrendSparkline indexName={idx.name} />
+                                    </div>
 
                                     <div className="flex items-center justify-between gap-2 flex-wrap pt-1 pb-2">
                                       <div className="text-[11px] text-zinc-500 font-mono">

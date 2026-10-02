@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ExplainPlanNode, OptimizationFlags, QueryExecutionResult } from '../types';
+import { SqlHealthInspector } from './SqlHealthInspector';
 import {
   Terminal,
   Database,
@@ -455,6 +456,7 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
   const [diffLayoutMode, setDiffLayoutMode] = useState<'unified' | 'split'>('unified');
   const [copiedDiffNotice, setCopiedDiffNotice] = useState<boolean>(false);
   const [isHotpathActive, setIsHotpathActive] = useState<boolean>(false);
+  const [isExecutionHeatmapActive, setIsExecutionHeatmapActive] = useState<boolean>(false);
   const [isBottleneckAnnotationsActive, setIsBottleneckAnnotationsActive] = useState<boolean>(true);
   const [isIndexSandboxOpen, setIsIndexSandboxOpen] = useState<boolean>(false);
   const [isAutoFixerOpen, setIsAutoFixerOpen] = useState<boolean>(false);
@@ -1222,6 +1224,28 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
     const isSummaryOpen = openSmartSummaries[nodeId] !== false;
     const hasSummary = !!summaryData;
 
+    const calculateTotalPlanTime = (n: ExplainPlanNode): number => {
+      let total = n.actualTimeMs || 1;
+      if (n.subNodes) {
+        for (const child of n.subNodes) {
+          total += calculateTotalPlanTime(child);
+        }
+      }
+      return total;
+    };
+    const totalPlanTime = calculateTotalPlanTime(effectiveExplainPlan);
+    const nodeTime = node.actualTimeMs || 0.1;
+    const contributionRatio = Math.min(1.0, Math.max(0.0, nodeTime / Math.max(0.1, totalPlanTime)));
+    const contributionPercent = (contributionRatio * 100).toFixed(1);
+
+    const heatmapBg = isExecutionHeatmapActive
+      ? contributionRatio >= 0.4
+        ? 'bg-rose-100/95 border-rose-500 text-rose-950 ring-2 ring-rose-400/40 shadow-sm'
+        : contributionRatio >= 0.15
+        ? 'bg-amber-100/95 border-amber-400 text-amber-950 ring-2 ring-amber-400/30 shadow-sm'
+        : 'bg-emerald-100/95 border-emerald-400 text-emerald-950 ring-2 ring-emerald-400/30 shadow-sm'
+      : null;
+
     let costDelta = 0;
     let hasDelta = false;
     if (compareNode) {
@@ -1243,7 +1267,9 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
       <div key={`${node.relationName}-${depth}-${node.nodeType}`} className="flex flex-col gap-2">
         <div
           className={`p-3 rounded-xl border text-xs transition-all ${
-            isHot
+            isExecutionHeatmapActive && heatmapBg
+              ? heatmapBg
+              : isHot
               ? 'ring-4 ring-amber-400/80 border-amber-500 bg-amber-50/90 shadow-lg shadow-amber-200/50 animate-pulse'
               : costDecreased
               ? 'border-2 border-emerald-500 bg-emerald-50/90 ring-2 ring-emerald-400/30 shadow-xs'
@@ -1280,6 +1306,14 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                 <span className="inline-flex items-center gap-1 font-mono text-[10px] font-extrabold bg-amber-500 text-white px-2 py-0.5 rounded-full shadow-xs">
                   <Flame className="w-3 h-3 fill-white" />
                   Critical Hotpath
+                </span>
+              )}
+              {isExecutionHeatmapActive && (
+                <span className={`inline-flex items-center gap-1 font-mono text-[10px] font-extrabold px-2 py-0.5 rounded-full shadow-xs ${
+                  contributionRatio >= 0.4 ? 'bg-rose-600 text-white' : contributionRatio >= 0.15 ? 'bg-amber-600 text-white' : 'bg-emerald-600 text-white'
+                }`}>
+                  <Flame className="w-3 h-3 fill-white" />
+                  <span>{contributionPercent}% Latency</span>
                 </span>
               )}
             </div>
@@ -2295,6 +2329,22 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
 
                 <button
                   type="button"
+                  id="btn-toggle-execution-heatmap"
+                  data-testid="btn-toggle-execution-heatmap"
+                  onClick={() => setIsExecutionHeatmapActive(!isExecutionHeatmapActive)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isExecutionHeatmapActive
+                      ? 'bg-gradient-to-r from-emerald-600 via-amber-500 to-rose-600 text-white border-rose-600 ring-2 ring-amber-300'
+                      : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border-amber-300'
+                  }`}
+                  title="Query Execution Heatmap: Highlights plan nodes with colors ranging from green to red based on execution time contribution relative to total query latency"
+                >
+                  <Flame className={`w-3.5 h-3.5 ${isExecutionHeatmapActive ? 'animate-bounce text-white' : 'text-amber-600'}`} />
+                  <span>Execution Heatmap {isExecutionHeatmapActive ? 'ON' : 'OFF'}</span>
+                </button>
+
+                <button
+                  type="button"
                   id="btn-toggle-bottleneck-annotation"
                   data-testid="btn-toggle-bottleneck-annotation"
                   onClick={() => setIsBottleneckAnnotationsActive(!isBottleneckAnnotationsActive)}
@@ -2375,6 +2425,17 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                     className="rounded border-amber-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
                   />
                   <span>Hotpath</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-amber-900 cursor-pointer bg-amber-50 hover:bg-amber-100/70 px-2.5 py-1 rounded-lg transition-colors border border-amber-200">
+                  <input
+                    type="checkbox"
+                    id="checkbox-execution-heatmap"
+                    data-testid="checkbox-execution-heatmap"
+                    checked={isExecutionHeatmapActive}
+                    onChange={(e) => setIsExecutionHeatmapActive(e.target.checked)}
+                    className="rounded border-amber-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Execution Heatmap</span>
                 </label>
                 <label className="flex items-center gap-1.5 text-xs font-semibold text-rose-900 cursor-pointer bg-rose-50 hover:bg-rose-100/70 px-2.5 py-1 rounded-lg transition-colors border border-rose-200">
                   <input
@@ -2977,6 +3038,10 @@ INCLUDE (amount, customer_email, created_at);
                     onChange={(e) => setCustomSqlInput(e.target.value)}
                     placeholder="Enter custom SQL string (e.g. SELECT * FROM transactions WHERE amount > 5000)..."
                     className="w-full p-3 font-mono text-xs bg-zinc-950 text-emerald-300 rounded-xl border border-zinc-800 shadow-inner focus:outline-none focus:ring-2 focus:ring-emerald-500 leading-relaxed"
+                  />
+                  <SqlHealthInspector
+                    sqlString={customSqlInput}
+                    onApplyOptimization={(optimizedSql) => setCustomSqlInput(optimizedSql)}
                   />
                 </div>
 
@@ -3682,6 +3747,27 @@ INCLUDE (amount, customer_email, created_at);
                     </div>
                   </div>
                 </div>
+
+                {/* Execution Heatmap Legend Banner */}
+                {isExecutionHeatmapActive && (
+                  <div className="p-3 bg-gradient-to-r from-emerald-50 via-amber-50 to-rose-50 rounded-xl border border-amber-300 text-xs flex items-center justify-between flex-wrap gap-3 shadow-xs mb-3">
+                    <div className="flex items-center gap-2 font-bold text-zinc-900">
+                      <Flame className="w-4 h-4 text-rose-600 animate-pulse" />
+                      <span>Query Execution Heatmap Active: Plan nodes colored from Green to Red based on execution time contribution relative to total query latency.</span>
+                    </div>
+                    <div className="flex items-center gap-2 font-mono text-[11px]">
+                      <span className="flex items-center gap-1 bg-emerald-100 text-emerald-900 px-2 py-0.5 rounded border border-emerald-300 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-emerald-600"></span> &lt;15% (Low Cost)
+                      </span>
+                      <span className="flex items-center gap-1 bg-amber-100 text-amber-900 px-2 py-0.5 rounded border border-amber-300 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-amber-600"></span> 15-40% (Moderate)
+                      </span>
+                      <span className="flex items-center gap-1 bg-rose-100 text-rose-900 px-2 py-0.5 rounded border border-amber-300 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-rose-600"></span> &gt;40% (High Bottleneck)
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Two Columns Side by Side */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
