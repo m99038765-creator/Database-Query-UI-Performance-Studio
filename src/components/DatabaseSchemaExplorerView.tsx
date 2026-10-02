@@ -429,11 +429,14 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
   const [whatIfModifications, setWhatIfModifications] = useState<Record<string, string[]>>({});
   const [activeWhatIfModalIndex, setActiveWhatIfModalIndex] = useState<{ name: string; tableName: string; columns: string[] } | null>(null);
+  const [activeImpactPredictionIndex, setActiveImpactPredictionIndex] = useState<{ name: string; tableName: string; columns: string[] } | null>(null);
   const [whatIfInputText, setWhatIfInputText] = useState<string>('');
   const [showConflictDashboardModal, setShowConflictDashboardModal] = useState<boolean>(false);
   const [showReconcileIndexesModal, setShowReconcileIndexesModal] = useState<boolean>(false);
   const [resolvedConflicts, setResolvedConflicts] = useState<Record<string, boolean>>({});
   const [resolvedConstraintConflicts, setResolvedConstraintConflicts] = useState<Record<string, boolean>>({});
+  const [showSchemaDiffLiveModal, setShowSchemaDiffLiveModal] = useState<boolean>(false);
+  const [schemaDiffTargetSnapshotId, setSchemaDiffTargetSnapshotId] = useState<string>('');
 
   const handleMergeConflictGroup = (groupId: string, indexNamesToPrune: string[]) => {
     setResolvedConflicts((prev) => ({ ...prev, [groupId]: true }));
@@ -7010,6 +7013,41 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                       <div className="flex items-center gap-1.5 flex-wrap">
                                         <button
                                           type="button"
+                                          id={`btn-drop-index-${idx.name}`}
+                                          data-testid={`btn-drop-index-${idx.name}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (isRemoved) {
+                                              handleRestoreRemovedIndex(idx.name);
+                                            } else {
+                                              setRemovedIndexes((prev) => [...prev, idx.name]);
+                                              setImportSuccessNotice(`🗑️ [Index Dropped] "${idx.name}" removed from table "${tbl.name}". Observe query performance impact: queries now fall back to full table sequential scans with increased latency and reduced throughput.`);
+                                              setTimeout(() => setImportSuccessNotice(null), 5000);
+                                              const ev = new CustomEvent('optimization-lifecycle-event', {
+                                                detail: {
+                                                  action: 'DELETE',
+                                                  actionLabel: 'Manual Drop Index',
+                                                  triggerSource: 'Index Details Pane',
+                                                  targetIndex: idx.name,
+                                                  targetTable: tbl.name,
+                                                },
+                                              });
+                                              window.dispatchEvent(ev);
+                                            }
+                                          }}
+                                          className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer flex items-center gap-1 shadow-2xs ${
+                                            isRemoved
+                                              ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-700'
+                                              : 'bg-rose-50 hover:bg-rose-100 text-rose-800 border-rose-300'
+                                          }`}
+                                          title={isRemoved ? 'Restore this dropped index' : 'Simulate dropping this index and observe query performance impact'}
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                          <span>{isRemoved ? 'Restore Index' : 'Drop Index'}</span>
+                                        </button>
+
+                                        <button
+                                          type="button"
                                           id={`btn-simulate-fail-${idx.name}`}
                                           data-testid={`btn-simulate-fail-${idx.name}`}
                                           onClick={(e) => {
@@ -10513,6 +10551,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </button>
                 <button
                   type="button"
+                  id="btn-open-schema-diff-live"
+                  data-testid="btn-open-schema-diff-live"
+                  onClick={() => setShowSchemaDiffLiveModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  title="Compare current live database index configuration against a saved historical snapshot"
+                >
+                  <History className="w-3.5 h-3.5" />
+                  <span>Schema Diff (Live vs Snapshot)</span>
+                </button>
+                <button
+                  type="button"
                   id="btn-open-diff-viewer"
                   data-testid="btn-open-diff-viewer"
                   onClick={() => setShowIndexDiffViewerModal(true)}
@@ -12465,6 +12514,233 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
             >
               Clear
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Impact Prediction Analysis Modal */}
+      {activeImpactPredictionIndex && (
+        <div
+          id="impact-prediction-modal"
+          data-testid="impact-prediction-modal"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setActiveImpactPredictionIndex(null);
+          }}
+        >
+          <div className="bg-white rounded-2xl max-w-xl w-full shadow-2xl border border-zinc-200 overflow-hidden flex flex-col my-8 animate-scaleIn">
+            <div className="px-6 py-4 bg-gradient-to-r from-indigo-700 via-purple-700 to-teal-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-white/10 rounded-xl">
+                  <Compass className="w-5 h-5 text-teal-300" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Impact Prediction &amp; Latency Analysis</h3>
+                  <p className="text-[11px] text-indigo-100 font-mono">{activeImpactPredictionIndex.name} ({activeImpactPredictionIndex.tableName})</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveImpactPredictionIndex(null)}
+                className="text-indigo-200 hover:text-white p-1 rounded-lg cursor-pointer transition-colors"
+                title="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
+              <div className="p-3.5 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-1">
+                <div className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-indigo-600" />
+                  <span>Projected Performance Gain Summary</span>
+                </div>
+                <p className="text-xs text-indigo-900">
+                  Calculates estimated latency reduction for common queries (Point Lookups, Range Aggregations, and Joins) if index <strong className="font-mono">{activeImpactPredictionIndex.name}</strong> on columns <code className="font-mono bg-indigo-100 px-1 py-0.5 rounded">({activeImpactPredictionIndex.columns.join(', ')})</code> were optimized, rebuilt, or re-indexed.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-wider">Estimated Latency Reduction by Query Pattern</h4>
+                {[
+                  { query: 'SELECT * FROM transactions WHERE customer_email = ? AND status = ?', before: '142.5 ms', after: '4.8 ms', reduction: '-96.6%' },
+                  { query: 'SELECT SUM(amount), category FROM transactions GROUP BY category', before: '380.2 ms', after: '18.5 ms', reduction: '-95.1%' },
+                  { query: 'SELECT * FROM ' + activeImpactPredictionIndex.tableName + ' ORDER BY created_at DESC LIMIT 50', before: '210.0 ms', after: '9.2 ms', reduction: '-95.6%' },
+                  { query: 'SELECT * FROM line_items WHERE transaction_id = ? (JOIN lookup)', before: '95.4 ms', after: '3.1 ms', reduction: '-96.7%' }
+                ].map((item, qidx) => (
+                  <div key={qidx} className="p-3 bg-zinc-50 rounded-xl border border-zinc-200 space-y-2">
+                    <div className="font-mono text-xs text-zinc-900 font-semibold truncate" title={item.query}>
+                      {qidx + 1}. {item.query}
+                    </div>
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <div className="flex items-center gap-2">
+                        <span className="text-zinc-500">Before: <strong className="line-through">{item.before}</strong></span>
+                        <span className="text-zinc-400">➔</span>
+                        <span className="text-emerald-700 font-bold">After: {item.after}</span>
+                      </div>
+                      <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded text-xs border border-emerald-300">
+                        {item.reduction}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-center">
+                  <div className="text-[10px] uppercase font-bold text-emerald-700">Throughput Lift</div>
+                  <div className="text-lg font-extrabold text-emerald-800 font-mono mt-0.5">+420 TPS</div>
+                  <div className="text-[10px] text-emerald-600 mt-0.5">Estimated QPS capacity boost</div>
+                </div>
+                <div className="p-3 bg-teal-50 rounded-xl border border-teal-200 text-center">
+                  <div className="text-[10px] uppercase font-bold text-teal-700">Scan Efficiency</div>
+                  <div className="text-lg font-extrabold text-teal-800 font-mono mt-0.5">99.4%</div>
+                  <div className="text-[10px] text-teal-600 mt-0.5">B-Tree index-only scan rate</div>
+                </div>
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveImpactPredictionIndex(null)}
+                className="px-4 py-2 bg-white hover:bg-zinc-100 border border-zinc-300 rounded-xl text-xs font-semibold cursor-pointer text-zinc-700"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                id="btn-apply-impact-prediction-rebuild"
+                data-testid="btn-apply-impact-prediction-rebuild"
+                onClick={() => {
+                  handleRebuildIndex(activeImpactPredictionIndex.name);
+                  setActiveImpactPredictionIndex(null);
+                  setImportSuccessNotice(`✨ [Impact Prediction Applied] Executed REINDEX CONCURRENTLY on "${activeImpactPredictionIndex.name}". Latency reduced by ~95.8% across common queries!`);
+                  setTimeout(() => setImportSuccessNotice(null), 5000);
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+              >
+                <Sparkles className="w-4 h-4 text-indigo-200" />
+                <span>Execute Reindex &amp; Apply Optimization</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Schema Diff (Live vs Snapshot) Modal */}
+      {showSchemaDiffLiveModal && (
+        <div
+          id="schema-diff-live-modal"
+          data-testid="schema-diff-live-modal"
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowSchemaDiffLiveModal(false);
+          }}
+        >
+          <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl max-w-2xl w-full p-6 space-y-5 text-zinc-900 relative">
+            <div className="flex items-center justify-between border-b border-zinc-200 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-purple-100 text-purple-700 rounded-lg">
+                  <History className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-zinc-900">Schema Diff: Live Configuration vs Snapshot</h3>
+                  <p className="text-xs text-zinc-500">
+                    Compares current live database index configuration against a saved historical snapshot.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSchemaDiffLiveModal(false)}
+                className="text-zinc-400 hover:text-zinc-700 p-1 rounded-lg hover:bg-zinc-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <label className="block font-bold text-zinc-700">Select Historical Snapshot to Compare Against Live State</label>
+              <select
+                value={schemaDiffTargetSnapshotId || snapshots[0]?.id || ''}
+                onChange={(e) => setSchemaDiffTargetSnapshotId(e.target.value)}
+                className="w-full p-2.5 rounded-lg border border-zinc-300 bg-white text-xs font-mono"
+              >
+                {snapshots.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.timestamp})</option>
+                ))}
+              </select>
+            </div>
+
+            {(() => {
+              const targetSnap = snapshots.find((s) => s.id === schemaDiffTargetSnapshotId) || snapshots[0];
+              if (!targetSnap) return null;
+
+              const snapshotIndexNames = new Set([
+                ...(targetSnap.customIndexes || []),
+                ...(targetSnap.createdCompositeIndexes || []),
+                'idx_transactions_email',
+                'idx_transactions_date',
+                'idx_transactions_amount',
+                'idx_transactions_category'
+              ]);
+
+              const liveIndexes = tables.flatMap((t) => t.indexes.map((i) => i.name));
+              const liveIndexSet = new Set(liveIndexes);
+
+              const addedInLive = liveIndexes.filter((name) => !snapshotIndexNames.has(name));
+              const removedInLive = [...snapshotIndexNames].filter((name) => !liveIndexSet.has(name) || removedIndexes.includes(name));
+              const activeUnchanged = liveIndexes.filter((name) => snapshotIndexNames.has(name) && !removedIndexes.includes(name));
+
+              return (
+                <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200 text-center">
+                      <div className="text-[10px] uppercase font-bold text-emerald-700">Added in Live</div>
+                      <div className="text-base font-extrabold text-emerald-800 font-mono mt-0.5">+{addedInLive.length}</div>
+                    </div>
+                    <div className="p-3 bg-rose-50/80 rounded-xl border border-rose-200 text-center">
+                      <div className="text-[10px] uppercase font-bold text-rose-700">Removed / Dropped</div>
+                      <div className="text-base font-extrabold text-rose-800 font-mono mt-0.5">-{removedInLive.length}</div>
+                    </div>
+                    <div className="p-3 bg-indigo-50/80 rounded-xl border border-indigo-200 text-center">
+                      <div className="text-[10px] uppercase font-bold text-indigo-700">Unchanged Active</div>
+                      <div className="text-base font-extrabold text-indigo-800 font-mono mt-0.5">{activeUnchanged.length}</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 text-xs">
+                    <h4 className="font-bold text-zinc-800 uppercase tracking-wider text-[11px]">Configuration Deltas (Live vs &quot;{targetSnap.name}&quot;)</h4>
+                    {addedInLive.map((name, idx) => (
+                      <div key={`live-add-${idx}`} className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between font-mono">
+                        <span className="text-emerald-950 font-bold">🟢 [Added in Live] {name}</span>
+                        <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-sans">Created in current session</span>
+                      </div>
+                    ))}
+                    {removedInLive.map((name, idx) => (
+                      <div key={`live-rem-${idx}`} className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg flex items-center justify-between font-mono">
+                        <span className="text-rose-950 font-bold">🔴 [Removed / Pruned] {name}</span>
+                        <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded font-sans">Dropped or pruned from live</span>
+                      </div>
+                    ))}
+                    {addedInLive.length === 0 && removedInLive.length === 0 && (
+                      <div className="p-6 text-center text-zinc-500 bg-zinc-50 rounded-xl border border-zinc-200">
+                        Live database index configuration matches snapshot &quot;{targetSnap.name}&quot; precisely!
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowSchemaDiffLiveModal(false)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs transition-colors"
+              >
+                Close Diff
+              </button>
+            </div>
           </div>
         </div>
       )}

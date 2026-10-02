@@ -18,6 +18,7 @@ import {
   Clock,
   Cpu,
   Zap,
+  Download,
   Copy,
   Check,
   RefreshCw,
@@ -2396,6 +2397,39 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                 >
                   <Sparkles className={`w-3.5 h-3.5 ${isGeneratingAllSummaries ? 'animate-spin text-purple-600' : 'text-purple-600'}`} />
                   <span>{isGeneratingAllSummaries ? 'Generating AI...' : 'Smart Summaries (All)'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-download-execution-plan"
+                  data-testid="btn-download-execution-plan"
+                  onClick={() => {
+                    const planData = {
+                      timestamp: new Date().toISOString(),
+                      queryType: 'PostgreSQL Execution Plan (EXPLAIN ANALYZE)',
+                      version: selectedPlanVersion,
+                      planTree: effectiveExplainPlan,
+                      metadata: {
+                        totalCost: effectiveExplainPlan.cost,
+                        executionTimeMs: executionTime || 4.2,
+                        nodeCount: effectiveExplainPlan.subNodes?.length || 1
+                      }
+                    };
+                    const blob = new Blob([JSON.stringify(planData, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `explain-plan-${selectedPlanVersion}-${Date.now()}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs bg-indigo-50 text-indigo-900 hover:bg-indigo-100 border-indigo-300"
+                  title="Download current query execution plan as JSON for external diagnostic analysis"
+                >
+                  <Download className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Download Plan</span>
                 </button>
               </div>
               <div className="flex items-center gap-2.5 flex-wrap">
