@@ -15,6 +15,7 @@ export const IndexUsageOverviewDashboard: React.FC<IndexUsageOverviewDashboardPr
   createdCustomIndexes
 }) => {
   const [filterMode, setFilterMode] = useState<'all' | 'amplified' | 'efficient'>('all');
+  const [showUsageHeatmap, setShowUsageHeatmap] = useState<boolean>(true);
   const [hoveredIndex, setHoveredIndex] = useState<string | null>(null);
 
   // Aggregate index usage metrics across all tables
@@ -89,10 +90,52 @@ export const IndexUsageOverviewDashboard: React.FC<IndexUsageOverviewDashboardPr
             </p>
           </div>
         </div>
-        <span className="font-mono text-[10px] font-bold bg-indigo-200 text-indigo-950 px-2 py-1 rounded-lg border border-indigo-300">
-          {indexUsageData.length} Indexes Tracked
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            id="btn-dashboard-usage-heatmap"
+            data-testid="btn-dashboard-usage-heatmap"
+            onClick={() => setShowUsageHeatmap(!showUsageHeatmap)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+              showUsageHeatmap
+                ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                : 'bg-white hover:bg-zinc-50 border-indigo-300 text-indigo-900'
+            }`}
+            title="Toggle Usage Heatmap: Highlights Read Heavy (Green) vs Write Heavy (Red) indexes"
+          >
+            <TrendingUp className="w-3.5 h-3.5" />
+            <span>Usage Heatmap: {showUsageHeatmap ? 'ON' : 'OFF'}</span>
+          </button>
+          <span className="font-mono text-[10px] font-bold bg-indigo-200 text-indigo-950 px-2 py-1 rounded-lg border border-indigo-300 shrink-0">
+            {indexUsageData.length} Indexes
+          </span>
+        </div>
       </div>
+
+      {/* Usage Heatmap Legend Banner */}
+      {showUsageHeatmap && (
+        <div
+          id="dashboard-usage-heatmap-legend"
+          data-testid="dashboard-usage-heatmap-legend"
+          className="p-2.5 bg-gradient-to-r from-emerald-50/90 via-teal-50/40 to-rose-50/90 border border-emerald-300 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs animate-fadeIn"
+        >
+          <div className="flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-emerald-600 shrink-0" />
+            <strong className="text-zinc-900 font-semibold">Usage Heatmap Active:</strong>
+            <span className="text-zinc-600 text-[11px]">Indexes colored by read-to-write ratio</span>
+          </div>
+          <div className="flex items-center gap-2 text-[10px] font-bold">
+            <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300 flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-600"></span>
+              <span>Read Heavy (Green)</span>
+            </span>
+            <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-900 border border-rose-300 flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-rose-600"></span>
+              <span>Write Heavy (Red)</span>
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Stats Summary Cards */}
       <div className="grid grid-cols-2 gap-2">
@@ -151,6 +194,7 @@ export const IndexUsageOverviewDashboard: React.FC<IndexUsageOverviewDashboardPr
           const readPct = Math.min(100, Math.round((item.reads / maxReads) * 100));
           const writePct = Math.min(100, Math.round((item.writes / maxWrites) * 100));
           const isHovered = hoveredIndex === item.name;
+          const isReadHeavy = item.ratio >= 3;
 
           return (
             <div
@@ -158,7 +202,13 @@ export const IndexUsageOverviewDashboard: React.FC<IndexUsageOverviewDashboardPr
               onMouseEnter={() => setHoveredIndex(item.name)}
               onMouseLeave={() => setHoveredIndex(null)}
               className={`p-3 rounded-xl border transition-all ${
-                isHovered ? 'border-indigo-300 bg-indigo-50/40 shadow-xs' : 'border-zinc-200 bg-white shadow-2xs'
+                isHovered
+                  ? 'border-indigo-400 bg-indigo-50/50 shadow-md ring-2 ring-indigo-300'
+                  : showUsageHeatmap
+                  ? isReadHeavy
+                    ? 'border-emerald-300 bg-emerald-50/50 ring-1 ring-emerald-200/80 shadow-2xs'
+                    : 'border-rose-300 bg-rose-50/60 ring-1 ring-rose-200/80 shadow-2xs'
+                  : 'border-zinc-200 bg-white shadow-2xs'
               }`}
             >
               <div className="flex items-center justify-between text-xs mb-2">
@@ -171,28 +221,41 @@ export const IndexUsageOverviewDashboard: React.FC<IndexUsageOverviewDashboardPr
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded border ${
-                    item.status === 'write-amplification'
+                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full border shadow-2xs flex items-center gap-1 ${
+                    showUsageHeatmap
+                      ? isReadHeavy
+                        ? 'bg-emerald-100 text-emerald-950 border-emerald-400 font-extrabold'
+                        : 'bg-rose-100 text-rose-950 border-rose-400 font-extrabold'
+                      : item.status === 'write-amplification'
                       ? 'bg-amber-50 text-amber-800 border-amber-200'
                       : 'bg-emerald-50 text-emerald-800 border-emerald-200'
                   }`}>
-                    {item.status === 'write-amplification' ? 'Write Heavy (Ratio < 3)' : `Ratio: ${item.ratio}x`}
+                    <span className={`w-2 h-2 rounded-full ${isReadHeavy ? 'bg-emerald-600' : 'bg-rose-600'}`} />
+                    <span>
+                      {showUsageHeatmap
+                        ? isReadHeavy
+                          ? `Read Heavy (${item.ratio}x)`
+                          : `Write Heavy (${item.ratio}x)`
+                        : item.status === 'write-amplification'
+                        ? 'Write Heavy (Ratio < 3)'
+                        : `Ratio: ${item.ratio}x`}
+                    </span>
                   </span>
                 </div>
               </div>
 
-              {/* Bar Comparison: Reads (Indigo) vs Writes (Amber) */}
+              {/* Bar Comparison: Reads (Green/Emerald) vs Writes (Red/Rose) */}
               <div className="space-y-1.5 font-mono text-[10px]">
                 {/* Reads Bar */}
                 <div className="flex items-center gap-2">
                   <span className="w-12 text-zinc-500 text-right">Reads:</span>
                   <div className="flex-1 h-2 bg-zinc-100 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-indigo-600 rounded-full transition-all duration-500"
+                      className={`h-full rounded-full transition-all duration-500 ${showUsageHeatmap ? 'bg-emerald-500' : 'bg-indigo-600'}`}
                       style={{ width: `${readPct}%` }}
                     />
                   </div>
-                  <span className="w-14 text-indigo-900 font-bold text-right">
+                  <span className={`w-14 font-bold text-right ${showUsageHeatmap ? 'text-emerald-900' : 'text-indigo-900'}`}>
                     {item.reads.toLocaleString()}
                   </span>
                 </div>
@@ -202,11 +265,11 @@ export const IndexUsageOverviewDashboard: React.FC<IndexUsageOverviewDashboardPr
                   <span className="w-12 text-zinc-500 text-right">Writes:</span>
                   <div className="flex-1 h-2 bg-zinc-100 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                      className={`h-full rounded-full transition-all duration-500 ${showUsageHeatmap ? 'bg-rose-500' : 'bg-amber-500'}`}
                       style={{ width: `${writePct}%` }}
                     />
                   </div>
-                  <span className="w-14 text-amber-900 font-bold text-right">
+                  <span className={`w-14 font-bold text-right ${showUsageHeatmap ? 'text-rose-900' : 'text-amber-900'}`}>
                     {item.writes.toLocaleString()}
                   </span>
                 </div>

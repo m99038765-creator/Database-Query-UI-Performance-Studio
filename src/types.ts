@@ -43,7 +43,7 @@ export interface OptimizationFlags {
 }
 
 export interface ExplainPlanNode {
-  nodeType: 'Index Scan' | 'Seq Scan' | 'Hash Join' | 'Nested Loop' | 'LRU Cache Lookup';
+  nodeType: 'Index Scan' | 'Seq Scan' | 'Hash Join' | 'Nested Loop' | 'LRU Cache Lookup' | 'Bitmap Index Scan' | 'Sort' | string;
   relationName: string;
   indexName?: string;
   cost: number;
@@ -68,6 +68,9 @@ export interface QueryExecutionResult {
   activeQueriesCount: number;
   simulatedError: string | null;
   warningNotice: string | null;
+  cachedTimestamp?: number;
+  cacheTtlSeconds?: number;
+  cacheExpiresAt?: number;
 }
 
 export interface BenchmarkStep {

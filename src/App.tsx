@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { OptimizationFlags, OrderStatus, ProductCategory, LatencyTrendPoint, BulkImportResult, SerializationLogEntry, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS } from './types';
-import { executeQuery, initializeDatabase, getDatabaseStats } from './db/databaseEngine';
+import { executeQuery, initializeDatabase, getDatabaseStats, getPlanCacheTTLSeconds, setPlanCacheTTLSeconds, clearDatabaseCache } from './db/databaseEngine';
 import { useFpsMonitor } from './utils/fpsTracker';
 import { Header } from './components/Header';
 import { OptimizationControls } from './components/OptimizationControls';
@@ -208,6 +208,27 @@ export default function App() {
   const [showLatencyHeatmap, setShowLatencyHeatmap] = useState(true);
   const [showQueryIntensityOverlay, setShowQueryIntensityOverlay] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Plan Cache TTL state (in seconds)
+  const [cacheTtlSeconds, setCacheTtlSeconds] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('enterprise_plan_cache_ttl');
+      return saved ? Number(saved) : getPlanCacheTTLSeconds();
+    } catch {
+      return 60;
+    }
+  });
+
+  const handleCacheTtlChange = (newTtl: number) => {
+    setCacheTtlSeconds(newTtl);
+    setPlanCacheTTLSeconds(newTtl);
+    setRefreshKey((k) => k + 1);
+  };
+
+  const handlePurgePlanCache = () => {
+    clearDatabaseCache('User Purged Plan Cache');
+    setRefreshKey((k) => k + 1);
+  };
 
   useEffect(() => {
     if (!autoRefreshEnabled) return;
@@ -632,6 +653,9 @@ export default function App() {
         onApplyFlags={(newFlags) => setFlags(newFlags)}
         lowUsageThresholds={lowUsageThresholds}
         onLowUsageThresholdsChange={handleLowUsageThresholdsChange}
+        cacheTtl={cacheTtlSeconds}
+        onCacheTtlChange={handleCacheTtlChange}
+        onPurgePlanCache={handlePurgePlanCache}
       />
 
       <MetricsBar
@@ -694,6 +718,10 @@ export default function App() {
               statusFilter={statusFilter}
               categoryFilter={selectedCategory}
               searchTerm={searchQuery}
+              cacheTtl={cacheTtlSeconds}
+              onCacheTtlChange={handleCacheTtlChange}
+              onPurgeCache={handlePurgePlanCache}
+              onRefreshPlan={() => setRefreshKey((k) => k + 1)}
             />
 
             <LatencyLegend showLatencyHeatmap={showLatencyHeatmap} />

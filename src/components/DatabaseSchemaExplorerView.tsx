@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge, PieChart, BarChart2, Clock } from 'lucide-react';
+import { Database, Layers, Key, Link, AlertTriangle, CheckCircle2, Shield, ShieldCheck, ArrowRight, Zap, Table, Plus, Info, X, Download, Sparkles, History, Target, RefreshCw, Trash2, ChevronDown, ChevronRight, ChevronUp, Search, Filter, Activity, Flame, HeartPulse, Copy, UploadCloud, FileText, Check, FileCode, Lock, Unlock, Terminal, Code, Sliders, TrendingUp, CheckSquare, GitMerge, PieChart, BarChart2, Clock, Compass } from 'lucide-react';
 import { OptimizationFlags, LowUsageThresholdsConfig, DEFAULT_LOW_USAGE_THRESHOLDS } from '../types';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { IndexEfficiencyTrendChart } from './IndexEfficiencyTrendChart';
@@ -7,6 +7,7 @@ import { IndexPerformanceDeltaBarChart } from './IndexPerformanceDeltaBarChart';
 import { ComplexityHeatmapPanel } from './ComplexityHeatmapPanel';
 import { IndexLifecycleAnalyticsPanel } from './IndexLifecycleAnalyticsPanel';
 import { IndexUsageOverviewDashboard } from './IndexUsageOverviewDashboard';
+import { IntelligentIndexingAdvisorModal, CoveringIndexPatch, COVERING_INDEX_CATALOG } from './IntelligentIndexingAdvisorModal';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -127,6 +128,32 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [showIndexDiffViewerModal, setShowIndexDiffViewerModal] = useState<boolean>(false);
   const [hoveredDiffProp, setHoveredDiffProp] = useState<string | null>(null);
   const [showBulkOptimizePopover, setShowBulkOptimizePopover] = useState<boolean>(false);
+  const [showIntelligentAdvisorModal, setShowIntelligentAdvisorModal] = useState<boolean>(false);
+  const [patchedCoveringIndexIds, setPatchedCoveringIndexIds] = useState<string[]>([]);
+
+  const handleApplyCoveringPatch = (patch: CoveringIndexPatch) => {
+    setPatchedCoveringIndexIds((prev) => Array.from(new Set([...prev, patch.id])));
+    if (!flags.btreeIndexing) {
+      onToggleFlag('btreeIndexing');
+    }
+    if (patch.id.includes('order-items') && !flags.batchEagerLoading) {
+      onToggleFlag('batchEagerLoading');
+    }
+    setCreatedCompositeIndexes((prev) => Array.from(new Set([...prev, patch.indexName])));
+  };
+
+  const handleApplyAllCoveringPatches = (patches: CoveringIndexPatch[]) => {
+    const allIds = COVERING_INDEX_CATALOG.map((p) => p.id);
+    setPatchedCoveringIndexIds(allIds);
+    if (!flags.btreeIndexing) {
+      onToggleFlag('btreeIndexing');
+    }
+    if (!flags.batchEagerLoading) {
+      onToggleFlag('batchEagerLoading');
+    }
+    const newComposite = COVERING_INDEX_CATALOG.map((p) => p.indexName);
+    setCreatedCompositeIndexes((prev) => Array.from(new Set([...prev, ...newComposite])));
+  };
   const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
   const [isGroupByTable, setIsGroupByTable] = useState<boolean>(false);
   const [collapsedTables, setCollapsedTables] = useState<Record<string, boolean>>({});
@@ -227,8 +254,9 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
   const [selectedIndexes, setSelectedIndexes] = useState<string[]>([]);
   const [isBulkOperating, setIsBulkOperating] = useState<boolean>(false);
-  const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'latency_desc' | 'latency_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name'>('impact_desc');
+  const [indexRankSort, setIndexRankSort] = useState<'impact_desc' | 'impact_asc' | 'latency_desc' | 'latency_asc' | 'query_desc' | 'write_asc' | 'health_desc' | 'name' | 'ratio_desc' | 'ratio_asc'>('impact_desc');
   const [showIndexImpactHeatmap, setShowIndexImpactHeatmap] = useState<boolean>(true);
+  const [showUsageHeatmap, setShowUsageHeatmap] = useState<boolean>(true);
   const [importSuccessNotice, setImportSuccessNotice] = useState<string | null>(null);
   const [importedCustomIndices, setImportedCustomIndices] = useState<Array<{
     name: string;
@@ -2686,6 +2714,122 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     };
   };
 
+  // Calculates an index's read-to-write ratio, usage heatmap classification (Read Heavy [Green] vs Write Heavy [Red]),
+  // exact operations metrics, and visual styling classes.
+  const calculateIndexUsageHeatmap = (
+    idxName: string,
+    active: boolean,
+    tableName: string,
+    isRemoved: boolean
+  ) => {
+    const lower = idxName.toLowerCase();
+    
+    // Hash seed for consistent deterministic simulation per index
+    const seedVal = Math.abs(idxName.split('').reduce((acc, c, idx) => acc + c.charCodeAt(0) * (idx + 13), 19)) % 100;
+    
+    let reads = 18000 + (seedVal * 450);
+    let writes = 2500 + (seedVal * 80);
+
+    // Contextual realistic overrides
+    if (lower.includes('primary') || lower.includes('pk_') || idxName.includes('PRIMARY KEY')) {
+      reads = 142000 + (seedVal * 500);
+      writes = 2800 + (seedVal * 20);
+    } else if (lower.includes('covering') || lower.includes('orders_status_items_total') || lower.includes('query_pack')) {
+      reads = 118000 + (seedVal * 600);
+      writes = 1900 + (seedVal * 15);
+    } else if (lower.includes('category_amount') || lower.includes('email_status') || lower.includes('orders_status_cat')) {
+      reads = 86000 + (seedVal * 400);
+      writes = 2100 + (seedVal * 30);
+    } else if (lower.includes('line_items_tx')) {
+      reads = 64000 + (seedVal * 350);
+      writes = 2600 + (seedVal * 40);
+    } else if (lower.includes('amount_missing') || lower.includes('email_missing')) {
+      reads = 38000 + (seedVal * 200);
+      writes = 1800 + (seedVal * 25);
+    } else if (lower.includes('tier_created') || lower.includes('customers_email')) {
+      reads = 29000 + (seedVal * 180);
+      writes = 3400 + (seedVal * 50);
+    } else if (
+      idxName === 'idx_transactions_date' ||
+      lower.includes('legacy') ||
+      lower.includes('staging') ||
+      lower.includes('temp') ||
+      lower.includes('backup')
+    ) {
+      // Zombie / Dead unutilized index with massive write penalty and near-zero reads
+      reads = 150 + (seedVal * 2);
+      writes = 14800 + (seedVal * 120);
+    }
+
+    if (isRemoved || !active) {
+      reads = 0;
+      writes = 0;
+    }
+
+    const ratio = writes > 0 ? Number((reads / writes).toFixed(1)) : (reads > 0 ? 99.9 : 0);
+    const readPercentage = Math.round((reads / Math.max(1, reads + writes)) * 100);
+    const writePercentage = 100 - readPercentage;
+
+    // Classification:
+    // Read Heavy (Green): ratio >= 5.0 (High read throughput acceleration vs small write overhead)
+    // Read Leaning (Teal): 3.0 <= ratio < 5.0
+    // Balanced (Amber/Yellow): 1.5 <= ratio < 3.0
+    // Write Heavy (Red): ratio < 1.5 (High write overhead/amplification with low read ROI)
+    let usageTier: 'read-heavy' | 'read-leaning' | 'balanced' | 'write-heavy' = 'balanced';
+    let label = 'Balanced';
+    let badgeLabel = `Balanced (${ratio}x)`;
+    let badgeClass = 'bg-amber-100 text-amber-900 border-amber-300';
+    let rowBgClass = 'bg-amber-50/40 hover:bg-amber-100/50 border-l-4 border-l-amber-500';
+    let cardBgClass = 'bg-amber-50/30 border-amber-300 ring-1 ring-amber-200/60 shadow-2xs';
+    let textColor = 'text-amber-700';
+    let verdict = 'Moderate read utilization balances table write maintenance costs.';
+
+    if (ratio >= 5.0) {
+      usageTier = 'read-heavy';
+      label = 'Read Heavy';
+      badgeLabel = `Read Heavy (${ratio}x)`;
+      badgeClass = 'bg-emerald-100 text-emerald-950 border-emerald-400 font-bold';
+      rowBgClass = 'bg-emerald-50/70 hover:bg-emerald-100/60 border-l-4 border-l-emerald-600 font-medium text-emerald-950';
+      cardBgClass = 'bg-emerald-50/40 border-emerald-400 ring-1 ring-emerald-300/80 shadow-2xs';
+      textColor = 'text-emerald-700 font-bold';
+      verdict = 'High Read Heavy ROI: B-Tree index satisfies frequent read lookups with minimal write penalty.';
+    } else if (ratio >= 3.0) {
+      usageTier = 'read-leaning';
+      label = 'Read Leaning';
+      badgeLabel = `Read Leaning (${ratio}x)`;
+      badgeClass = 'bg-teal-100 text-teal-900 border-teal-300 font-medium';
+      rowBgClass = 'bg-teal-50/40 hover:bg-teal-100/50 border-l-4 border-l-teal-500';
+      cardBgClass = 'bg-teal-50/30 border-teal-300 ring-1 ring-teal-200 shadow-2xs';
+      textColor = 'text-teal-700 font-semibold';
+      verdict = 'Optimal read acceleration outweighs index maintenance overhead.';
+    } else if (ratio < 1.5) {
+      usageTier = 'write-heavy';
+      label = 'Write Heavy';
+      badgeLabel = `Write Heavy (${ratio}x)`;
+      badgeClass = 'bg-rose-100 text-rose-950 border-rose-400 font-bold';
+      rowBgClass = 'bg-rose-100/80 hover:bg-rose-100 border-l-4 border-l-rose-600 font-medium text-rose-950';
+      cardBgClass = 'bg-rose-50/70 border-rose-400 ring-2 ring-rose-300/70 shadow-xs';
+      textColor = 'text-rose-700 font-bold';
+      verdict = 'Severe Write Heavy Overhead: Frequent table writes suffer B-Tree tree-rebalancing stalls for rarely queried data.';
+    }
+
+    return {
+      reads,
+      writes,
+      ratio,
+      readPercentage,
+      writePercentage,
+      usageTier,
+      label,
+      badgeLabel,
+      badgeClass,
+      rowBgClass,
+      cardBgClass,
+      textColor,
+      verdict
+    };
+  };
+
   // Bulk Optimization Calculation Engine:
   // Evaluates every listed index across all tables, calculates the optimal state vs current state,
   // and projects the cumulative schema health, query throughput, and write overhead impacts.
@@ -2988,6 +3132,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       health: ReturnType<typeof getIndexHealthScore>;
       impact: ReturnType<typeof calculateIndexImpactScore>;
       latencyHeat: ReturnType<typeof calculateIndexLatencyContribution>;
+      usageHeat: ReturnType<typeof calculateIndexUsageHeatmap>;
       inactivityStats: ReturnType<typeof getIndexInactivityStats>;
       isRemoved: boolean;
       isLocked: boolean;
@@ -3015,6 +3160,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
           const health = getIndexHealthScore(idx.name, idx.active, tbl.name);
           const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
           const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
+          const usageHeat = calculateIndexUsageHeatmap(idx.name, idx.active, tbl.name, isRemoved);
           const inactivityStats = getIndexInactivityStats(idx.name, idx.active, tbl.name);
 
           if (indexCategoryFilter === 'low-usage' && !inactivityStats.isInactiveOver7Days) {
@@ -3028,6 +3174,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             health,
             impact,
             latencyHeat,
+            usageHeat,
             inactivityStats,
             isRemoved,
             isLocked
@@ -3041,6 +3188,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
       if (indexRankSort === 'impact_asc') return a.impact.score - b.impact.score;
       if (indexRankSort === 'latency_desc') return b.latencyHeat.queryLatencyContributionMs - a.latencyHeat.queryLatencyContributionMs;
       if (indexRankSort === 'latency_asc') return a.latencyHeat.queryLatencyContributionMs - b.latencyHeat.queryLatencyContributionMs;
+      if (indexRankSort === 'ratio_desc') return b.usageHeat.ratio - a.usageHeat.ratio;
+      if (indexRankSort === 'ratio_asc') return a.usageHeat.ratio - b.usageHeat.ratio;
       if (indexRankSort === 'query_desc') return b.impact.queryImprovement - a.impact.queryImprovement;
       if (indexRankSort === 'write_asc') return a.impact.writePenalty - b.impact.writePenalty;
       if (indexRankSort === 'health_desc') return b.health.score - a.health.score;
@@ -4520,6 +4669,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <option value="impact_asc">Index Impact Score (Low ➔ High / Pruning)</option>
                     <option value="latency_desc">Query Latency Contribution (High ➔ Low / Most Expensive)</option>
                     <option value="latency_asc">Query Latency Contribution (Low ➔ High / Least Expensive)</option>
+                    <option value="ratio_desc">Usage Ratio (Read Heavy First ➔ High ROI)</option>
+                    <option value="ratio_asc">Usage Ratio (Write Heavy First ➔ Bottlenecks)</option>
                     <option value="query_desc">Query Speedup (+%)</option>
                     <option value="write_asc">Lowest Write Penalty (-%)</option>
                     <option value="health_desc">Health Score</option>
@@ -4665,6 +4816,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   <span>Index Impact Heatmap</span>
                   <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showIndexImpactHeatmap ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-600'}`}>
                     {showIndexImpactHeatmap ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+
+                {/* Usage Heatmap (Read-to-Write Ratio) Toggle Button in Header */}
+                <button
+                  type="button"
+                  id="btn-toggle-usage-heatmap"
+                  data-testid="toggle-usage-heatmap"
+                  onClick={() => setShowUsageHeatmap(!showUsageHeatmap)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    showUsageHeatmap
+                      ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-1 ring-emerald-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Toggle Usage Heatmap: Color-codes indexes based on read-to-write ratio, making Read Heavy (Green) vs Write Heavy (Red) instantly obvious"
+                  aria-label="Toggle Usage Heatmap"
+                >
+                  <TrendingUp className={`w-3.5 h-3.5 ${showUsageHeatmap ? 'text-emerald-200 animate-pulse' : 'text-emerald-600'}`} />
+                  <span>Usage Heatmap (R/W)</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showUsageHeatmap ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'}`}>
+                    {showUsageHeatmap ? 'ON' : 'OFF'}
                   </span>
                 </button>
 
@@ -5270,6 +5442,14 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         Latency Contribution
                                       </th>
                                     )}
+                                    {showUsageHeatmap && (
+                                      <th className="py-2.5 px-3 font-bold text-center bg-gradient-to-r from-emerald-50/90 to-rose-50/90 border-x border-emerald-200 text-zinc-900">
+                                        <div className="flex items-center justify-center gap-1">
+                                          <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+                                          <span>Usage Heatmap (R:W)</span>
+                                        </div>
+                                      </th>
+                                    )}
                                     <th className="py-2.5 px-3 font-bold text-center">Query Gain</th>
                                     <th className="py-2.5 px-3 font-bold text-center">Write Penalty</th>
                                     <th className="py-2.5 px-3 font-bold text-center bg-indigo-50/70 border-x border-indigo-200 text-indigo-950">
@@ -5281,7 +5461,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                 </thead>
                                 <tbody className="divide-y divide-zinc-100">
                                   {indexes.map((item, idx) => {
-                                    const { index, health, impact, latencyHeat, inactivityStats, isRemoved, isLocked } = item;
+                                    const { index, health, impact, latencyHeat, usageHeat, inactivityStats, isRemoved, isLocked } = item;
                                     const isSelected = selectedIndexes.includes(index.name);
                                     return (
                                       <tr
@@ -5291,6 +5471,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         className={`transition-colors ${
                                           isSelected
                                             ? 'bg-indigo-50/70 ring-1 ring-indigo-400'
+                                            : showUsageHeatmap
+                                            ? usageHeat.rowBgClass
                                             : showIndexImpactHeatmap
                                             ? latencyHeat.rowBgClass
                                             : isRemoved
@@ -5341,6 +5523,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                                 <span>Inactive &gt;7d ({inactivityStats.daysInactive}d)</span>
                                               </span>
                                             )}
+                                            {showUsageHeatmap && (
+                                              <span
+                                                id={`grouped-row-usage-heatmap-badge-${index.name}`}
+                                                data-testid={`grouped-row-usage-heatmap-badge-${index.name}`}
+                                                className={`px-1.5 py-0.2 rounded text-[9px] font-bold border shadow-2xs inline-flex items-center gap-0.5 ${usageHeat.badgeClass}`}
+                                                title={`Usage Heatmap: ${usageHeat.ratio}x Read:Write Ratio (${usageHeat.reads.toLocaleString()} reads vs ${usageHeat.writes.toLocaleString()} writes). ${usageHeat.verdict}`}
+                                              >
+                                                <TrendingUp className="w-2.5 h-2.5 shrink-0" />
+                                                <span>{usageHeat.badgeLabel}</span>
+                                              </span>
+                                            )}
                                           </div>
                                         </td>
                                         <td className="py-3 px-3">
@@ -5351,6 +5544,40 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         {showIndexImpactHeatmap && (
                                           <td className="py-3 px-3 text-center bg-rose-50/30 border-x border-rose-100 font-mono font-bold">
                                             <span className={latencyHeat.textClass}>{latencyHeat.queryLatencyContributionMs}ms</span>
+                                          </td>
+                                        )}
+                                        {showUsageHeatmap && (
+                                          <td className="py-3 px-3 text-center bg-zinc-50/40 border-x border-zinc-200/80">
+                                            <div className="flex flex-col items-center justify-center gap-0.5">
+                                              <div className="flex items-center gap-1 font-mono text-xs font-bold">
+                                                <span className={usageHeat.textColor}>{usageHeat.ratio}x</span>
+                                                <span className={`text-[9px] px-1 py-0.2 rounded font-semibold ${
+                                                  usageHeat.usageTier === 'read-heavy'
+                                                    ? 'bg-emerald-100 text-emerald-800'
+                                                    : usageHeat.usageTier === 'write-heavy'
+                                                    ? 'bg-rose-100 text-rose-800'
+                                                    : 'bg-amber-100 text-amber-800'
+                                                }`}>
+                                                  {usageHeat.label}
+                                                </span>
+                                              </div>
+                                              <div className="w-20 bg-zinc-200 h-1.5 rounded-full overflow-hidden flex shadow-inner">
+                                                <div
+                                                  className="h-full bg-emerald-500"
+                                                  style={{ width: `${usageHeat.readPercentage}%` }}
+                                                  title={`Reads: ${usageHeat.reads.toLocaleString()} (${usageHeat.readPercentage}%)`}
+                                                />
+                                                <div
+                                                  className="h-full bg-rose-500"
+                                                  style={{ width: `${usageHeat.writePercentage}%` }}
+                                                  title={`Writes: ${usageHeat.writes.toLocaleString()} (${usageHeat.writePercentage}%)`}
+                                                />
+                                              </div>
+                                              <div className="text-[9px] font-mono text-zinc-500 flex items-center justify-between w-20">
+                                                <span className="text-emerald-700 font-bold">{usageHeat.readPercentage}%R</span>
+                                                <span className="text-rose-700 font-bold">{usageHeat.writePercentage}%W</span>
+                                              </div>
+                                            </div>
                                           </td>
                                         )}
                                         <td className="py-3 px-3 text-center font-mono font-bold text-emerald-700">
@@ -5423,7 +5650,35 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-3 font-mono text-[11px] text-zinc-500">
+                  <div className="flex items-center gap-3 font-mono text-[11px] text-zinc-500 flex-wrap">
+                    {showUsageHeatmap && (
+                      <div
+                        id="index-usage-heatmap-legend"
+                        data-testid="index-usage-heatmap-legend"
+                        className="flex flex-wrap items-center gap-2 bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-rose-50/90 border border-emerald-300/80 px-2.5 py-1 rounded-md text-emerald-950 font-sans shadow-2xs text-[11px]"
+                      >
+                        <span className="font-bold flex items-center gap-1 text-emerald-900">
+                          <TrendingUp className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          <span>Usage Heatmap:</span>
+                        </span>
+                        <span className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-950 border border-emerald-400 font-bold text-[10px]">
+                          <span className="w-2 h-2 rounded-full bg-emerald-600 shrink-0"></span>
+                          <span>Read Heavy (Green)</span>
+                        </span>
+                        <span className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-teal-50 text-teal-900 border border-teal-200 font-medium text-[10px]">
+                          <span className="w-2 h-2 rounded-full bg-teal-500 shrink-0"></span>
+                          <span>Read Leaning</span>
+                        </span>
+                        <span className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-50 text-amber-900 border border-amber-200 font-medium text-[10px]">
+                          <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0"></span>
+                          <span>Balanced</span>
+                        </span>
+                        <span className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-rose-100 text-rose-950 border border-rose-400 font-bold text-[10px]">
+                          <span className="w-2 h-2 rounded-full bg-rose-600 shrink-0"></span>
+                          <span>Write Heavy (Red)</span>
+                        </span>
+                      </div>
+                    )}
                     {showIndexImpactHeatmap && (
                       <div
                         id="index-latency-heatmap-legend"
@@ -5432,7 +5687,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                       >
                         <span className="font-bold flex items-center gap-1 text-rose-800">
                           <Flame className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
-                          <span>Heatmap:</span>
+                          <span>Latency Heatmap:</span>
                         </span>
                         <span className="flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-rose-600"></span>
@@ -5496,6 +5751,14 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                             </div>
                           </th>
                         )}
+                        {showUsageHeatmap && (
+                          <th className="py-2.5 px-3 font-bold text-center bg-gradient-to-r from-emerald-50/90 to-rose-50/90 border-x border-emerald-200 text-zinc-900">
+                            <div className="flex items-center justify-center gap-1">
+                              <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>Usage Heatmap (R:W)</span>
+                            </div>
+                          </th>
+                        )}
                         <th className="py-2.5 px-3 font-bold text-center">
                           <div className="flex items-center justify-center gap-1">
                             <Zap className="w-3 h-3 text-amber-500" />
@@ -5521,13 +5784,13 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <tbody className="divide-y divide-zinc-100">
                       {allRankedSchemaIndexes.length === 0 ? (
                         <tr>
-                          <td colSpan={showIndexImpactHeatmap ? 10 : 9} className="py-8 text-center text-zinc-500 font-sans">
+                          <td colSpan={9 + (showIndexImpactHeatmap ? 1 : 0) + (showUsageHeatmap ? 1 : 0)} className="py-8 text-center text-zinc-500 font-sans">
                             No indexes matching &ldquo;{indexSearchQuery}&rdquo; found in the selected filter.
                           </td>
                         </tr>
                       ) : (
                         allRankedSchemaIndexes.map((item, idx) => {
-                          const { index, table, entityBadge, health, impact, latencyHeat, inactivityStats, isRemoved, isLocked } = item;
+                          const { index, table, entityBadge, health, impact, latencyHeat, usageHeat, inactivityStats, isRemoved, isLocked } = item;
                           const isSelected = selectedIndexes.includes(index.name);
                           return (
                             <tr
@@ -5537,6 +5800,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               className={`transition-colors ${
                                 isSelected
                                   ? 'bg-indigo-50/70 ring-1 ring-indigo-400'
+                                  : showUsageHeatmap
+                                  ? usageHeat.rowBgClass
                                   : showIndexImpactHeatmap
                                   ? latencyHeat.rowBgClass
                                   : isRemoved
@@ -5594,6 +5859,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                     >
                                       <Clock className="w-3 h-3 text-amber-700 shrink-0" />
                                       <span>Inactive &gt;7d ({inactivityStats.daysInactive}d)</span>
+                                    </span>
+                                  )}
+                                  {showUsageHeatmap && (
+                                    <span
+                                      id={`table-row-usage-heatmap-badge-${index.name}`}
+                                      data-testid={`table-row-usage-heatmap-badge-${index.name}`}
+                                      className={`px-1.5 py-0.2 rounded text-[9px] font-bold border shadow-2xs inline-flex items-center gap-0.5 ${usageHeat.badgeClass}`}
+                                      title={`Usage Heatmap: ${usageHeat.ratio}x Read:Write Ratio (${usageHeat.reads.toLocaleString()} reads vs ${usageHeat.writes.toLocaleString()} writes). ${usageHeat.verdict}`}
+                                    >
+                                      <TrendingUp className="w-2.5 h-2.5 shrink-0" />
+                                      <span>{usageHeat.badgeLabel}</span>
                                     </span>
                                   )}
                                   {showIndexImpactHeatmap && (
@@ -5658,6 +5934,48 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         }`}
                                         style={{ width: `${Math.min(100, Math.round((latencyHeat.queryLatencyContributionMs / 840) * 100))}%` }}
                                       />
+                                    </div>
+                                  </div>
+                                </td>
+                              )}
+
+                              {/* Usage Heatmap Column (Read-to-Write Ratio) */}
+                              {showUsageHeatmap && (
+                                <td className="py-3 px-3 text-center bg-zinc-50/40 border-x border-zinc-200/80">
+                                  <div className="flex flex-col items-center justify-center gap-0.5">
+                                    <div className="flex items-center gap-1 font-mono text-xs font-bold">
+                                      <span
+                                        id={`table-usage-ratio-${index.name}`}
+                                        data-testid={`table-usage-ratio-${index.name}`}
+                                        className={usageHeat.textColor}
+                                      >
+                                        {usageHeat.ratio}x
+                                      </span>
+                                      <span className={`text-[9px] px-1 py-0.2 rounded font-semibold ${
+                                        usageHeat.usageTier === 'read-heavy'
+                                          ? 'bg-emerald-100 text-emerald-800'
+                                          : usageHeat.usageTier === 'write-heavy'
+                                          ? 'bg-rose-100 text-rose-800'
+                                          : 'bg-amber-100 text-amber-800'
+                                      }`}>
+                                        {usageHeat.label}
+                                      </span>
+                                    </div>
+                                    <div className="w-20 bg-zinc-200 h-1.5 rounded-full overflow-hidden flex shadow-inner">
+                                      <div
+                                        className="h-full bg-emerald-500 transition-all duration-300"
+                                        style={{ width: `${usageHeat.readPercentage}%` }}
+                                        title={`Reads: ${usageHeat.reads.toLocaleString()} (${usageHeat.readPercentage}%)`}
+                                      />
+                                      <div
+                                        className="h-full bg-rose-500 transition-all duration-300"
+                                        style={{ width: `${usageHeat.writePercentage}%` }}
+                                        title={`Writes: ${usageHeat.writes.toLocaleString()} (${usageHeat.writePercentage}%)`}
+                                      />
+                                    </div>
+                                    <div className="text-[9px] font-mono text-zinc-500 flex items-center justify-between w-20">
+                                      <span className="text-emerald-700 font-bold">{usageHeat.readPercentage}%R</span>
+                                      <span className="text-rose-700 font-bold">{usageHeat.writePercentage}%W</span>
                                     </div>
                                   </div>
                                 </td>
@@ -5978,6 +6296,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                               const isLocked = lockedIndexes.includes(idx.name);
                               const impact = calculateIndexImpactScore(idx.name, idx.active, tbl.name, isRemoved, isLocked);
                               const latencyHeat = calculateIndexLatencyContribution(idx.name, idx.active, tbl.name, isRemoved);
+                              const usageHeat = calculateIndexUsageHeatmap(idx.name, idx.active, tbl.name, isRemoved);
                               const isSelected = selectedIndexes.includes(idx.name);
 
                               return (
@@ -5988,6 +6307,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                   className={`relative p-3.5 rounded-xl border flex flex-col justify-between transition-all duration-300 ${
                                     isSelected
                                       ? 'ring-2 ring-indigo-500 border-indigo-400 bg-indigo-50/40 shadow-sm'
+                                      : showUsageHeatmap
+                                      ? `${usageHeat.cardBgClass} ${animatingBulkIndexName === idx.name ? 'scale-[1.01] ring-2 ring-emerald-400' : ''}`
                                       : showIndexImpactHeatmap
                                       ? `${latencyHeat.cardBgClass} ${animatingBulkIndexName === idx.name ? 'scale-[1.01] ring-2 ring-emerald-400' : ''}`
                                       : animatingBulkIndexName === idx.name
@@ -6252,6 +6573,19 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                           </span>
                                         </span>
 
+                                        {/* Color-Coded Usage Heatmap (Read/Write Ratio) Badge */}
+                                        {showUsageHeatmap && (
+                                          <span
+                                            id={`card-usage-heat-${idx.name}`}
+                                            data-testid={`card-usage-heat-${idx.name}`}
+                                            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 shadow-2xs transition-all ${usageHeat.badgeClass}`}
+                                            title={`Read-to-Write Ratio: ${usageHeat.ratio}x (${usageHeat.reads.toLocaleString()} reads vs ${usageHeat.writes.toLocaleString()} writes). ${usageHeat.verdict}`}
+                                          >
+                                            <TrendingUp className="w-3 h-3 shrink-0" />
+                                            <span>{usageHeat.badgeLabel}</span>
+                                          </span>
+                                        )}
+
                                         {/* Color-Coded Index Impact Heatmap Latency Badge */}
                                         {showIndexImpactHeatmap && (
                                           <span
@@ -6284,6 +6618,43 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                                         </span>
                                       </div>
                                     </div>
+
+                                    {showUsageHeatmap && (
+                                      <div className="p-2 rounded-lg bg-white/80 border border-zinc-200/80 my-1 text-xs space-y-1">
+                                        <div className="flex items-center justify-between text-[10px] font-mono">
+                                          <span className="flex items-center gap-1 font-bold text-zinc-800">
+                                            <TrendingUp className="w-3 h-3 text-emerald-600" />
+                                            <span>Read:Write Ratio:</span>
+                                            <strong className={usageHeat.textColor}>{usageHeat.ratio}x</strong>
+                                          </span>
+                                          <span className={`px-1.5 py-0.2 rounded font-bold text-[9px] ${
+                                            usageHeat.usageTier === 'read-heavy'
+                                              ? 'bg-emerald-100 text-emerald-900'
+                                              : usageHeat.usageTier === 'write-heavy'
+                                              ? 'bg-rose-100 text-rose-900'
+                                              : 'bg-amber-100 text-amber-900'
+                                          }`}>
+                                            {usageHeat.label}
+                                          </span>
+                                        </div>
+                                        <div className="w-full bg-zinc-200 h-2 rounded-full overflow-hidden flex shadow-inner">
+                                          <div
+                                            className="h-full bg-emerald-500 transition-all duration-300"
+                                            style={{ width: `${usageHeat.readPercentage}%` }}
+                                            title={`Reads: ${usageHeat.reads.toLocaleString()} (${usageHeat.readPercentage}%)`}
+                                          />
+                                          <div
+                                            className="h-full bg-rose-500 transition-all duration-300"
+                                            style={{ width: `${usageHeat.writePercentage}%` }}
+                                            title={`Writes: ${usageHeat.writes.toLocaleString()} (${usageHeat.writePercentage}%)`}
+                                          />
+                                        </div>
+                                        <div className="flex items-center justify-between text-[9px] font-mono text-zinc-500">
+                                          <span className="text-emerald-700 font-bold">{usageHeat.reads.toLocaleString()} reads/hr ({usageHeat.readPercentage}%)</span>
+                                          <span className="text-rose-700 font-bold">{usageHeat.writes.toLocaleString()} writes/hr ({usageHeat.writePercentage}%)</span>
+                                        </div>
+                                      </div>
+                                    )}
 
                                     <div className="flex items-center justify-between gap-2 flex-wrap pt-1 pb-2">
                                       <div className="text-[11px] text-zinc-500 font-mono">
@@ -7617,6 +7988,21 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
             <span>AI Index Suggestions &amp; &apos;Why&apos; Panel</span>
             <span className="px-1.5 py-0.2 bg-black/20 text-white rounded-full text-[10px] font-mono font-bold">
               {indexSuggestions.filter(s => !s.isApplied).length} Available
+            </span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-intelligent-indexing-advisor"
+            data-testid="btn-intelligent-indexing-advisor"
+            onClick={() => setShowIntelligentAdvisorModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-cyan-600 via-teal-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border border-cyan-400/40"
+            title="Open Intelligent Indexing Advisor to cross-reference query patterns with missing covering indexes and apply One-Click Patches"
+          >
+            <Compass className="w-3.5 h-3.5 text-cyan-200" />
+            <span>Intelligent Indexing Advisor</span>
+            <span className="px-1.5 py-0.2 bg-black/25 text-cyan-100 rounded-full text-[10px] font-mono font-bold">
+              {COVERING_INDEX_CATALOG.filter(p => !patchedCoveringIndexIds.includes(p.id)).length} Missing
             </span>
           </button>
 
@@ -11735,6 +12121,17 @@ CREATE INDEX CONCURRENTLY idx_transactions_email ON transactions (email) INCLUDE
           </div>
         </div>
       )}
+
+      {/* Intelligent Indexing Advisor Modal */}
+      <IntelligentIndexingAdvisorModal
+        isOpen={showIntelligentAdvisorModal}
+        onClose={() => setShowIntelligentAdvisorModal(false)}
+        onApplyCoveringIndex={handleApplyCoveringPatch}
+        onApplyAllPatches={handleApplyAllCoveringPatches}
+        patchedIndexIds={patchedCoveringIndexIds}
+        flags={flags}
+        onToggleFlag={onToggleFlag}
+      />
     </div>
   );
 };

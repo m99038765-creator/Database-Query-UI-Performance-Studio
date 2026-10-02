@@ -48,7 +48,9 @@ import {
   Sparkles,
   TrendingUp,
   Pin,
-  ArrowUp
+  ArrowUp,
+  Layers,
+  Cpu
 } from 'lucide-react';
 import {
   exportRecords,
@@ -109,8 +111,20 @@ interface VirtualizedTableProps {
   onAutoOptimize?: () => void;
   showLatencyHeatmapProp?: boolean;
   onToggleLatencyHeatmap?: (enabled: boolean) => void;
+  activeHeatmapLayersProp?: LatencyHeatmapLayersState;
+  onHeatmapLayersChange?: (layers: LatencyHeatmapLayersState) => void;
   executionTimeMs?: number;
+  isLoading?: boolean;
+  onSimulateHeavyFetch?: () => void;
 }
+
+export interface LatencyHeatmapLayersState {
+  dataFetch: boolean;   // Row Data Fetch Time (DB query, network, unbatched N+1 child joins)
+  rowRender: boolean;   // Row Render Time (React 19 reconciliation, virtual DOM windowing overhead)
+  domHydration: boolean;// DOM Hydration Cost (Virtual DOM element mounting, layout calculation reflow)
+}
+
+export type LatencyHeatmapBlendingMode = 'composite' | 'dominant';
 
 const getRowSparklinePoints = (recordId: string, baseLatency: number, isUnoptimized: boolean) => {
   const points: number[] = [];
@@ -348,7 +362,11 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   cacheHit = false,
   onAutoOptimize = () => {},
   showLatencyHeatmapProp,
-  onToggleLatencyHeatmap
+  onToggleLatencyHeatmap,
+  activeHeatmapLayersProp,
+  onHeatmapLayersChange,
+  isLoading = false,
+  onSimulateHeavyFetch
 }) => {
   const safeFlags: OptimizationFlags = {
     batchEagerLoading: true,
@@ -357,6 +375,32 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     virtualizedDOM: virtualizedEnabled !== undefined ? virtualizedEnabled : true,
     deferredRendering: true,
     ...(flags || {})
+  };
+
+  // Ghost Rows & Heavy Loading State
+  const [isHeavyLoading, setIsHeavyLoading] = useState<boolean>(Boolean(isLoading));
+  const [ghostRowsEnabled, setGhostRowsEnabled] = useState<boolean>(true);
+  const [ghostRowsCount] = useState<number>(12);
+  const [heavyLoadingMessage, setHeavyLoadingMessage] = useState<string>('Fetching dataset batch...');
+  const [fetchToast, setFetchToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof isLoading === 'boolean') {
+      setIsHeavyLoading(isLoading);
+    }
+  }, [isLoading]);
+
+  const triggerHeavyLoadingSimulation = (durationMs = 1200, message = 'Fetching dataset batch...') => {
+    setHeavyLoadingMessage(message);
+    setIsHeavyLoading(true);
+    setTimeout(() => {
+      setIsHeavyLoading(false);
+      setFetchToast(`Loaded ${records.length.toLocaleString()} rows • Ghost placeholders maintained layout stability`);
+      setTimeout(() => setFetchToast(null), 3500);
+    }, durationMs);
+    if (onSimulateHeavyFetch) {
+      onSimulateHeavyFetch();
+    }
   };
 
   const currentSearchTerm = searchTerm ?? searchQuery ?? '';
@@ -451,6 +495,151 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   const [internalShowHeatmap, setInternalShowHeatmap] = useState(true);
   const showLatencyHeatmap = showLatencyHeatmapProp ?? internalShowHeatmap;
   const setShowLatencyHeatmap = onToggleLatencyHeatmap ?? setInternalShowHeatmap;
+
+  // Dedicated Latency Heatmap Layers Sub-menu State (Row Render Time, Data Fetch Time, DOM Hydration Cost)
+  const [heatmapLayers, setHeatmapLayers] = useState<LatencyHeatmapLayersState>(() => {
+    if (activeHeatmapLayersProp) return activeHeatmapLayersProp;
+    try {
+      const saved = localStorage.getItem('virtualized_table_heatmap_layers');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed.dataFetch === 'boolean' && typeof parsed.rowRender === 'boolean' && typeof parsed.domHydration === 'boolean') {
+          return parsed;
+        }
+      }
+    } catch {}
+    return {
+      dataFetch: true,
+      rowRender: true,
+      domHydration: true,
+    };
+  });
+
+  const [heatmapBlendingMode, setHeatmapBlendingMode] = useState<LatencyHeatmapBlendingMode>('composite');
+  const [heatmapLayersMenuAnchor, setHeatmapLayersMenuAnchor] = useState<'header' | 'toolbar' | null>(null);
+  const isHeatmapLayersMenuOpen = heatmapLayersMenuAnchor !== null;
+  const setIsHeatmapLayersMenuOpen = (open: boolean) => setHeatmapLayersMenuAnchor(open ? (heatmapLayersMenuAnchor || 'toolbar') : null);
+  const heatmapMenuRef = useRef<HTMLDivElement | null>(null);
+  const heatmapToolbarMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // Sync to localStorage and prop
+  useEffect(() => {
+    try {
+      localStorage.setItem('virtualized_table_heatmap_layers', JSON.stringify(heatmapLayers));
+    } catch {}
+    if (onHeatmapLayersChange) {
+      onHeatmapLayersChange(heatmapLayers);
+    }
+  }, [heatmapLayers, onHeatmapLayersChange]);
+
+  // Click outside and Escape key listener to close sub-menu
+  useEffect(() => {
+    if (!isHeatmapLayersMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        (heatmapMenuRef.current && heatmapMenuRef.current.contains(target)) ||
+        (heatmapToolbarMenuRef.current && heatmapToolbarMenuRef.current.contains(target))
+      ) {
+        return;
+      }
+      setHeatmapLayersMenuAnchor(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setHeatmapLayersMenuAnchor(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isHeatmapLayersMenuOpen]);
+
+  const activeHeatmapLayerCount = (heatmapLayers.dataFetch ? 1 : 0) + (heatmapLayers.rowRender ? 1 : 0) + (heatmapLayers.domHydration ? 1 : 0);
+  const isAnyHeatmapLayerActive = showLatencyHeatmap && activeHeatmapLayerCount > 0;
+
+  // Layer toggling handlers
+  const handleToggleHeatmapLayer = (layerKey: keyof LatencyHeatmapLayersState) => {
+    setHeatmapLayers((prev) => {
+      const next = { ...prev, [layerKey]: !prev[layerKey] };
+      // If toggling on, also make sure showLatencyHeatmap is true
+      if (next[layerKey] && !showLatencyHeatmap) {
+        setShowLatencyHeatmap(true);
+      }
+      return next;
+    });
+  };
+
+  const handleSetAllHeatmapLayers = (enabled: boolean) => {
+    setHeatmapLayers({
+      dataFetch: enabled,
+      rowRender: enabled,
+      domHydration: enabled,
+    });
+    setShowLatencyHeatmap(enabled);
+  };
+
+  const handleIsolateHeatmapLayer = (layerKey: keyof LatencyHeatmapLayersState) => {
+    setHeatmapLayers({
+      dataFetch: layerKey === 'dataFetch',
+      rowRender: layerKey === 'rowRender',
+      domHydration: layerKey === 'domHydration',
+    });
+    setShowLatencyHeatmap(true);
+  };
+
+  // Helper to compute individual and composite latency breakdown for a given record
+  const computeRowLatencyBreakdown = (rec: TransactionRecord) => {
+    const recordItemCount = rec.items && rec.items.length > 0 ? rec.items.length : (rec.itemCount || 1);
+    const unoptimizedMultiplier = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
+    const indexPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
+
+    // 1. Data Fetch Time (DB query, network serialization, unbatched N+1 child lookups)
+    const dataFetchMs = cacheHit 
+      ? 0.9 
+      : safeFlags.batchEagerLoading 
+      ? +(recordItemCount * 3.5 + 8.0).toFixed(1) 
+      : +(20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty).toFixed(1);
+
+    // 2. Row Render Time (React reconciliation, virtual DOM windowing overhead, cell formatting)
+    const baseRender = safeFlags.virtualizedDOM ? 0.7 : 8.5;
+    const deferredOverhead = safeFlags.deferredRendering ? 0 : 2.5;
+    const rowRenderMs = +(baseRender + deferredOverhead + (recordItemCount * (safeFlags.virtualizedDOM ? 0.15 : 1.2))).toFixed(1);
+
+    // 3. DOM Hydration Cost (Virtual DOM element mounting, layout calculation, item tags reflow)
+    const isRowExpanded = expandedRows.has(rec.id);
+    const baseHydration = safeFlags.virtualizedDOM ? 0.5 : 4.8;
+    const expansionHydration = isRowExpanded ? (recordItemCount * 0.8 + 2.4) : 0;
+    const domHydrationMs = +(baseHydration + expansionHydration + (rec.status === 'flagged' ? 0.8 : 0.2)).toFixed(1);
+
+    // Active composite latency value:
+    let compositeActiveMs = 0;
+    if (heatmapLayers.dataFetch) compositeActiveMs += dataFetchMs;
+    if (heatmapLayers.rowRender) compositeActiveMs += rowRenderMs;
+    if (heatmapLayers.domHydration) compositeActiveMs += domHydrationMs;
+    compositeActiveMs = +compositeActiveMs.toFixed(1);
+
+    // Dominant layer latency:
+    const activeValues: number[] = [];
+    if (heatmapLayers.dataFetch) activeValues.push(dataFetchMs);
+    if (heatmapLayers.rowRender) activeValues.push(rowRenderMs);
+    if (heatmapLayers.domHydration) activeValues.push(domHydrationMs);
+    const dominantActiveMs = activeValues.length > 0 ? Math.max(...activeValues) : 0;
+
+    const effectiveLatencyMs = heatmapBlendingMode === 'dominant' ? dominantActiveMs : compositeActiveMs;
+
+    return {
+      dataFetchMs,
+      rowRenderMs,
+      domHydrationMs,
+      compositeActiveMs,
+      effectiveLatencyMs,
+      recordItemCount
+    };
+  };
 
   // Minimum Latency Filter Slider State (isolates performance-heavy records)
   const [minLatencyFilterMs, setMinLatencyFilterMs] = useState<number>(0);
@@ -827,36 +1016,57 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     if (showSelectedOnly) {
       list = list.filter((r) => selectedRowIds.has(r.id));
     }
-    if (!safeFlags.batchEagerLoading && minLatencyFilterMs > 0) {
+    if (minLatencyFilterMs > 0) {
       list = list.filter((r) => {
-        const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
-        const unoptMult = 45.0;
-        const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
-        const latencyMs = 20.0 + (itemCnt * unoptMult) + idxPenalty;
-        return latencyMs >= minLatencyFilterMs;
+        const { effectiveLatencyMs } = computeRowLatencyBreakdown(r);
+        return effectiveLatencyMs >= minLatencyFilterMs;
       });
     }
     return list;
-  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, timeMachineIndex, activeTimeMachineSnapshot]);
+  }, [records, showSelectedOnly, selectedRowIds, minLatencyFilterMs, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, timeMachineIndex, activeTimeMachineSnapshot, expandedRows, cacheHit]);
 
   // Rolling Z-scores and anomaly detection service for displayed records
   const anomalyMap = useMemo(() => {
     return calculateRollingZScores(displayRecords);
   }, [displayRecords]);
 
-  // Average table latency across displayed records
+  // Average table latency across displayed records based on active heatmap layers
   const averageTableLatencyMs = useMemo(() => {
     if (displayRecords.length === 0) return 0;
     let total = 0;
     for (const r of displayRecords) {
-      const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
-      const unoptMult = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
-      const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
-      const latencyMs = safeFlags.batchEagerLoading ? (itemCnt * 4.0 + 10.0) : (20.0 + (itemCnt * unoptMult) + idxPenalty);
-      total += latencyMs;
+      const { effectiveLatencyMs } = computeRowLatencyBreakdown(r);
+      total += effectiveLatencyMs;
     }
-    return total / displayRecords.length;
-  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+    return +(total / displayRecords.length).toFixed(1);
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRows, cacheHit]);
+
+  // Compute dataset-wide layer averages for the sub-menu indicators
+  const datasetLayerAverages = useMemo(() => {
+    if (displayRecords.length === 0) {
+      return { avgFetchMs: 12.5, avgRenderMs: 1.2, avgHydrationMs: 0.8, avgTotalMs: 14.5 };
+    }
+    let totalFetch = 0;
+    let totalRender = 0;
+    let totalHydration = 0;
+    let totalActive = 0;
+
+    for (const r of displayRecords) {
+      const breakdown = computeRowLatencyBreakdown(r);
+      totalFetch += breakdown.dataFetchMs;
+      totalRender += breakdown.rowRenderMs;
+      totalHydration += breakdown.domHydrationMs;
+      totalActive += breakdown.effectiveLatencyMs;
+    }
+
+    const count = displayRecords.length;
+    return {
+      avgFetchMs: +(totalFetch / count).toFixed(1),
+      avgRenderMs: +(totalRender / count).toFixed(1),
+      avgHydrationMs: +(totalHydration / count).toFixed(1),
+      avgTotalMs: +(totalActive / count).toFixed(1)
+    };
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRows, cacheHit]);
 
   const historicalAverageLatency = 24.5;
   const isPerformanceRegressed = averageTableLatencyMs > historicalAverageLatency * 1.20;
@@ -868,32 +1078,285 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
 
   // Query execution cost bounds for relative heatmap shading across displayed records
   const { minRowCost, maxRowCost } = useMemo(() => {
-    if (displayRecords.length === 0) return { minRowCost: 10, maxRowCost: 50 };
+    if (displayRecords.length === 0) return { minRowCost: 5, maxRowCost: 50 };
     let min = Infinity;
     let max = -Infinity;
     for (const r of displayRecords) {
-      const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
-      const unoptMult = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
-      const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
-      const cost = safeFlags.batchEagerLoading ? (itemCnt * 4.0 + 10.0) : (20.0 + (itemCnt * unoptMult) + idxPenalty);
-      if (cost < min) min = cost;
-      if (cost > max) max = cost;
+      const { effectiveLatencyMs } = computeRowLatencyBreakdown(r);
+      if (effectiveLatencyMs < min) min = effectiveLatencyMs;
+      if (effectiveLatencyMs > max) max = effectiveLatencyMs;
     }
     return {
-      minRowCost: min === Infinity ? 10 : min,
+      minRowCost: min === Infinity ? 5 : min,
       maxRowCost: max === -Infinity ? 50 : Math.max(max, min + 1)
     };
-  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing]);
+  }, [displayRecords, safeFlags.batchEagerLoading, safeFlags.btreeIndexing, safeFlags.virtualizedDOM, safeFlags.deferredRendering, heatmapLayers, heatmapBlendingMode, expandedRows, cacheHit]);
+
+  // Reusable sub-menu popover for Latency Heatmap Layers
+  const renderHeatmapLayersPopover = (align: 'left' | 'right' = 'left') => (
+    <div
+      id="submenu-heatmap-layers"
+      data-testid="submenu-heatmap-layers"
+      className={`absolute ${align === 'right' ? 'right-0' : 'left-0'} top-full mt-2 w-80 sm:w-96 bg-white rounded-xl shadow-2xl border border-zinc-200 p-4 z-50 animate-fadeIn text-zinc-800 text-xs divide-y divide-zinc-100`}
+    >
+      {/* Sub-menu Header */}
+      <div className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <div className="p-1.5 rounded-lg bg-rose-100 text-rose-700">
+              <Flame className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="font-bold text-zinc-900 text-xs flex items-center gap-1.5">
+                <span>Latency Heatmap Layers</span>
+                <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${
+                  isAnyHeatmapLayerActive ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-100 text-zinc-500'
+                }`}>
+                  {isAnyHeatmapLayerActive ? `${activeHeatmapLayerCount} Active` : 'Inactive'}
+                </span>
+              </h4>
+              <p className="text-[11px] text-zinc-500">
+                Toggle specific performance bottleneck dimensions
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setHeatmapLayersMenuAnchor(null)}
+            className="p-1 rounded-md text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 cursor-pointer"
+            title="Close sub-menu"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Individual Layer Toggles */}
+      <div className="py-3 space-y-2.5">
+        {/* Layer 1: Data Fetch Time */}
+        <div
+          id="layer-card-data-fetch"
+          data-testid="layer-card-data-fetch"
+          onClick={() => handleToggleHeatmapLayer('dataFetch')}
+          className={`p-2.5 rounded-lg border transition-all cursor-pointer flex items-start gap-2.5 ${
+            heatmapLayers.dataFetch
+              ? 'bg-rose-50/70 border-rose-300 ring-1 ring-rose-400/30'
+              : 'bg-zinc-50/60 border-zinc-200 hover:bg-zinc-100/60 opacity-75'
+          }`}
+        >
+          <input
+            type="checkbox"
+            id="toggle-layer-data-fetch"
+            data-testid="toggle-layer-data-fetch"
+            checked={heatmapLayers.dataFetch}
+            onChange={(e) => {
+              e.stopPropagation();
+              handleToggleHeatmapLayer('dataFetch');
+            }}
+            className="mt-0.5 w-4 h-4 rounded border-rose-300 text-rose-600 focus:ring-rose-500 accent-rose-600 cursor-pointer shrink-0"
+          />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-1 flex-wrap">
+              <span className="font-bold text-zinc-900 text-xs flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <span>Data Fetch Time</span>
+              </span>
+              <div className="flex items-center gap-1 font-mono text-[10px]">
+                <span className="px-1.5 py-0.2 rounded bg-rose-100 text-rose-900 border border-rose-200 font-bold">
+                  Avg: {datasetLayerAverages.avgFetchMs}ms
+                </span>
+              </div>
+            </div>
+            <p className="text-[11px] text-zinc-600 mt-0.5 leading-tight">
+              Database queries, disk page reads, and unbatched N+1 child joins.
+            </p>
+          </div>
+        </div>
+
+        {/* Layer 2: Row Render Time */}
+        <div
+          id="layer-card-row-render"
+          data-testid="layer-card-row-render"
+          onClick={() => handleToggleHeatmapLayer('rowRender')}
+          className={`p-2.5 rounded-lg border transition-all cursor-pointer flex items-start gap-2.5 ${
+            heatmapLayers.rowRender
+              ? 'bg-amber-50/70 border-amber-300 ring-1 ring-amber-400/30'
+              : 'bg-zinc-50/60 border-zinc-200 hover:bg-zinc-100/60 opacity-75'
+          }`}
+        >
+          <input
+            type="checkbox"
+            id="toggle-layer-row-render"
+            data-testid="toggle-layer-row-render"
+            checked={heatmapLayers.rowRender}
+            onChange={(e) => {
+              e.stopPropagation();
+              handleToggleHeatmapLayer('rowRender');
+            }}
+            className="mt-0.5 w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer shrink-0"
+          />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-1 flex-wrap">
+              <span className="font-bold text-zinc-900 text-xs flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span>Row Render Time</span>
+              </span>
+              <div className="flex items-center gap-1 font-mono text-[10px]">
+                <span className="px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 border border-amber-200 font-bold">
+                  Avg: {datasetLayerAverages.avgRenderMs}ms
+                </span>
+              </div>
+            </div>
+            <p className="text-[11px] text-zinc-600 mt-0.5 leading-tight">
+              React 19 reconciliation, virtual DOM windowing calculations, and cell parsing.
+            </p>
+          </div>
+        </div>
+
+        {/* Layer 3: DOM Hydration Cost */}
+        <div
+          id="layer-card-dom-hydration"
+          data-testid="layer-card-dom-hydration"
+          onClick={() => handleToggleHeatmapLayer('domHydration')}
+          className={`p-2.5 rounded-lg border transition-all cursor-pointer flex items-start gap-2.5 ${
+            heatmapLayers.domHydration
+              ? 'bg-purple-50/70 border-purple-300 ring-1 ring-purple-400/30'
+              : 'bg-zinc-50/60 border-zinc-200 hover:bg-zinc-100/60 opacity-75'
+          }`}
+        >
+          <input
+            type="checkbox"
+            id="toggle-layer-dom-hydration"
+            data-testid="toggle-layer-dom-hydration"
+            checked={heatmapLayers.domHydration}
+            onChange={(e) => {
+              e.stopPropagation();
+              handleToggleHeatmapLayer('domHydration');
+            }}
+            className="mt-0.5 w-4 h-4 rounded border-purple-300 text-purple-600 focus:ring-purple-500 accent-purple-600 cursor-pointer shrink-0"
+          />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-1 flex-wrap">
+              <span className="font-bold text-zinc-900 text-xs flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                <span>DOM Hydration Cost</span>
+              </span>
+              <div className="flex items-center gap-1 font-mono text-[10px]">
+                <span className="px-1.5 py-0.2 rounded bg-purple-100 text-purple-900 border border-purple-200 font-bold">
+                  Avg: {datasetLayerAverages.avgHydrationMs}ms
+                </span>
+              </div>
+            </div>
+            <p className="text-[11px] text-zinc-600 mt-0.5 leading-tight">
+              Browser DOM node mounting, layout reflow, and expanded item tree layout cost.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Layer Presets & Quick Selection */}
+      <div className="py-2.5">
+        <div className="flex items-center justify-between gap-1.5 mb-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+            Quick Presets:
+          </span>
+          <span className="text-[10px] font-mono text-zinc-500">
+            Composite: <strong className="text-zinc-900">{datasetLayerAverages.avgTotalMs}ms</strong>
+          </span>
+        </div>
+        <div className="flex items-center gap-1 flex-wrap">
+          <button
+            type="button"
+            id="btn-preset-all-layers"
+            data-testid="btn-preset-all-layers"
+            onClick={() => handleSetAllHeatmapLayers(true)}
+            className="px-2 py-1 rounded bg-zinc-100 hover:bg-zinc-200 text-zinc-800 text-[10px] font-semibold cursor-pointer border border-zinc-200"
+          >
+            All Layers
+          </button>
+          <button
+            type="button"
+            id="btn-preset-only-fetch"
+            data-testid="btn-preset-only-fetch"
+            onClick={() => handleIsolateHeatmapLayer('dataFetch')}
+            className="px-2 py-1 rounded bg-rose-50 hover:bg-rose-100 text-rose-800 text-[10px] font-semibold cursor-pointer border border-rose-200"
+          >
+            Only Fetch
+          </button>
+          <button
+            type="button"
+            id="btn-preset-only-render"
+            data-testid="btn-preset-only-render"
+            onClick={() => handleIsolateHeatmapLayer('rowRender')}
+            className="px-2 py-1 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 text-[10px] font-semibold cursor-pointer border border-amber-200"
+          >
+            Only Render
+          </button>
+          <button
+            type="button"
+            id="btn-preset-only-hydration"
+            data-testid="btn-preset-only-hydration"
+            onClick={() => handleIsolateHeatmapLayer('domHydration')}
+            className="px-2 py-1 rounded bg-purple-50 hover:bg-purple-100 text-purple-800 text-[10px] font-semibold cursor-pointer border border-purple-200"
+          >
+            Only Hydration
+          </button>
+          <button
+            type="button"
+            id="btn-preset-disable-all"
+            data-testid="btn-preset-disable-all"
+            onClick={() => handleSetAllHeatmapLayers(false)}
+            className="px-2 py-1 rounded bg-zinc-100 hover:bg-zinc-200 text-zinc-600 text-[10px] font-medium cursor-pointer border border-zinc-200 ml-auto"
+          >
+            Disable
+          </button>
+        </div>
+      </div>
+
+      {/* Blending Mode Selector */}
+      <div className="pt-2.5 flex items-center justify-between gap-2 text-[11px]">
+        <span className="font-semibold text-zinc-600">Blending Mode:</span>
+        <div className="flex items-center gap-1 bg-zinc-100 p-0.5 rounded-md">
+          <button
+            type="button"
+            id="btn-blend-composite"
+            data-testid="btn-blend-composite"
+            onClick={() => setHeatmapBlendingMode('composite')}
+            className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+              heatmapBlendingMode === 'composite'
+                ? 'bg-white text-zinc-900 shadow-2xs'
+                : 'text-zinc-600 hover:text-zinc-900'
+            }`}
+            title="Sum latency across all active layers for composite heatmap intensity"
+          >
+            Stacked Sum
+          </button>
+          <button
+            type="button"
+            id="btn-blend-dominant"
+            data-testid="btn-blend-dominant"
+            onClick={() => setHeatmapBlendingMode('dominant')}
+            className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+              heatmapBlendingMode === 'dominant'
+                ? 'bg-white text-zinc-900 shadow-2xs'
+                : 'text-zinc-600 hover:text-zinc-900'
+            }`}
+            title="Highlight by the highest individual active bottleneck layer"
+          >
+            Dominant Peak
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   const handleExportHeatmapCsv = () => {
     const csvRows: string[] = [];
-    csvRows.push('OrderNumber,CreatedAt,CustomerName,CustomerTier,Category,Region,Status,AmountUSD,ItemCount,FetchLatencyMs,SeverityImpact,BatchEagerLoading,BTreeIndexing');
+    csvRows.push('OrderNumber,CreatedAt,CustomerName,CustomerTier,Category,Region,Status,AmountUSD,ItemCount,DataFetchMs,RowRenderMs,DomHydrationMs,ActiveTotalLatencyMs,SeverityImpact,BatchEagerLoading,BTreeIndexing');
     
     for (const r of displayRecords) {
-      const itemCnt = r.items && r.items.length > 0 ? r.items.length : (r.itemCount || 1);
-      const unoptMult = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
-      const idxPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
-      const latencyMs = safeFlags.batchEagerLoading ? (itemCnt * 4.0 + 10.0) : (20.0 + (itemCnt * unoptMult) + idxPenalty);
+      const breakdown = computeRowLatencyBreakdown(r);
+      const latencyMs = breakdown.effectiveLatencyMs;
       const severity = latencyMs > 150 ? 'High (>150ms)' : latencyMs >= 50 ? 'Moderate (50-150ms)' : 'Low (<50ms)';
       
       const escape = (str: any) => `"${String(str || '').replace(/"/g, '""')}"`;
@@ -906,7 +1369,10 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         escape(r.region),
         escape(r.status),
         r.amount.toFixed(2),
-        itemCnt,
+        breakdown.recordItemCount,
+        breakdown.dataFetchMs.toFixed(1),
+        breakdown.rowRenderMs.toFixed(1),
+        breakdown.domHydrationMs.toFixed(1),
         latencyMs.toFixed(1),
         escape(severity),
         safeFlags.batchEagerLoading ? 'Enabled' : 'Disabled (N+1 Storm)',
@@ -1313,8 +1779,89 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     }
   };
 
+  // Ghost Row Placeholder Skeleton Generator for Heavy Data Loading Operations
+  const renderGhostRows = (count = 12) => {
+    return Array.from({ length: count }).map((_, idx) => {
+      // Gentle gradient opacity fade to simulate depth and zero-lag streaming
+      const opacityVal = Math.max(0.3, 0.9 - idx * 0.05);
+      return (
+        <div
+          key={`ghost-row-${idx}`}
+          id={`ghost-row-${idx}`}
+          data-testid={`ghost-row-${idx}`}
+          className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-2' : 'py-3.5'} items-center text-xs border-b border-zinc-100 bg-zinc-50/50 transition-opacity select-none`}
+          style={{
+            minHeight: `${ROW_HEIGHT}px`,
+            opacity: opacityVal
+          }}
+        >
+          {/* Col 1: Checkbox & Index Skeleton */}
+          <div className="col-span-1 flex items-center gap-1.5">
+            <div className="w-4 h-4 rounded bg-zinc-200/90 animate-pulse shrink-0" />
+            <div className="w-3.5 h-3 bg-zinc-200/60 rounded animate-pulse" />
+          </div>
+
+          {/* Col 2: Order ID & Timestamp Skeleton */}
+          <div className="col-span-2 space-y-1.5 pr-2">
+            <div className="h-3.5 bg-gradient-to-r from-zinc-200 via-zinc-300/80 to-zinc-200 rounded w-24 animate-pulse" />
+            <div className="h-2.5 bg-zinc-200/60 rounded w-16 animate-pulse" />
+          </div>
+
+          {/* Col 3: Customer & Account Skeleton */}
+          <div className="col-span-3 space-y-1.5 pr-3">
+            <div className="flex items-center gap-1.5">
+              <div className="w-3.5 h-3.5 rounded-full bg-zinc-200/80 shrink-0 animate-pulse" />
+              <div className="h-3.5 bg-gradient-to-r from-zinc-200 via-zinc-300/80 to-zinc-200 rounded w-36 animate-pulse" />
+            </div>
+            <div className="h-2.5 bg-zinc-200/60 rounded w-44 animate-pulse" />
+          </div>
+
+          {/* Col 4: Category Skeleton */}
+          <div className="col-span-2 pr-2">
+            <div className="h-3.5 bg-zinc-200/80 rounded w-28 animate-pulse" />
+          </div>
+
+          {/* Col 5: Status Pill Skeleton */}
+          <div className="col-span-1">
+            <div className="h-5 bg-gradient-to-r from-zinc-200 via-zinc-300/70 to-zinc-200 rounded-full w-20 animate-pulse" />
+          </div>
+
+          {/* Col 6: Amount Skeleton */}
+          <div className="col-span-2 text-right space-y-1 flex flex-col items-end pr-2">
+            <div className="h-3.5 bg-gradient-to-r from-zinc-200 via-zinc-300/80 to-zinc-200 rounded w-20 animate-pulse" />
+            <div className="h-2.5 bg-zinc-200/50 rounded w-12 animate-pulse" />
+          </div>
+
+          {/* Col 7: Items Skeleton */}
+          <div className="col-span-1 text-center flex flex-col items-center justify-center gap-1">
+            <div className="h-4 bg-zinc-200/80 rounded-full w-14 animate-pulse" />
+            <div className="h-2.5 bg-zinc-200/50 rounded w-10 animate-pulse" />
+          </div>
+        </div>
+      );
+    });
+  };
+
   return (
     <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden flex flex-col relative">
+      {/* Fetch Completion Toast */}
+      {fetchToast && (
+        <div
+          id="toast-ghost-rows-loaded"
+          data-testid="toast-ghost-rows-loaded"
+          className="absolute top-4 right-4 z-50 px-3.5 py-2 bg-zinc-900 text-white text-xs font-medium rounded-xl shadow-xl border border-zinc-700 flex items-center gap-2 animate-fadeIn"
+        >
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{fetchToast}</span>
+          <button
+            type="button"
+            onClick={() => setFetchToast(null)}
+            className="text-zinc-400 hover:text-white font-bold ml-1 cursor-pointer"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {/* Latency Heatmap Threshold Legend Bar */}
       <div className="bg-zinc-100/90 px-4 py-2 border-b border-zinc-200 flex items-center justify-between text-xs flex-wrap gap-2">
         <div className="flex items-center gap-1.5 text-zinc-700 font-semibold">
@@ -1552,7 +2099,13 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             <select
               id="select-page-size"
               value={pageSize}
-              onChange={(e) => onPageSizeChange(Number(e.target.value))}
+              onChange={(e) => {
+                const newSize = Number(e.target.value);
+                if (ghostRowsEnabled && newSize >= 250) {
+                  triggerHeavyLoadingSimulation(600, `Fetching ${newSize.toLocaleString()} rows buffer...`);
+                }
+                onPageSizeChange?.(newSize);
+              }}
               className="bg-white border border-zinc-300 rounded-md px-2 py-1 text-xs text-zinc-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
             >
               <option value={50}>50 rows</option>
@@ -1589,6 +2142,51 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               </span>
             </label>
           </div>
+
+          {/* Ghost Rows Toggle */}
+          <div className="flex items-center gap-1 text-xs">
+            <label
+              id="label-toggle-ghost-rows"
+              htmlFor="toggle-ghost-rows"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md font-medium cursor-pointer transition-all border shadow-2xs select-none ${
+                ghostRowsEnabled
+                  ? 'bg-purple-50 border-purple-300 text-purple-900 ring-1 ring-purple-400/40'
+                  : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+              }`}
+              title="Ghost Row visualization: Renders faded placeholder skeletons during heavy loading operations to improve perceived responsiveness"
+            >
+              <input
+                id="toggle-ghost-rows"
+                data-testid="toggle-ghost-rows"
+                type="checkbox"
+                checked={ghostRowsEnabled}
+                onChange={(e) => setGhostRowsEnabled(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-zinc-400 text-purple-600 focus:ring-purple-500/30 accent-purple-600 cursor-pointer shrink-0"
+              />
+              <span className="flex items-center gap-1">
+                <Eye className="w-3.5 h-3.5 text-purple-600" />
+                <span>Ghost Rows {ghostRowsEnabled ? 'ON' : 'OFF'}</span>
+              </span>
+            </label>
+          </div>
+
+          {/* Simulate Heavy Fetch Button */}
+          <button
+            type="button"
+            id="btn-simulate-heavy-fetch"
+            data-testid="btn-simulate-heavy-fetch"
+            onClick={() => triggerHeavyLoadingSimulation(1200, "Simulating heavy 50,000-row database query fetch...")}
+            disabled={isHeavyLoading}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all border shadow-2xs cursor-pointer ${
+              isHeavyLoading
+                ? 'bg-amber-100 text-amber-900 border-amber-300 animate-pulse'
+                : 'bg-gradient-to-r from-amber-50 to-orange-50 hover:from-amber-100 hover:to-orange-100 text-amber-900 border-amber-300'
+            }`}
+            title="Simulate a heavy dataset loading operation to test and view the Ghost Row faded placeholders"
+          >
+            <Zap className={`w-3.5 h-3.5 ${isHeavyLoading ? 'text-amber-600 animate-bounce' : 'text-amber-500'}`} />
+            <span>{isHeavyLoading ? 'Fetching...' : 'Simulate Heavy Fetch'}</span>
+          </button>
 
           {/* Selected Rows Counter Chip & 'Show Selected Only' Toggle in Top Header */}
           {selectedVisibleCount > 0 && (
@@ -1653,29 +2251,36 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </button>
           )}
 
-          {/* Main Header Toggle Switch for Real-Time Execution Cost Heatmap Overlay */}
-          <label
-            id="main-header-toggle-latency-heatmap"
-            data-testid="toggle-execution-cost-heatmap"
-            htmlFor="main-header-toggle-heatmap-input"
-            className={`inline-flex items-center gap-2 px-3 py-1 rounded-md text-xs font-semibold cursor-pointer transition-all border shadow-2xs select-none ${
-              showLatencyHeatmap
-                ? 'bg-rose-50 border-rose-300 text-rose-900 ring-1 ring-rose-400/40'
-                : 'bg-zinc-100 hover:bg-zinc-200/70 border-zinc-300 text-zinc-700'
-            }`}
-            title="Enable or disable the real-time query execution cost heatmap overlay across table rows"
-          >
-            <input
-              id="main-header-toggle-heatmap-input"
-              data-testid="main-header-toggle-heatmap-input"
-              type="checkbox"
-              checked={showLatencyHeatmap}
-              onChange={(e) => setShowLatencyHeatmap(e.target.checked)}
-              className="w-3.5 h-3.5 rounded border-rose-300 text-rose-600 focus:ring-rose-500/30 accent-rose-600 cursor-pointer"
-            />
-            <Flame className={`w-3.5 h-3.5 ${showLatencyHeatmap ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
-            <span>Cost Heatmap</span>
-          </label>
+          {/* Dedicated Latency Heatmap Layers Sub-Menu Dropdown */}
+          <div className="relative" ref={heatmapMenuRef}>
+            <button
+              type="button"
+              id="main-header-toggle-latency-heatmap"
+              data-testid="btn-heatmap-layers-menu"
+              onClick={() => setHeatmapLayersMenuAnchor((prev) => prev === 'header' ? null : 'header')}
+              aria-expanded={heatmapLayersMenuAnchor === 'header'}
+              aria-haspopup="true"
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold cursor-pointer transition-all border shadow-2xs select-none ${
+                isAnyHeatmapLayerActive
+                  ? 'bg-rose-50 border-rose-300 text-rose-900 ring-1 ring-rose-400/40 shadow-xs'
+                  : 'bg-zinc-100 hover:bg-zinc-200/70 border-zinc-300 text-zinc-700'
+              }`}
+              title="Open Latency Heatmap Layers sub-menu to toggle Row Render Time, Data Fetch Time, and DOM Hydration cost"
+            >
+              <Flame className={`w-3.5 h-3.5 ${isAnyHeatmapLayerActive ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+              <Layers className="w-3.5 h-3.5 text-zinc-500" />
+              <span>Heatmap Layers</span>
+              <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${
+                isAnyHeatmapLayerActive ? 'bg-rose-200 text-rose-950 border border-rose-300' : 'bg-zinc-200 text-zinc-600'
+              }`}>
+                {isAnyHeatmapLayerActive ? `${activeHeatmapLayerCount}/3` : 'OFF'}
+              </span>
+              <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform duration-200 ${heatmapLayersMenuAnchor === 'header' ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* Heatmap Layers Sub-Menu Popover */}
+            {heatmapLayersMenuAnchor === 'header' && renderHeatmapLayersPopover('left')}
+          </div>
 
           {/* Main Header Latency Filter Slider Control */}
           <div className="flex items-center gap-2 bg-white px-3 py-1 rounded-md border border-zinc-300 text-zinc-700 shadow-2xs">
@@ -2706,34 +3311,89 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               <span>Export Latency CSV</span>
             </button>
 
-            {/* Toggle Heatmap Overlay */}
-            <label
-              id="label-toggle-latency-heatmap"
-              htmlFor="toggle-latency-heatmap"
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-white hover:bg-zinc-50 border border-rose-300 text-zinc-800 font-medium cursor-pointer transition-colors shadow-2xs select-none"
-            >
-              <input
-                id="toggle-latency-heatmap"
+            {/* Dedicated Latency Heatmap Layers Sub-Menu Dropdown (replaces single global toggle) */}
+            <div className="relative" ref={heatmapToolbarMenuRef}>
+              <button
+                type="button"
+                id="btn-toolbar-heatmap-layers-menu"
                 data-testid="toggle-latency-heatmap"
-                type="checkbox"
-                checked={showLatencyHeatmap}
-                onChange={(e) => setShowLatencyHeatmap(e.target.checked)}
-                className="w-3.5 h-3.5 rounded border-rose-300 text-rose-600 focus:ring-rose-500/30 accent-rose-600 cursor-pointer shrink-0"
-              />
-              <span className="font-semibold text-rose-950">Heatmap</span>
-            </label>
+                onClick={() => setHeatmapLayersMenuAnchor((prev) => prev === 'toolbar' ? null : 'toolbar')}
+                aria-expanded={heatmapLayersMenuAnchor === 'toolbar'}
+                aria-haspopup="true"
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all border shadow-2xs select-none ${
+                  isAnyHeatmapLayerActive
+                    ? 'bg-rose-50 border-rose-300 text-rose-900 ring-1 ring-rose-400/40 shadow-xs'
+                    : 'bg-white hover:bg-zinc-50 border-zinc-300 text-zinc-700'
+                }`}
+                title="Configure Latency Heatmap Layers (Row Render Time, Data Fetch Time, and DOM Hydration cost)"
+              >
+                <Flame className={`w-3.5 h-3.5 ${isAnyHeatmapLayerActive ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+                <Layers className="w-3.5 h-3.5 text-zinc-500" />
+                <span className="font-semibold text-rose-950">Heatmap Layers</span>
+                <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${
+                  isAnyHeatmapLayerActive ? 'bg-rose-200 text-rose-950 border border-rose-300' : 'bg-zinc-200 text-zinc-600'
+                }`}>
+                  {isAnyHeatmapLayerActive ? `${activeHeatmapLayerCount}/3 Active` : 'OFF'}
+                </span>
+                <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform duration-200 ${heatmapLayersMenuAnchor === 'toolbar' ? 'rotate-180' : ''}`} />
+              </button>
+
+              {/* Sub-menu Popover */}
+              {heatmapLayersMenuAnchor === 'toolbar' && renderHeatmapLayersPopover('right')}
+            </div>
           </div>
         </div>
       )}
 
       {/* Heatmap Legend Display */}
-      {showLatencyHeatmap && (
+      {isAnyHeatmapLayerActive && (
         <div className="bg-gradient-to-r from-zinc-50 via-zinc-100 to-rose-50/40 border-b border-zinc-200 px-4 py-2 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-700 animate-fadeIn">
           <div className="flex items-center gap-2 font-semibold">
             <Flame className="w-4 h-4 text-rose-600 animate-pulse" />
             <span>Heatmap Intensity Legend:</span>
           </div>
-          <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Active Layers Pill Tags */}
+            <div className="flex items-center gap-1 bg-white/90 border border-zinc-200 px-2 py-0.5 rounded text-[11px] shadow-2xs">
+              <span className="text-zinc-500 font-medium">Layers:</span>
+              <button
+                type="button"
+                id="btn-legend-toggle-fetch"
+                data-testid="btn-legend-toggle-fetch"
+                onClick={() => handleToggleHeatmapLayer('dataFetch')}
+                className={`px-1.5 py-0.2 rounded font-mono font-semibold cursor-pointer transition-colors ${
+                  heatmapLayers.dataFetch ? 'bg-rose-100 text-rose-800 border border-rose-300' : 'bg-zinc-100 text-zinc-400 line-through'
+                }`}
+                title="Toggle Data Fetch Time Layer"
+              >
+                Fetch
+              </button>
+              <button
+                type="button"
+                id="btn-legend-toggle-render"
+                data-testid="btn-legend-toggle-render"
+                onClick={() => handleToggleHeatmapLayer('rowRender')}
+                className={`px-1.5 py-0.2 rounded font-mono font-semibold cursor-pointer transition-colors ${
+                  heatmapLayers.rowRender ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-zinc-100 text-zinc-400 line-through'
+                }`}
+                title="Toggle Row Render Time Layer"
+              >
+                Render
+              </button>
+              <button
+                type="button"
+                id="btn-legend-toggle-hydration"
+                data-testid="btn-legend-toggle-hydration"
+                onClick={() => handleToggleHeatmapLayer('domHydration')}
+                className={`px-1.5 py-0.2 rounded font-mono font-semibold cursor-pointer transition-colors ${
+                  heatmapLayers.domHydration ? 'bg-purple-100 text-purple-800 border border-purple-300' : 'bg-zinc-100 text-zinc-400 line-through'
+                }`}
+                title="Toggle DOM Hydration Cost Layer"
+              >
+                Hydration
+              </button>
+            </div>
+
             <div className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded bg-emerald-500/60 border border-emerald-600"></span>
               <span>Fast (&lt;50ms)</span>
@@ -2749,6 +3409,31 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             <div className="bg-white px-2 py-0.5 rounded border border-zinc-300 text-[11px] font-mono text-zinc-600">
               Intensity Gradient: <span className="text-rose-700 font-bold">Dynamic Scale (0ms - 250ms+)</span>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Heavy Loading Ghost Rows Active Banner */}
+      {isHeavyLoading && (
+        <div
+          id="banner-ghost-loading"
+          data-testid="banner-ghost-loading"
+          className="px-4 py-2.5 bg-gradient-to-r from-purple-500/15 via-indigo-500/10 to-purple-500/15 border-b border-purple-200 flex flex-wrap items-center justify-between gap-3 text-xs text-purple-950 animate-fadeIn"
+        >
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-purple-600 animate-ping" />
+            <strong className="font-bold text-purple-900">Heavy Dataset Loading:</strong>
+            <span className="text-zinc-600 font-medium">{heavyLoadingMessage}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              id="badge-ghost-row-status"
+              data-testid="badge-ghost-row-status"
+              className="font-mono text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-300 shadow-2xs flex items-center gap-1"
+            >
+              <Eye className="w-3 h-3 text-purple-600" />
+              <span>Ghost Placeholders Active ({ghostRowsCount} Rows)</span>
+            </span>
           </div>
         </div>
       )}
@@ -2820,16 +3505,22 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             type="button"
             id="btn-header-cost-heatmap-toggle"
             data-testid="btn-header-cost-heatmap-toggle"
-            onClick={() => setShowLatencyHeatmap(!showLatencyHeatmap)}
+            onClick={() => {
+              if (isAnyHeatmapLayerActive) {
+                handleSetAllHeatmapLayers(false);
+              } else {
+                handleSetAllHeatmapLayers(true);
+              }
+            }}
             className={`p-0.5 rounded transition-colors cursor-pointer ${
-              showLatencyHeatmap
+              isAnyHeatmapLayerActive
                 ? 'text-rose-600 hover:bg-rose-100/50'
                 : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200'
             }`}
-            title={`Execution Cost Heatmap: ${showLatencyHeatmap ? 'Active (Click to hide)' : 'Inactive (Click to show)'}`}
-            aria-label="Toggle Execution Cost Heatmap"
+            title={`Execution Cost Heatmap Layers: ${isAnyHeatmapLayerActive ? `${activeHeatmapLayerCount}/3 Active (Click to disable)` : 'Inactive (Click to enable all)'}`}
+            aria-label="Toggle Execution Cost Heatmap Layers"
           >
-            <Flame className={`w-3.5 h-3.5 ${showLatencyHeatmap ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+            <Flame className={`w-3.5 h-3.5 ${isAnyHeatmapLayerActive ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
           </button>
         </div>
       </div>
@@ -2998,7 +3689,15 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         style={{ height: `${CONTAINER_HEIGHT}px` }}
         className="overflow-y-auto relative divide-y divide-zinc-100"
       >
-        {displayRecords.length === 0 ? (
+        {isHeavyLoading && ghostRowsEnabled ? (
+          <div
+            id="ghost-rows-container"
+            data-testid="ghost-rows-container"
+            className="divide-y divide-zinc-100 animate-fadeIn"
+          >
+            {renderGhostRows(ghostRowsCount)}
+          </div>
+        ) : displayRecords.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-zinc-500 py-12">
             <Package className="w-10 h-10 text-zinc-300 mb-2" />
             <p className="text-sm font-medium text-zinc-700">
@@ -3047,12 +3746,10 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 const isStatisticalOutlier = anomalyData ? anomalyData.isOutlier : false;
                 const zScoreVal = anomalyData ? anomalyData.zScore : 0;
 
-                const recordItemCount = rec.items && rec.items.length > 0 ? rec.items.length : (rec.itemCount || 1);
-                const unoptimizedMultiplier = (!safeFlags.batchEagerLoading) ? 45.0 : 8.0;
-                const indexPenalty = (!safeFlags.btreeIndexing) ? 55.0 : 0.0;
-                const nPlusOneLatencyMs = safeFlags.batchEagerLoading 
-                  ? (recordItemCount * 4.0 + 10.0) 
-                  : (20.0 + (recordItemCount * unoptimizedMultiplier) + indexPenalty);
+                const breakdown = computeRowLatencyBreakdown(rec);
+                const effectiveLatencyMs = breakdown.effectiveLatencyMs;
+                const nPlusOneLatencyMs = breakdown.dataFetchMs;
+                const recordItemCount = breakdown.recordItemCount;
                 
                 let heatmapRowBg = '';
                 let heatmapRowStyle: React.CSSProperties = { minHeight: `${ROW_HEIGHT}px` };
@@ -3061,11 +3758,11 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                 let isModerateCost = false;
                 let relativeCostRatio = 0;
 
-                if (showLatencyHeatmap) {
+                if (isAnyHeatmapLayerActive) {
                   const range = Math.max(maxRowCost - minRowCost, 1);
-                  relativeCostRatio = Math.max(0, Math.min(1, (nPlusOneLatencyMs - minRowCost) / range));
-                  isHighCost = isStatisticalOutlier || nPlusOneLatencyMs > 150 || (relativeCostRatio >= 0.75 && nPlusOneLatencyMs > 40);
-                  isModerateCost = !isHighCost && (nPlusOneLatencyMs >= 50 || relativeCostRatio >= 0.4);
+                  relativeCostRatio = Math.max(0, Math.min(1, (effectiveLatencyMs - minRowCost) / range));
+                  isHighCost = isStatisticalOutlier || effectiveLatencyMs > 150 || (relativeCostRatio >= 0.75 && effectiveLatencyMs > 40);
+                  isModerateCost = !isHighCost && (effectiveLatencyMs >= 50 || relativeCostRatio >= 0.4);
 
                   if (isHighCost) {
                     const intensity = 0.12 + relativeCostRatio * 0.38;
@@ -3106,38 +3803,62 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       aria-selected={isSelected}
                       onClick={() => toggleExpand(rec.id)}
                       title={
-                        showLatencyHeatmap
-                          ? `Database Fetch Latency: ${nPlusOneLatencyMs.toFixed(1)}ms | Relative Query Cost: ${Math.round(relativeCostRatio * 100)}% (Z-score: ${zScoreVal.toFixed(2)}σ)`
+                        isAnyHeatmapLayerActive
+                          ? `Effective Latency: ${effectiveLatencyMs.toFixed(1)}ms | Fetch: ${breakdown.dataFetchMs.toFixed(1)}ms, Render: ${breakdown.rowRenderMs.toFixed(1)}ms, DOM: ${breakdown.domHydrationMs.toFixed(1)}ms | Relative Cost: ${Math.round(relativeCostRatio * 100)}% (Z-score: ${zScoreVal.toFixed(2)}σ)`
                           : undefined
                       }
                       className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-1.5' : 'py-3'} items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
                       style={heatmapRowStyle}
                     >
                       {/* Row Hover Latency & Z-Score Anomaly Tooltip */}
-                      {showLatencyHeatmap && (
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex items-center gap-2 px-3 py-1.5 bg-zinc-900 text-white rounded-lg shadow-xl text-[11px] font-mono z-30 pointer-events-none border border-zinc-700 animate-fadeIn">
-                          <Activity className="w-3.5 h-3.5 text-rose-400 animate-pulse shrink-0" />
-                          <span>Fetch Latency: <strong className="text-rose-300 font-bold">{nPlusOneLatencyMs.toFixed(1)}ms</strong></span>
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                            isHighCost
-                              ? 'bg-rose-950 text-rose-300 border border-rose-500'
-                              : isModerateCost
-                              ? 'bg-amber-950 text-amber-300 border border-amber-500'
-                              : 'bg-emerald-950 text-emerald-300 border border-emerald-500'
-                          }`}>
-                            Cost: {Math.round(relativeCostRatio * 100)}%
-                          </span>
-                          {isHighCost && (
-                            <span className="bg-rose-600 text-white px-1.5 py-0.5 rounded font-bold text-[9px] uppercase tracking-wider">
-                              Expensive Record
+                      {isAnyHeatmapLayerActive && (
+                        <div className="absolute right-4 top-1/2 -translate-y-1/2 hidden group-hover:flex flex-col gap-1 px-3 py-2 bg-zinc-900/95 backdrop-blur-sm text-white rounded-lg shadow-xl text-[11px] font-mono z-30 pointer-events-none border border-zinc-700 animate-fadeIn min-w-[210px]">
+                          <div className="flex items-center justify-between gap-2 border-b border-zinc-700/80 pb-1">
+                            <div className="flex items-center gap-1.5">
+                              <Activity className="w-3.5 h-3.5 text-rose-400 animate-pulse shrink-0" />
+                              <span className="font-semibold text-zinc-200">Latency Heatmap:</span>
+                            </div>
+                            <strong className="text-rose-300 font-bold text-xs">{effectiveLatencyMs.toFixed(1)}ms</strong>
+                          </div>
+
+                          {/* Active layer breakdown chips */}
+                          <div className="grid grid-cols-3 gap-1 pt-0.5 text-[10px]">
+                            <div className={`p-1 rounded text-center ${heatmapLayers.dataFetch ? 'bg-rose-950/80 border border-rose-700/60 text-rose-300' : 'text-zinc-500 opacity-60'}`}>
+                              <div className="font-bold">Fetch</div>
+                              <div>{breakdown.dataFetchMs.toFixed(1)}ms</div>
+                            </div>
+                            <div className={`p-1 rounded text-center ${heatmapLayers.rowRender ? 'bg-amber-950/80 border border-amber-700/60 text-amber-300' : 'text-zinc-500 opacity-60'}`}>
+                              <div className="font-bold">Render</div>
+                              <div>{breakdown.rowRenderMs.toFixed(1)}ms</div>
+                            </div>
+                            <div className={`p-1 rounded text-center ${heatmapLayers.domHydration ? 'bg-purple-950/80 border border-purple-700/60 text-purple-300' : 'text-zinc-500 opacity-60'}`}>
+                              <div className="font-bold">DOM</div>
+                              <div>{breakdown.domHydrationMs.toFixed(1)}ms</div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-1 text-[10px] pt-0.5 text-zinc-300">
+                            <span className={`px-1.5 py-0.2 rounded font-bold ${
+                              isHighCost
+                                ? 'bg-rose-950 text-rose-300 border border-rose-500'
+                                : isModerateCost
+                                ? 'bg-amber-950 text-amber-300 border border-amber-500'
+                                : 'bg-emerald-950 text-emerald-300 border border-emerald-500'
+                            }`}>
+                              Cost: {Math.round(relativeCostRatio * 100)}%
                             </span>
-                          )}
-                          {isStatisticalOutlier && (
-                            <span className="bg-rose-950 text-rose-300 border border-rose-500 px-1.5 py-0.5 rounded font-bold text-[10px]">
-                              🚨 Outlier (Z = {zScoreVal > 0 ? `+${zScoreVal.toFixed(2)}` : zScoreVal.toFixed(2)}σ)
-                            </span>
-                          )}
-                          <span className="text-zinc-400 text-[10px]">({recordItemCount} queries)</span>
+                            {isHighCost && (
+                              <span className="bg-rose-600 text-white px-1.5 py-0.2 rounded font-bold text-[9px] uppercase tracking-wider">
+                                Expensive
+                              </span>
+                            )}
+                            {isStatisticalOutlier && (
+                              <span className="bg-rose-950 text-rose-300 border border-rose-500 px-1 py-0.2 rounded font-bold text-[9px]">
+                                🚨 Z: {zScoreVal > 0 ? `+${zScoreVal.toFixed(2)}` : zScoreVal.toFixed(2)}σ
+                              </span>
+                            )}
+                            <span className="text-zinc-400 text-[10px]">({recordItemCount} items)</span>
+                          </div>
                         </div>
                       )}
                       {/* Checkbox, Index & Expand arrow */}
@@ -3540,7 +4261,65 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Pagination Controls */}
+          {onPageChange && (
+            <div className="flex items-center gap-1.5 bg-white border border-zinc-200 px-2 py-1 rounded-lg text-xs shadow-2xs">
+              <button
+                type="button"
+                id="btn-prev-page"
+                data-testid="btn-prev-page"
+                disabled={(page || 1) <= 1 || isHeavyLoading}
+                onClick={() => {
+                  const newP = Math.max(1, (page || 1) - 1);
+                  if (ghostRowsEnabled) {
+                    triggerHeavyLoadingSimulation(500, `Loading page ${newP} records...`);
+                  }
+                  onPageChange(newP);
+                }}
+                className="px-2 py-0.5 rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 disabled:pointer-events-none cursor-pointer font-bold transition-colors"
+                title="Previous page"
+              >
+                ← Prev
+              </button>
+              <span className="font-mono font-bold text-zinc-800 px-1">
+                Page {page || 1} of {Math.max(1, Math.ceil((totalCount || 50000) / pageSize))}
+              </span>
+              <button
+                type="button"
+                id="btn-next-page"
+                data-testid="btn-next-page"
+                disabled={(page || 1) >= Math.ceil((totalCount || 50000) / pageSize) || isHeavyLoading}
+                onClick={() => {
+                  const newP = (page || 1) + 1;
+                  if (ghostRowsEnabled) {
+                    triggerHeavyLoadingSimulation(500, `Loading page ${newP} records...`);
+                  }
+                  onPageChange(newP);
+                }}
+                className="px-2 py-0.5 rounded text-zinc-700 hover:bg-zinc-100 disabled:opacity-40 disabled:pointer-events-none cursor-pointer font-bold transition-colors"
+                title="Next page"
+              >
+                Next →
+              </button>
+            </div>
+          )}
+
+          <span
+            id="badge-ghost-row-footer-indicator"
+            data-testid="badge-ghost-row-footer-indicator"
+            className={`text-[11px] font-mono px-2 py-0.5 rounded border ${
+              isHeavyLoading
+                ? 'bg-purple-100 text-purple-900 border-purple-300 animate-pulse font-bold'
+                : ghostRowsEnabled
+                ? 'bg-purple-50 text-purple-800 border-purple-200'
+                : 'bg-zinc-100 text-zinc-500 border-zinc-200'
+            }`}
+            title="Ghost Rows: Faded placeholder skeletons for perceived performance during heavy dataset queries"
+          >
+            Ghost Placeholders: {isHeavyLoading ? 'Rendering...' : ghostRowsEnabled ? 'Active' : 'Off'}
+          </span>
+
           <span className="flex items-center gap-1 text-zinc-600">
             <span
               className={`w-2 h-2 rounded-full ${

@@ -24,8 +24,11 @@ import {
   Calendar,
   Target,
   TrendingUp,
-  AlertCircle
+  AlertCircle,
+  Pause,
+  Play
 } from 'lucide-react';
+import { getPlanCacheTTLSeconds, setPlanCacheTTLSeconds, clearDatabaseCache } from '../db/databaseEngine';
 
 interface OptimizationControlsProps {
   flags?: OptimizationFlags;
@@ -34,6 +37,9 @@ interface OptimizationControlsProps {
   onApplyFlags?: (flags: OptimizationFlags) => void;
   lowUsageThresholds?: LowUsageThresholdsConfig;
   onLowUsageThresholdsChange?: (config: LowUsageThresholdsConfig) => void;
+  cacheTtl?: number;
+  onCacheTtlChange?: (newTtl: number) => void;
+  onPurgePlanCache?: () => void;
 }
 
 interface ScenarioPreset {
@@ -90,7 +96,10 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
   onResetAll,
   onApplyFlags,
   lowUsageThresholds,
-  onLowUsageThresholdsChange
+  onLowUsageThresholdsChange,
+  cacheTtl,
+  onCacheTtlChange,
+  onPurgePlanCache
 }) => {
   const safeFlags = flags || {
     batchEagerLoading: true,
@@ -98,6 +107,44 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
     queryCaching: true,
     virtualizedDOM: true,
     deferredRendering: true,
+  };
+
+  // Cache TTL State (in seconds)
+  const [localCacheTtl, setLocalCacheTtl] = useState<number>(() => {
+    if (typeof cacheTtl === 'number' && cacheTtl >= 5) return cacheTtl;
+    try {
+      const saved = localStorage.getItem('enterprise_plan_cache_ttl');
+      return saved ? Number(saved) : getPlanCacheTTLSeconds();
+    } catch {
+      return 60;
+    }
+  });
+
+  useEffect(() => {
+    if (typeof cacheTtl === 'number' && cacheTtl !== localCacheTtl) {
+      setLocalCacheTtl(cacheTtl);
+    }
+  }, [cacheTtl]);
+
+  const [purgeFeedbackNotice, setPurgeFeedbackNotice] = useState<string | null>(null);
+
+  const handleCacheTtlChangeInternal = (newTtl: number) => {
+    const clamped = Math.max(5, Math.min(600, Math.round(newTtl)));
+    setLocalCacheTtl(clamped);
+    setPlanCacheTTLSeconds(clamped);
+    if (onCacheTtlChange) {
+      onCacheTtlChange(clamped);
+    }
+  };
+
+  const handlePurgePlanCacheInternal = () => {
+    if (onPurgePlanCache) {
+      onPurgePlanCache();
+    } else {
+      clearDatabaseCache('User Purged Plan Cache from OptimizationControls');
+    }
+    setPurgeFeedbackNotice('Plan Cache evicted! 0 items in memory. Next query will re-compile fresh execution plan.');
+    setTimeout(() => setPurgeFeedbackNotice(null), 3500);
   };
 
   // Low Usage Thresholds Configuration State
@@ -237,6 +284,23 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
       console.error(e);
     }
   };
+
+  const [reindexingProgress, setReindexingProgress] = useState<number>(68);
+  const [isReindexingPaused, setIsReindexingPaused] = useState<boolean>(false);
+  const [reindexingTaskName, setReindexingTaskName] = useState<string>('CONCURRENT REINDEX INDEX idx_transactions_status_cat');
+
+  useEffect(() => {
+    if (isReindexingPaused || !maintenanceEnabled) return;
+    const timer = setInterval(() => {
+      setReindexingProgress((prev) => {
+        if (prev >= 100) {
+          return 0;
+        }
+        return prev + 1.5;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isReindexingPaused, maintenanceEnabled]);
 
   const handleMaintenanceStartChange = (hour: number) => {
     setMaintenanceStartHour(hour);
@@ -626,8 +690,17 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
                 <div className="font-semibold text-sm text-zinc-900 leading-snug">
                   {item.title}
                 </div>
-                <div className="text-[11px] font-medium text-zinc-500 mb-2">
-                  {item.badge}
+                <div className="text-[11px] font-medium text-zinc-500 mb-2 flex items-center justify-between">
+                  <span>{item.badge}</span>
+                  {item.key === 'queryCaching' && (
+                    <span
+                      id="badge-card-query-cache-ttl"
+                      data-testid="badge-card-query-cache-ttl"
+                      className="font-mono text-[10px] bg-indigo-100 text-indigo-900 px-1.5 py-0.5 rounded font-bold"
+                    >
+                      TTL: {localCacheTtl}s
+                    </span>
+                  )}
                 </div>
 
                 <p className="text-xs text-zinc-600 line-clamp-3">
@@ -1367,6 +1440,161 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
         </div>
       </div>
 
+      {/* Execution Plan Cache & Cache TTL Controller Panel */}
+      <div
+        id="panel-cache-ttl-setting"
+        data-testid="panel-cache-ttl-setting"
+        className="p-4 bg-gradient-to-r from-blue-50/90 via-indigo-50/60 to-cyan-50/90 rounded-xl border border-indigo-200 shadow-2xs space-y-3.5 animate-fadeIn"
+      >
+        <div className="flex items-center justify-between border-b border-indigo-200/80 pb-2.5 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 bg-indigo-600 text-white rounded-lg shadow-2xs">
+              <Clock className="w-4 h-4" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold text-indigo-950 uppercase tracking-wider">
+                  Execution Plan Cache &amp; Cache TTL Controller
+                </h3>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
+                  LRU Buffer Pool
+                </span>
+              </div>
+              <p className="text-[11px] text-indigo-700 mt-0.5">
+                Specify how long execution plans and cost analysis trees remain cached before expiration. Visual indicator in ExplainPlanViewer live-updates in real time.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span
+              id="badge-cache-ttl-status"
+              data-testid="badge-cache-ttl-status"
+              className="font-mono text-xs font-bold bg-indigo-600 text-white px-3 py-1 rounded-lg border border-indigo-700 shadow-2xs flex items-center gap-1.5"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-300" />
+              <span>TTL: {localCacheTtl}s {localCacheTtl >= 60 ? `(${(localCacheTtl / 60).toFixed(1)}m)` : ''}</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Purge Notification */}
+        {purgeFeedbackNotice && (
+          <div
+            id="notice-cache-purged"
+            data-testid="notice-cache-purged"
+            className="p-2.5 bg-emerald-50 border border-emerald-300 rounded-lg text-xs font-medium text-emerald-900 flex items-center justify-between animate-fadeIn"
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{purgeFeedbackNotice}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPurgeFeedbackNotice(null)}
+              className="text-emerald-700 hover:text-emerald-900 font-bold px-1"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5 pt-0.5 items-center">
+          {/* Slider and Input */}
+          <div className="lg:col-span-7 space-y-2 bg-white/90 p-3 rounded-xl border border-indigo-100 shadow-2xs">
+            <div className="flex items-center justify-between">
+              <label htmlFor="slider-cache-ttl" className="text-xs font-bold text-zinc-800 flex items-center gap-1.5">
+                <span>Plan Cache Time-To-Live:</span>
+                <span className="font-mono text-indigo-700 font-bold text-sm">{localCacheTtl} seconds</span>
+              </label>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-zinc-500 font-medium">Direct input:</span>
+                <input
+                  type="number"
+                  id="input-cache-ttl-seconds"
+                  data-testid="input-cache-ttl-seconds"
+                  min="5"
+                  max="600"
+                  step="1"
+                  value={localCacheTtl}
+                  onChange={(e) => handleCacheTtlChangeInternal(Number(e.target.value))}
+                  className="w-16 px-2 py-0.5 text-xs font-mono font-bold text-indigo-950 bg-indigo-50 border border-indigo-300 rounded-md text-center focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <span className="text-xs text-zinc-500 font-medium">sec</span>
+              </div>
+            </div>
+
+            <input
+              type="range"
+              id="slider-cache-ttl"
+              data-testid="slider-cache-ttl"
+              min="5"
+              max="300"
+              step="5"
+              value={localCacheTtl}
+              onChange={(e) => handleCacheTtlChangeInternal(Number(e.target.value))}
+              className="w-full accent-indigo-600 cursor-pointer h-2 bg-zinc-200 rounded-lg"
+            />
+
+            <div className="flex justify-between text-[10px] font-mono text-zinc-500">
+              <span>5s (Aggressive Eviction)</span>
+              <span>30s (Rapid Cycle)</span>
+              <span>60s (Standard SLA)</span>
+              <span>120s (Extended)</span>
+              <span>300s (High Retention)</span>
+            </div>
+          </div>
+
+          {/* Quick Preset Buttons & Purge Action */}
+          <div className="lg:col-span-5 space-y-2">
+            <div className="flex items-center justify-between text-xs font-semibold text-zinc-700">
+              <span>TTL Presets:</span>
+              <button
+                type="button"
+                id="btn-purge-plan-cache"
+                data-testid="btn-purge-plan-cache"
+                onClick={handlePurgePlanCacheInternal}
+                className="inline-flex items-center gap-1 text-[11px] text-rose-700 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-2 py-0.5 rounded-md font-bold transition-colors cursor-pointer"
+                title="Immediately evict all execution plans and query results from memory cache"
+              >
+                <RefreshCw className="w-3 h-3 text-rose-600" />
+                <span>Purge Cache Now</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-5 gap-1.5">
+              {[
+                { label: '15s', val: 15, title: '15s: High mutation / volatile tables' },
+                { label: '30s', val: 30, title: '30s: Rapid query plan turnover' },
+                { label: '60s', val: 60, title: '60s: Recommended default SLA' },
+                { label: '120s', val: 120, title: '120s: Stable read-heavy workloads' },
+                { label: '300s', val: 300, title: '300s: Static analytical cache' }
+              ].map((preset) => (
+                <button
+                  key={`ttl-${preset.val}`}
+                  type="button"
+                  id={`btn-ttl-preset-${preset.val}s`}
+                  data-testid={`btn-ttl-preset-${preset.val}s`}
+                  onClick={() => handleCacheTtlChangeInternal(preset.val)}
+                  title={preset.title}
+                  className={`py-1.5 px-1 rounded-lg text-xs font-mono font-bold cursor-pointer transition-all border text-center ${
+                    localCacheTtl === preset.val
+                      ? 'bg-indigo-600 text-white border-indigo-700 shadow-2xs ring-2 ring-indigo-300'
+                      : 'bg-white hover:bg-indigo-50 text-indigo-900 border-indigo-200 shadow-2xs'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+
+            <p className="text-[10px] text-zinc-500 leading-snug">
+              💡 <strong>Cache Eviction Behavior:</strong> When the TTL countdown expires, cached plans are invalidated. The optimizer re-evaluates database catalog statistics and B-Tree index cardinalities on the subsequent query request.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Maintenance Schedule & Off-Peak Re-indexing Window */}
       <div className="p-4 bg-gradient-to-r from-amber-50/80 via-orange-50/50 to-amber-50/80 rounded-xl border border-amber-200 shadow-2xs space-y-3">
         <div className="flex items-center justify-between border-b border-amber-200 pb-2">
@@ -1457,6 +1685,119 @@ export const OptimizationControls: React.FC<OptimizationControlsProps> = ({
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Active Background Re-indexing Tasks Progress & Resource Management Control */}
+        <div
+          id="panel-reindexing-maintenance-task"
+          data-testid="panel-reindexing-maintenance-task"
+          className="p-3.5 bg-white/95 rounded-xl border border-amber-200/90 shadow-2xs space-y-2.5 animate-fadeIn"
+        >
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`w-2.5 h-2.5 rounded-full ${
+                !maintenanceEnabled
+                  ? 'bg-zinc-400'
+                  : isReindexingPaused
+                  ? 'bg-amber-500 ring-2 ring-amber-200'
+                  : 'bg-emerald-500 ring-2 ring-emerald-200 animate-pulse'
+              }`} />
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-zinc-900">Active Background Task:</span>
+                <code className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-zinc-100 text-zinc-800 border border-zinc-200">
+                  {reindexingTaskName}
+                </code>
+              </div>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                !maintenanceEnabled
+                  ? 'bg-zinc-100 text-zinc-600 border-zinc-300'
+                  : isReindexingPaused
+                  ? 'bg-amber-100 text-amber-900 border-amber-300'
+                  : 'bg-emerald-100 text-emerald-900 border-emerald-300'
+              }`}>
+                {!maintenanceEnabled
+                  ? 'Suspended (Maintenance Window Off)'
+                  : isReindexingPaused
+                  ? 'Paused for Production Headroom'
+                  : 'In-Progress (Concurrent Re-index)'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs font-bold text-zinc-900">
+                {Math.min(100, Math.floor(reindexingProgress))}% Completed
+              </span>
+
+              {/* Pause / Resume Resource Management Control Button */}
+              <button
+                type="button"
+                id="btn-pause-resume-reindexing"
+                data-testid="btn-pause-resume-reindexing"
+                onClick={() => setIsReindexingPaused(!isReindexingPaused)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer shadow-xs border ${
+                  isReindexingPaused
+                    ? 'bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white border-emerald-700 ring-2 ring-emerald-300'
+                    : 'bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white border-amber-700 ring-2 ring-amber-300'
+                }`}
+                title={
+                  isReindexingPaused
+                    ? 'Resume background re-indexing task'
+                    : 'Pause background re-indexing task to free up production disk I/O & CPU resources'
+                }
+              >
+                {isReindexingPaused ? (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Resume</span>
+                  </>
+                ) : (
+                  <>
+                    <Pause className="w-3.5 h-3.5 fill-current" />
+                    <span>Pause</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Progress Bar Track */}
+          <div className="space-y-1.5">
+            <div
+              id="reindexing-progress-bar"
+              data-testid="reindexing-progress-bar"
+              className="w-full h-3 bg-zinc-200/90 rounded-full overflow-hidden relative shadow-inner p-0.5"
+            >
+              <div
+                className={`h-full transition-all duration-700 rounded-full ${
+                  isReindexingPaused
+                    ? 'bg-amber-400'
+                    : 'bg-gradient-to-r from-amber-500 via-orange-500 to-emerald-500 shadow-sm'
+                }`}
+                style={{ width: `${Math.min(100, Math.max(3, reindexingProgress))}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <span>Throughput: {isReindexingPaused ? '0.0 MB/s (Throttled)' : '4.8 MB/s (Low-Priority I/O)'}</span>
+                <span>•</span>
+                <span>Buffer Pool: {isReindexingPaused ? 'Idle' : '16 MB WAL allocated'}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span>
+                  ETA:{' '}
+                  {isReindexingPaused
+                    ? 'Paused'
+                    : `${Math.max(1, Math.round((100 - reindexingProgress) * 0.4))}s remaining`}
+                </span>
+                <span>•</span>
+                <span className="text-zinc-600 font-semibold">Tuples: {Math.round((reindexingProgress / 100) * 50000).toLocaleString()} / 50,000</span>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-zinc-500 leading-snug">
+            💡 <strong>Resource Management SLA:</strong> Background re-indexing uses PostgreSQL <code className="font-mono bg-zinc-100 px-1 py-0.5 rounded">CONCURRENTLY</code> mode with IOPS limits. Pausing temporarily suspends background index maintenance locks, instantly releasing disk read/write bandwidth for live transaction execution.
+          </p>
         </div>
       </div>
     </div>

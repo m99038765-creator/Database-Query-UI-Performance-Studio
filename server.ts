@@ -88,6 +88,93 @@ Respond in JSON with:
   }
 });
 
+// AI Smart Summary for Explain Plan Nodes API Endpoint
+app.post('/api/smart-summary-node', async (req, res) => {
+  try {
+    const { node, flags = {}, totalCost = 0, totalTimeMs = 0 } = req.body || {};
+    if (!node || typeof node !== 'object') {
+      return res.status(400).json({ error: 'Explain plan node data is required' });
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) {
+      try {
+        const { GoogleGenAI } = await import('@google/genai');
+        const ai = new GoogleGenAI({});
+        const prompt = `You are an expert PostgreSQL database performance engineer analyzing an EXPLAIN plan node.
+Analyze this node:
+- Node Type: ${node.nodeType}
+- Relation/Table: ${node.relationName}
+- Index Used: ${node.indexName || 'None'}
+- Planner Cost: ${node.cost}
+- Actual Time: ${node.actualTimeMs} ms
+- Rows Scanned: ${node.rowsScanned}
+- Rows Returned: ${node.rowsReturned}
+- Node Details: ${node.details}
+- Total Plan Cost: ${totalCost || node.cost}
+- Total Plan Latency: ${totalTimeMs || node.actualTimeMs} ms
+- B-Tree Indexing Active: ${flags.btreeIndexing !== false}
+- Batch Eager Loading Active: ${flags.batchEagerLoading !== false}
+- LRU Cache Active: ${flags.lruCaching !== false}
+
+Provide EXACTLY ONE concise, high-impact sentence explaining why this specific node is the primary performance bottleneck (or how it dominates query latency). Do not output multiple sentences, quotes, markdown formatting, or preamble. Return just the one sentence.`;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: prompt
+        });
+
+        const rawText = (response.text || '').trim().replace(/^["']|["']$/g, '');
+        if (rawText && rawText.length > 15) {
+          // Ensure it's a single sentence ending with a period
+          const singleSentence = rawText.split(/(?<=[.!?])\s+/)[0].trim();
+          return res.json({ summary: singleSentence, source: 'ai' });
+        }
+      } catch (geminiErr) {
+        console.warn('Gemini smart node summary fallback:', geminiErr);
+      }
+    }
+
+    // Domain-grounded heuristic fallback
+    const isSeq = node.nodeType === 'Seq Scan';
+    const isIndex = node.nodeType === 'Index Scan';
+    const isHash = node.nodeType === 'Hash Join';
+    const isLoop = node.nodeType === 'Nested Loop';
+    const isCache = node.nodeType === 'LRU Cache Lookup';
+    const isN1 = (node.details || '').includes('N+1') || (node.details || '').includes('synchronous') || (node.details || '').includes('Unbatched');
+    const time = Number(node.actualTimeMs) || 0;
+    const cost = Number(node.cost) || 0;
+    const rows = Number(node.rowsScanned) || 0;
+
+    let summary = '';
+    if (isSeq && (node.relationName?.includes('transaction') || rows >= 10000)) {
+      summary = `This node is the primary performance bottleneck because it performs a full sequential heap scan across all ${rows.toLocaleString()} unindexed rows on disk, consuming ${time.toFixed(1)}ms to locate target records.`;
+    } else if (isN1 || (isLoop && (node.details || '').toLowerCase().includes('n+1'))) {
+      summary = `This node creates the primary bottleneck by issuing repeated synchronous roundtrips for each parent record rather than batching child queries, multiplying network latency and consuming ${cost.toFixed(1)} cost units.`;
+    } else if (isSeq) {
+      summary = `This node constitutes the primary bottleneck because it scans every row in "${node.relationName}" without an index filter, forcing repetitive heap lookups for ${rows.toLocaleString()} candidate entries.`;
+    } else if (isLoop) {
+      summary = `This nested loop join acts as the primary bottleneck by re-evaluating the inner relation once for every outer tuple, resulting in exponential iteration overhead and ${time.toFixed(1)}ms of CPU time.`;
+    } else if (isHash) {
+      summary = `This node causes significant latency by building and scanning an in-memory hash table over ${rows.toLocaleString()} candidate tuples, saturating memory work buffers and CPU cycles.`;
+    } else if (node.nodeType === 'Sort') {
+      summary = `This sort operation acts as a bottleneck by reading and ordering records in memory buffers without an indexed ordering, causing high CPU processing delays.`;
+    } else if (isIndex && (cost >= 5 || time >= 2)) {
+      summary = `While utilizing ${node.indexName || 'a B-Tree index'}, this node bottlenecks performance due to high random I/O latency retrieving unclustered heap pages for returned rows.`;
+    } else if (isIndex) {
+      summary = `This node efficiently isolates records via ${node.indexName || 'an index scan'} in ${time.toFixed(2)}ms, with its minimal remaining latency stemming from heap row pointer resolution.`;
+    } else if (isCache) {
+      summary = `This node completely bypasses database query execution bottlenecks by serving pre-materialized results directly from high-speed memory in ${time.toFixed(2)}ms.`;
+    } else {
+      summary = `This ${node.nodeType} node on "${node.relationName}" is the primary performance bottleneck because it accounts for ${time.toFixed(1)}ms of execution time while inspecting ${rows.toLocaleString()} scanned rows.`;
+    }
+
+    return res.json({ summary, source: 'heuristic' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to generate node smart summary' });
+  }
+});
+
 // Resolve potential build / dist directories
 const candidateDirs = [
   path.join(process.cwd(), 'dist'),

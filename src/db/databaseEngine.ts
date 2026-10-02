@@ -312,9 +312,48 @@ let INDEX_CUSTOMER = new Map<string, number[]>();
 let IS_INDEX_SYNCHRONIZED = true;
 let LAST_BULK_IMPORT_RESULT: BulkImportResult | null = null;
 
-// In-Memory LRU Cache
+// In-Memory LRU Cache & Dynamic Plan Cache TTL
 const QUERY_CACHE = new Map<string, { result: QueryExecutionResult; timestamp: number }>();
 const MAX_CACHE_SIZE = 50;
+
+let PLAN_CACHE_TTL_SECONDS = 60;
+try {
+  if (typeof localStorage !== 'undefined') {
+    const savedTtl = localStorage.getItem('enterprise_plan_cache_ttl');
+    if (savedTtl) {
+      const parsed = Number(savedTtl);
+      if (!isNaN(parsed) && parsed >= 5) {
+        PLAN_CACHE_TTL_SECONDS = parsed;
+      }
+    }
+  }
+} catch {
+  // Ignore in SSR / worker
+}
+
+export function getPlanCacheTTLSeconds(): number {
+  return PLAN_CACHE_TTL_SECONDS;
+}
+
+export function setPlanCacheTTLSeconds(seconds: number): void {
+  PLAN_CACHE_TTL_SECONDS = Math.max(5, Math.min(600, Math.round(seconds)));
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('enterprise_plan_cache_ttl', String(PLAN_CACHE_TTL_SECONDS));
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+export function getPlanCacheStats() {
+  return {
+    size: QUERY_CACHE.size,
+    maxSize: MAX_CACHE_SIZE,
+    ttlSeconds: PLAN_CACHE_TTL_SECONDS,
+    lastRefreshedAt: LAST_CACHE_REFRESH_TIMESTAMP
+  };
+}
 
 export function initializeDatabase() {
   if (DB_RECORDS.length > 0) return;
@@ -413,11 +452,17 @@ export function executeQuery(
   // 1. Query Caching Check
   if (flags.queryCaching) {
     const cached = QUERY_CACHE.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < 30000) {
+    const ttlMs = PLAN_CACHE_TTL_SECONDS * 1000;
+    if (cached && Date.now() - cached.timestamp < ttlMs) {
+      const remainingMs = Math.max(0, cached.timestamp + ttlMs - Date.now());
+      const remainingSec = Math.ceil(remainingMs / 1000);
       return {
         ...cached.result,
         cacheHit: true,
         executionTimeMs: 0.15,
+        cachedTimestamp: cached.timestamp,
+        cacheTtlSeconds: PLAN_CACHE_TTL_SECONDS,
+        cacheExpiresAt: cached.timestamp + ttlMs,
         explainPlan: {
           nodeType: 'LRU Cache Lookup',
           relationName: 'query_cache_lru',
@@ -425,7 +470,7 @@ export function executeQuery(
           actualTimeMs: 0.15,
           rowsScanned: 0,
           rowsReturned: cached.result.records.length,
-          details: `Instant hash hit for key [${cacheKey.slice(0, 30)}...] with zero disk/memory traversal.`
+          details: `Instant hash hit for key [${cacheKey.slice(0, 30)}...] with zero disk/memory traversal. (TTL: ${PLAN_CACHE_TTL_SECONDS}s, ${remainingSec}s remaining before expiration)`
         }
       };
     }
@@ -624,7 +669,10 @@ export function executeQuery(
     explainPlan,
     activeQueriesCount,
     simulatedError,
-    warningNotice
+    warningNotice,
+    cachedTimestamp: Date.now(),
+    cacheTtlSeconds: PLAN_CACHE_TTL_SECONDS,
+    cacheExpiresAt: Date.now() + PLAN_CACHE_TTL_SECONDS * 1000
   };
 
   if (flags.queryCaching) {
@@ -633,6 +681,8 @@ export function executeQuery(
       if (firstKey) QUERY_CACHE.delete(firstKey);
     }
     LAST_CACHE_REFRESH_TIMESTAMP = Date.now();
+    result.cachedTimestamp = LAST_CACHE_REFRESH_TIMESTAMP;
+    result.cacheExpiresAt = LAST_CACHE_REFRESH_TIMESTAMP + PLAN_CACHE_TTL_SECONDS * 1000;
     QUERY_CACHE.set(cacheKey, { result, timestamp: LAST_CACHE_REFRESH_TIMESTAMP });
   }
 
