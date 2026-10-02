@@ -47,6 +47,7 @@ import {
 import {
   getInitialSerializationLogs
 } from './utils/serializationLogger';
+import { getInitialTrendHistory } from './utils/initialTrendHistory';
 
 export const DEFAULT_PDF_SECTION_GROUPS: DiagnosticPdfSectionGroup[] = [
   { id: 'group_metrics', title: 'Metrics Domain Group', sectionIds: ['sparklines'], isCollapsed: false },
@@ -296,7 +297,152 @@ export default function App() {
   const [isDiagnosticPdfSuccess, setIsDiagnosticPdfSuccess] = useState(false);
   const [thresholdViolationsHistory] = useState<any[]>([]);
   const [mutationHistory] = useState<DatabaseMutationHistoryEntry[]>(() => getDatabaseMutationHistory());
-  const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>([]);
+  const [trendHistory, setTrendHistory] = useState<LatencyTrendPoint[]>(() => getInitialTrendHistory());
+  const [isSimulatingSequence, setIsSimulatingSequence] = useState(false);
+
+  const handleToggleFlag = (key: keyof OptimizationFlags) => {
+    setFlags((prev) => {
+      const nextState = !prev[key];
+      const nextFlags = { ...prev, [key]: nextState };
+
+      const now = Date.now();
+      const d = new Date(now);
+      const timeFormatted = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+
+      let baseLatency = 0.15;
+      let rowsScanned = 100;
+      let activeQueries = 1;
+      let isCacheHit = false;
+      let simulatedError: string | null = null;
+
+      if (!nextFlags.batchEagerLoading) {
+        baseLatency = 468.4 + Math.random() * 20;
+        rowsScanned = 50000;
+        activeQueries = 101;
+        simulatedError = 'Database Connection Pool Timeout: max_connections (25) exceeded!';
+      } else if (!nextFlags.btreeIndexing) {
+        baseLatency = 49.2 + Math.random() * 6;
+        rowsScanned = 50000;
+      } else if (!nextFlags.virtualizedDOM) {
+        baseLatency = 18.5 + Math.random() * 3;
+      } else if (!nextFlags.deferredRendering) {
+        baseLatency = 3.6 + Math.random() * 1.2;
+      } else if (!nextFlags.queryCaching) {
+        baseLatency = 1.42 + Math.random() * 0.3;
+      } else {
+        baseLatency = 0.15 + Math.random() * 0.06;
+        isCacheHit = true;
+      }
+
+      setTrendHistory((h) => {
+        const prevPoint = h[h.length - 1];
+        const prevLatency = prevPoint ? prevPoint.executionTimeMs : 1.2;
+        const delta = Number((baseLatency - prevLatency).toFixed(2));
+
+        const newPoint: LatencyTrendPoint = {
+          id: `pt-flag-${now}-${Math.random().toString(36).slice(2, 6)}`,
+          timestamp: now,
+          timeFormatted,
+          executionTimeMs: Number(baseLatency.toFixed(2)),
+          rowsScanned,
+          activeQueriesCount: activeQueries,
+          cacheHit: isCacheHit,
+          flags: nextFlags,
+          flagToggled: key,
+          flagToggledState: nextState,
+          deltaMs: delta,
+          triggerEvent: `Flag ${key}: ${nextState ? 'ON' : 'OFF'} (${nextState ? 'Optimized' : 'Regression'})`,
+          simulatedError
+        };
+
+        return [...h, newPoint];
+      });
+
+      return nextFlags;
+    });
+  };
+
+  const handleRunOptimizationSequence = () => {
+    if (isSimulatingSequence) return;
+    setIsSimulatingSequence(true);
+
+    const steps: { flag: keyof OptimizationFlags; enable: boolean; label: string }[] = [
+      { flag: 'queryCaching', enable: false, label: 'Disable LRU Query Caching' },
+      { flag: 'queryCaching', enable: true, label: 'Restore LRU Query Caching' },
+      { flag: 'btreeIndexing', enable: false, label: 'Disable B-Tree Indexing (Full Table Scan)' },
+      { flag: 'btreeIndexing', enable: true, label: 'Restore B-Tree Indexing' },
+      { flag: 'batchEagerLoading', enable: false, label: 'Disable Batch Eager Loading (N+1 Storm)' },
+      { flag: 'batchEagerLoading', enable: true, label: 'Restore Batch Eager Loading' },
+      { flag: 'virtualizedDOM', enable: false, label: 'Disable DOM Virtualization' },
+      { flag: 'virtualizedDOM', enable: true, label: 'Restore DOM Virtualization' }
+    ];
+
+    let stepIdx = 0;
+    const interval = setInterval(() => {
+      if (stepIdx >= steps.length) {
+        clearInterval(interval);
+        setIsSimulatingSequence(false);
+        return;
+      }
+      const s = steps[stepIdx];
+      stepIdx++;
+      setFlags((prev) => {
+        const nextFlags = { ...prev, [s.flag]: s.enable };
+        const now = Date.now();
+        const d = new Date(now);
+        const timeFormatted = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+
+        let baseLatency = 0.16;
+        let rowsScanned = 100;
+        let activeQueries = 1;
+        let isCacheHit = false;
+        let simulatedError: string | null = null;
+
+        if (!nextFlags.batchEagerLoading) {
+          baseLatency = 472.5;
+          rowsScanned = 50000;
+          activeQueries = 101;
+          simulatedError = 'Database Connection Pool Timeout: max_connections (25) exceeded!';
+        } else if (!nextFlags.btreeIndexing) {
+          baseLatency = 51.8;
+          rowsScanned = 50000;
+        } else if (!nextFlags.virtualizedDOM) {
+          baseLatency = 19.2;
+        } else if (!nextFlags.queryCaching) {
+          baseLatency = 1.45;
+        } else {
+          baseLatency = 0.15;
+          isCacheHit = true;
+        }
+
+        setTrendHistory((h) => {
+          const prevPt = h[h.length - 1];
+          const prevLat = prevPt ? prevPt.executionTimeMs : 1.2;
+          const delta = Number((baseLatency - prevLat).toFixed(2));
+          return [
+            ...h,
+            {
+              id: `pt-seq-${now}-${stepIdx}`,
+              timestamp: now,
+              timeFormatted,
+              executionTimeMs: Number(baseLatency.toFixed(2)),
+              rowsScanned,
+              activeQueriesCount: activeQueries,
+              cacheHit: isCacheHit,
+              flags: nextFlags,
+              flagToggled: s.flag,
+              flagToggledState: s.enable,
+              deltaMs: delta,
+              triggerEvent: `Simulation: ${s.label}`,
+              simulatedError
+            }
+          ];
+        });
+
+        return nextFlags;
+      });
+    }, 750);
+  };
   const [mutationThreshold] = useState<number>(100);
   const [activeView, setActiveView] = useState<'grid' | 'trends' | 'comparison' | 'schema'>('grid');
   const [serializationLogs, setSerializationLogs] = useState<SerializationLogEntry[]>(() => getInitialSerializationLogs());
@@ -481,7 +627,7 @@ export default function App() {
 
       <OptimizationControls
         flags={flags}
-        onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+        onToggleFlag={handleToggleFlag}
         onResetAll={() => setFlags({ batchEagerLoading: true, btreeIndexing: true, queryCaching: true, virtualizedDOM: true, deferredRendering: true })}
         onApplyFlags={(newFlags) => setFlags(newFlags)}
         lowUsageThresholds={lowUsageThresholds}
@@ -602,7 +748,7 @@ export default function App() {
         ) : activeView === 'schema' ? (
           <DatabaseSchemaExplorerView
             flags={flags}
-            onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+            onToggleFlag={handleToggleFlag}
             onClose={() => setActiveView('grid')}
             lowUsageThresholds={lowUsageThresholds}
           />
@@ -610,7 +756,7 @@ export default function App() {
           <PerformanceTrendsView
             trendHistory={trendHistory}
             currentFlags={flags}
-            onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+            onToggleFlag={handleToggleFlag}
             onToggleAll={(enable) => setFlags({
               batchEagerLoading: enable,
               btreeIndexing: enable,
@@ -619,8 +765,8 @@ export default function App() {
               deferredRendering: enable
             })}
             onClearHistory={() => setTrendHistory([])}
-            onRunOptimizationSequence={() => {}}
-            isSimulatingSequence={false}
+            onRunOptimizationSequence={handleRunOptimizationSequence}
+            isSimulatingSequence={isSimulatingSequence}
             onAppendTrendPoint={(point) => setTrendHistory((prev) => [...prev, point])}
             thresholdViolations={thresholdViolationsHistory}
             mutationThreshold={mutationThreshold}
@@ -645,7 +791,7 @@ export default function App() {
         onClose={() => setIsPerformanceTrendsOpen(false)}
         trendHistory={trendHistory}
         currentFlags={flags}
-        onToggleFlag={(key) => setFlags((prev) => ({ ...prev, [key]: !prev[key] }))}
+        onToggleFlag={handleToggleFlag}
         onToggleAll={(enable) => setFlags({
           batchEagerLoading: enable,
           btreeIndexing: enable,
@@ -654,8 +800,8 @@ export default function App() {
           deferredRendering: enable
         })}
         onClearHistory={() => setTrendHistory([])}
-        onRunOptimizationSequence={() => {}}
-        isSimulatingSequence={false}
+        onRunOptimizationSequence={handleRunOptimizationSequence}
+        isSimulatingSequence={isSimulatingSequence}
         onAppendTrendPoint={(point) => setTrendHistory((prev) => [...prev, point])}
         thresholdViolations={thresholdViolationsHistory}
         mutationThreshold={mutationThreshold}

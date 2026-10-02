@@ -15,6 +15,7 @@ import { DatabaseStatePopover } from './DatabaseStatePopover';
 import { PdfReportModal } from './PdfReportModal';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { HistoricalLatencyAlertsPanel } from './HistoricalLatencyAlertsPanel';
+import { RegressionHistoryPanel } from './RegressionHistoryPanel';
 import { playAnomalyChime } from '../utils/soundEffects';
 import { createLatencyAnomalyLog } from '../utils/serializationLogger';
 import { exportAnomalyAuditJsonFile } from '../utils/anomalyAuditReportGenerator';
@@ -3323,6 +3324,15 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
 
       {/* 4b. Fetch Latency Distribution Histogram */}
       <LatencyHistogramCard flags={currentFlags} />
+
+      {/* 4c. Regression History Panel - Timeline of Flag Changes vs Historical Latency */}
+      <RegressionHistoryPanel
+        trendHistory={trendHistory}
+        currentFlags={safeCurrentFlags}
+        onToggleFlag={onToggleFlag}
+        onRunOptimizationSequence={onRunOptimizationSequence}
+        isSimulatingSequence={isSimulatingSequence}
+      />
 
       {/* 5. Event History Chronology Table */}
       <div className="bg-white rounded-xl border border-zinc-200 shadow-xs overflow-hidden">

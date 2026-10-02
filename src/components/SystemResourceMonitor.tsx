@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Cpu, HardDrive, Activity, Zap, Database, ChevronUp, ChevronDown, TrendingUp, Clock, AlertTriangle } from 'lucide-react';
+import { Cpu, HardDrive, Activity, Zap, Database, ChevronUp, ChevronDown, TrendingUp, Clock, AlertTriangle, LineChart } from 'lucide-react';
 import { OptimizationFlags } from '../types';
+import { ResourceTimeline } from './ResourceTimeline';
 
 interface SystemResourceMonitorProps {
   flags: OptimizationFlags;
@@ -16,6 +17,7 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
   onAutoCaptureSnapshot
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
+  const [activeView, setActiveView] = useState<'timeline' | 'gauges' | 'all'>('timeline');
   const [cpuUsage, setCpuUsage] = useState<number>(14);
   const [memoryMb, setMemoryMb] = useState<number>(128);
   const [activeThreads, setActiveThreads] = useState<number>(2);
@@ -259,124 +261,187 @@ export const SystemResourceMonitor: React.FC<SystemResourceMonitorProps> = ({
 
       {/* Expanded Metrics Body */}
       {isExpanded && (
-        <div className="p-3 space-y-3 w-80">
-          {/* CPU Usage Meter & Sparkline */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="flex items-center gap-1.5 text-zinc-300">
-                <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-                <span>CPU Usage (60s Trend)</span>
-              </span>
-              <span className={`font-bold ${cpuUsage > 70 ? 'text-rose-400' : cpuUsage > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                {cpuUsage}%
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2 bg-zinc-800/50 p-1.5 rounded-lg border border-zinc-700/60">
-              <div className="w-24">
-                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-500 rounded-full ${
-                      cpuUsage > 70 ? 'bg-rose-500' : cpuUsage > 40 ? 'bg-amber-500' : 'bg-emerald-500'
+        <div className="p-3 space-y-3 w-84 sm:w-92 max-h-[85vh] overflow-y-auto">
+          {/* View Mode Tab Switcher */}
+          <div className="flex items-center p-0.5 bg-zinc-800 rounded-lg border border-zinc-700 text-[10px] font-semibold">
+            <button
+              type="button"
+              id="tab-resource-timeline"
+              data-testid="tab-resource-timeline"
+              onClick={() => setActiveView('timeline')}
+              className={`flex-1 py-1 rounded flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                activeView === 'timeline'
+                  ? 'bg-indigo-600 text-white shadow-2xs font-bold'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <LineChart className="w-3 h-3 text-indigo-300" />
+              <span>Timeline (60s)</span>
+            </button>
+            <button
+              type="button"
+              id="tab-live-gauges"
+              data-testid="tab-live-gauges"
+              onClick={() => setActiveView('gauges')}
+              className={`flex-1 py-1 rounded flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                activeView === 'gauges'
+                  ? 'bg-indigo-600 text-white shadow-2xs font-bold'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Activity className="w-3 h-3 text-emerald-400" />
+              <span>Meters</span>
+            </button>
+            <button
+              type="button"
+              id="tab-all-in-one"
+              data-testid="tab-all-in-one"
+              onClick={() => setActiveView('all')}
+              className={`px-2.5 py-1 rounded flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                activeView === 'all'
+                  ? 'bg-indigo-600 text-white shadow-2xs font-bold'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+              title="Show both Resource Timeline chart and live meters simultaneously"
+            >
+              <span>Both</span>
+            </button>
+          </div>
+
+          {/* 1. Historical Resource Timeline Sparkline Chart */}
+          {(activeView === 'timeline' || activeView === 'all') && (
+            <ResourceTimeline
+              cpuHistory={cpuHistory}
+              memoryHistory={memoryHistory}
+              maxMemoryMb={512}
+              currentCpu={cpuUsage}
+              currentMemoryMb={memoryMb}
+              height={activeView === 'all' ? 80 : 95}
+            />
+          )}
+
+          {/* 2. Meters & Regression Analysis */}
+          {(activeView === 'gauges' || activeView === 'all') && (
+            <>
+              {/* CPU Usage Meter & Sparkline */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="flex items-center gap-1.5 text-zinc-300">
+                    <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>CPU Usage (60s Trend)</span>
+                  </span>
+                  <span className={`font-bold ${cpuUsage > 70 ? 'text-rose-400' : cpuUsage > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                    {cpuUsage}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 bg-zinc-800/50 p-1.5 rounded-lg border border-zinc-700/60">
+                  <div className="w-24">
+                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 rounded-full ${
+                          cpuUsage > 70 ? 'bg-rose-500' : cpuUsage > 40 ? 'bg-amber-500' : 'bg-emerald-500'
+                        }`}
+                        style={{ width: `${cpuUsage}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="px-1">
+                    {renderMiniSparkline(cpuHistory, cpuUsage > 70 ? '#f43f5e' : cpuUsage > 40 ? '#fbbf24' : '#34d399', 20, 110)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Memory Heap Meter & Sparkline */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="flex items-center gap-1.5 text-zinc-300">
+                    <HardDrive className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Buffer RAM (60s Trend)</span>
+                  </span>
+                  <span className="font-bold text-blue-400">
+                    {memoryMb}MB ({memPercent}%)
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 bg-zinc-800/50 p-1.5 rounded-lg border border-zinc-700/60">
+                  <div className="w-24">
+                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 transition-all duration-500 rounded-full"
+                        style={{ width: `${memPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="px-1">
+                    {renderMiniSparkline(memoryHistory, '#60a5fa', 20, 110)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Linear Regression: Time to Critical (90% Threshold) */}
+              <div className="bg-zinc-800/80 p-2.5 rounded-lg border border-zinc-700/80 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="flex items-center gap-1.5 text-zinc-200">
+                    <TrendingUp
+                      className={`w-3.5 h-3.5 ${
+                        timeToCritical.status === 'warning'
+                          ? 'text-amber-400'
+                          : timeToCritical.status === 'critical'
+                          ? 'text-rose-400'
+                          : 'text-emerald-400'
+                      }`}
+                    />
+                    <span className="font-semibold">Time to Critical (90% RAM)</span>
+                  </span>
+                  <span
+                    id="time-to-critical-estimate"
+                    className={`font-bold px-2 py-0.5 rounded text-[10px] tracking-wide ${
+                      timeToCritical.status === 'critical'
+                        ? 'bg-rose-950/80 text-rose-300 border border-rose-600 animate-pulse'
+                        : timeToCritical.status === 'warning'
+                        ? 'bg-amber-950/80 text-amber-300 border border-amber-600'
+                        : 'bg-emerald-950/80 text-emerald-300 border border-emerald-700'
                     }`}
-                    style={{ width: `${cpuUsage}%` }}
-                  />
+                  >
+                    {timeToCritical.estimateText}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-0.5">
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-zinc-500" />
+                    <span>Consumption Trend:</span>
+                  </span>
+                  <span
+                    className={`font-mono font-semibold ${
+                      timeToCritical.slopeMbPerMin > 0 ? 'text-amber-300' : 'text-emerald-400'
+                    }`}
+                  >
+                    {timeToCritical.slopeMbPerMin > 0
+                      ? `+${timeToCritical.slopeMbPerMin.toFixed(1)} MB/min`
+                      : '≤ 0.0 MB/min (Stable)'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-[9px] text-zinc-500 pt-1 border-t border-zinc-700/50">
+                  <span>Target: 460.8 MB (90% of 512MB)</span>
+                  <button
+                    type="button"
+                    onClick={() => setSimulateLeak(!simulateLeak)}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-semibold cursor-pointer transition-colors ${
+                      simulateLeak
+                        ? 'bg-rose-900/60 text-rose-200 border border-rose-700 hover:bg-rose-800/80'
+                        : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
+                    }`}
+                    title="Toggle simulated memory consumption surge to observe real-time linear regression projection"
+                  >
+                    {simulateLeak ? 'Stop Surge' : 'Test Surge'}
+                  </button>
                 </div>
               </div>
-              <div className="px-1">
-                {renderMiniSparkline(cpuHistory, cpuUsage > 70 ? '#f43f5e' : cpuUsage > 40 ? '#fbbf24' : '#34d399', 20, 110)}
-              </div>
-            </div>
-          </div>
+            </>
+          )}
 
-          {/* Memory Heap Meter & Sparkline */}
-          <div className="space-y-1">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="flex items-center gap-1.5 text-zinc-300">
-                <HardDrive className="w-3.5 h-3.5 text-blue-400" />
-                <span>Buffer RAM (60s Trend)</span>
-              </span>
-              <span className="font-bold text-blue-400">
-                {memoryMb}MB ({memPercent}%)
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2 bg-zinc-800/50 p-1.5 rounded-lg border border-zinc-700/60">
-              <div className="w-24">
-                <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-blue-500 transition-all duration-500 rounded-full"
-                    style={{ width: `${memPercent}%` }}
-                  />
-                </div>
-              </div>
-              <div className="px-1">
-                {renderMiniSparkline(memoryHistory, '#60a5fa', 20, 110)}
-              </div>
-            </div>
-          </div>
-
-          {/* Linear Regression: Time to Critical (90% Threshold) */}
-          <div className="bg-zinc-800/80 p-2.5 rounded-lg border border-zinc-700/80 space-y-1.5">
-            <div className="flex items-center justify-between text-[11px]">
-              <span className="flex items-center gap-1.5 text-zinc-200">
-                <TrendingUp
-                  className={`w-3.5 h-3.5 ${
-                    timeToCritical.status === 'warning'
-                      ? 'text-amber-400'
-                      : timeToCritical.status === 'critical'
-                      ? 'text-rose-400'
-                      : 'text-emerald-400'
-                  }`}
-                />
-                <span className="font-semibold">Time to Critical (90% RAM)</span>
-              </span>
-              <span
-                id="time-to-critical-estimate"
-                className={`font-bold px-2 py-0.5 rounded text-[10px] tracking-wide ${
-                  timeToCritical.status === 'critical'
-                    ? 'bg-rose-950/80 text-rose-300 border border-rose-600 animate-pulse'
-                    : timeToCritical.status === 'warning'
-                    ? 'bg-amber-950/80 text-amber-300 border border-amber-600'
-                    : 'bg-emerald-950/80 text-emerald-300 border border-emerald-700'
-                }`}
-              >
-                {timeToCritical.estimateText}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-0.5">
-              <span className="flex items-center gap-1">
-                <Clock className="w-3 h-3 text-zinc-500" />
-                <span>Consumption Trend:</span>
-              </span>
-              <span
-                className={`font-mono font-semibold ${
-                  timeToCritical.slopeMbPerMin > 0 ? 'text-amber-300' : 'text-emerald-400'
-                }`}
-              >
-                {timeToCritical.slopeMbPerMin > 0
-                  ? `+${timeToCritical.slopeMbPerMin.toFixed(1)} MB/min`
-                  : '≤ 0.0 MB/min (Stable)'}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-[9px] text-zinc-500 pt-1 border-t border-zinc-700/50">
-              <span>Target: 460.8 MB (90% of 512MB)</span>
-              <button
-                type="button"
-                onClick={() => setSimulateLeak(!simulateLeak)}
-                className={`px-1.5 py-0.5 rounded text-[9px] font-semibold cursor-pointer transition-colors ${
-                  simulateLeak
-                    ? 'bg-rose-900/60 text-rose-200 border border-rose-700 hover:bg-rose-800/80'
-                    : 'bg-zinc-700 hover:bg-zinc-600 text-zinc-300'
-                }`}
-                title="Toggle simulated memory consumption surge to observe real-time linear regression projection"
-              >
-                {simulateLeak ? 'Stop Surge' : 'Test Surge'}
-              </button>
-            </div>
-          </div>
-
-          {/* Active Query Threads & Cache Status */}
+          {/* Always Visible: Active Query Threads & Cache Status */}
           <div className="grid grid-cols-2 gap-2 pt-1 border-t border-zinc-800 text-[10px] text-zinc-400">
             <div className="bg-zinc-800/60 p-2 rounded-lg border border-zinc-700/60">
               <div className="flex items-center gap-1 text-zinc-300">
