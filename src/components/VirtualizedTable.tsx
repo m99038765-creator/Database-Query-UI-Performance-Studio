@@ -463,6 +463,7 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
   }, [records, pinnedRowIds]);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [isLatencyDistModalOpen, setIsLatencyDistModalOpen] = useState(false);
+  const [selectedMetricsRecord, setSelectedMetricsRecord] = useState<any | null>(null);
   const [batchNotification, setBatchNotification] = useState<{
     type: 'export' | 'delete';
     title: string;
@@ -3774,16 +3775,43 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setScrollRenderTimes([2.1, 3.5, 4.1]);
-                setFrameDropsCount(0);
-              }}
-              className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-semibold cursor-pointer transition-colors border border-zinc-600"
-            >
-              Reset Stats
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const logData = {
+                    exportType: 'dom_render_performance_logs',
+                    exportedAt: new Date().toISOString(),
+                    totalEvents: scrollRenderTimes.length,
+                    frameDropsCount,
+                    avgRenderMs: Number((scrollRenderTimes.reduce((a, b) => a + b, 0) / (scrollRenderTimes.length || 1)).toFixed(2)),
+                    frames: scrollRenderTimes.map((ms, idx) => ({
+                      eventId: idx + 1,
+                      renderTimeMs: ms,
+                      isFrameDrop: ms > 16.6
+                    }))
+                  };
+                  const blob = new Blob([JSON.stringify(logData, null, 2)], { type: 'application/json' });
+                  triggerFileDownload(blob, `dom-render-performance-logs-${Date.now()}.json`);
+                }}
+                className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1.5 shadow-xs"
+                title="Download JSON file containing captured DOM render and scroll frame timing logs"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Frame Logs</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setScrollRenderTimes([2.1, 3.5, 4.1]);
+                  setFrameDropsCount(0);
+                }}
+                className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-semibold cursor-pointer transition-colors border border-zinc-600"
+              >
+                Reset Stats
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3907,12 +3935,8 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
                       id={`row-${rec.id}`}
                       data-selected={isSelected}
                       aria-selected={isSelected}
-                      onClick={() => toggleExpand(rec.id)}
-                      title={
-                        isAnyHeatmapLayerActive
-                          ? `Effective Latency: ${effectiveLatencyMs.toFixed(1)}ms | Fetch: ${breakdown.dataFetchMs.toFixed(1)}ms, Render: ${breakdown.rowRenderMs.toFixed(1)}ms, DOM: ${breakdown.domHydrationMs.toFixed(1)}ms | Relative Cost: ${Math.round(relativeCostRatio * 100)}% (Z-score: ${zScoreVal.toFixed(2)}σ)`
-                          : undefined
-                      }
+                      onClick={() => setSelectedMetricsRecord(rec)}
+                      title="Click to inspect full execution metrics, latency breakdown, and cache vs disk status"
                       className={`grid grid-cols-12 px-4 ${isCompactView ? 'py-1.5' : 'py-3'} items-center text-xs transition-colors cursor-pointer border-b relative group ${heatmapRowBg}`}
                       style={heatmapRowStyle}
                     >
@@ -4513,6 +4537,137 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
         onClose={() => setIsCompareModalOpen(false)}
         initialFlags={safeFlags}
       />
+
+      {/* Row Execution Metrics Inspection Modal */}
+      {selectedMetricsRecord && (() => {
+        const breakdown = computeRowLatencyBreakdown(selectedMetricsRecord);
+        const isCached = selectedMetricsRecord.status === 'completed' || breakdown.effectiveLatencyMs < 35;
+        return (
+          <div
+            id="row-execution-metrics-modal"
+            data-testid="row-execution-metrics-modal"
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn font-sans"
+          >
+            <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-zinc-200 animate-scaleUp">
+              <div className="p-5 bg-gradient-to-r from-zinc-900 to-indigo-950 text-white flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-indigo-600/30 border border-indigo-500/40 rounded-xl text-indigo-300">
+                    <Activity className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-zinc-100 flex items-center gap-2">
+                      <span>Row Execution Metrics: {selectedMetricsRecord.orderNumber}</span>
+                    </h3>
+                    <p className="text-xs text-zinc-400">
+                      Detailed diagnostic telemetry &amp; latency contribution for order ID {selectedMetricsRecord.id}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  id="btn-close-row-metrics-modal"
+                  data-testid="btn-close-row-metrics-modal"
+                  onClick={() => setSelectedMetricsRecord(null)}
+                  className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                  aria-label="Close modal"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200">
+                    <div className="text-[10px] uppercase font-bold text-zinc-500">Customer</div>
+                    <div className="font-semibold text-zinc-900 mt-0.5">{selectedMetricsRecord.customerName}</div>
+                  </div>
+                  <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-200">
+                    <div className="text-[10px] uppercase font-bold text-zinc-500">Status / Category</div>
+                    <div className="font-semibold text-zinc-900 mt-0.5">{selectedMetricsRecord.status} ({selectedMetricsRecord.category})</div>
+                  </div>
+                </div>
+
+                {/* Cached vs Disk Status Banner */}
+                <div className={`p-4 rounded-xl border flex items-center gap-3 ${
+                  isCached
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                    : 'bg-amber-50 border-amber-200 text-amber-950'
+                }`}>
+                  <div className={`p-2 rounded-lg ${isCached ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
+                    <Database className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-sm flex items-center gap-2">
+                      <span>{isCached ? '🟢 Buffer Pool Cache Hit (Memory L1/L2)' : '💾 Physical Disk I/O Read (Heap / Index Scan)'}</span>
+                    </div>
+                    <p className="text-xs opacity-80 mt-0.5">
+                      {isCached
+                        ? 'Record data was served directly from shared_buffers memory cache without disk seek overhead.'
+                        : 'Required physical random I/O read from block storage / NVMe disk tier.'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Latency Contribution Breakdown */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold text-zinc-800 uppercase tracking-wider">Latency Contribution Breakdown</h4>
+                  <div className="grid grid-cols-4 gap-2 text-center text-xs font-mono">
+                    <div className="p-2.5 bg-indigo-50 rounded-xl border border-indigo-200">
+                      <div className="text-[10px] uppercase font-semibold text-indigo-700">Total</div>
+                      <div className="font-extrabold text-indigo-900 text-sm mt-0.5">{breakdown.effectiveLatencyMs.toFixed(1)}ms</div>
+                    </div>
+                    <div className="p-2.5 bg-rose-50 rounded-xl border border-rose-200">
+                      <div className="text-[10px] uppercase font-semibold text-rose-700">Fetch</div>
+                      <div className="font-extrabold text-rose-900 text-sm mt-0.5">{breakdown.dataFetchMs.toFixed(1)}ms</div>
+                    </div>
+                    <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200">
+                      <div className="text-[10px] uppercase font-semibold text-amber-700">Render</div>
+                      <div className="font-extrabold text-amber-900 text-sm mt-0.5">{breakdown.rowRenderMs.toFixed(1)}ms</div>
+                    </div>
+                    <div className="p-2.5 bg-purple-50 rounded-xl border border-purple-200">
+                      <div className="text-[10px] uppercase font-semibold text-purple-700">DOM</div>
+                      <div className="font-extrabold text-purple-900 text-sm mt-0.5">{breakdown.domHydrationMs.toFixed(1)}ms</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Additional Properties */}
+                <div className="space-y-2 text-xs">
+                  <h4 className="font-bold text-zinc-800 uppercase tracking-wider">Execution Diagnostics</h4>
+                  <div className="p-3 bg-zinc-900 text-zinc-200 rounded-xl font-mono text-[11px] space-y-1">
+                    <div>Record ID: {selectedMetricsRecord.id}</div>
+                    <div>Amount USD: ${selectedMetricsRecord.amount?.toLocaleString()}</div>
+                    <div>Line Items Count: {breakdown.recordItemCount} items</div>
+                    <div>Batch Eager Loading: {safeFlags.batchEagerLoading ? 'Enabled' : 'Disabled (N+1 Risk)'}</div>
+                    <div>B-Tree Indexing: {safeFlags.btreeIndexing ? 'Active (Index Scan)' : 'Inactive (Seq Scan)'}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 bg-zinc-50 border-t border-zinc-200 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const blob = new Blob([JSON.stringify({ record: selectedMetricsRecord, breakdown, isCached, flags: safeFlags }, null, 2)], { type: 'application/json' });
+                    triggerFileDownload(blob, `row-execution-metrics-${selectedMetricsRecord.orderNumber}.json`);
+                  }}
+                  className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors shadow-xs flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Row JSON</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedMetricsRecord(null)}
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 'Back to Top' Floating Action Button */}
       {scrollTop > ROW_HEIGHT * 20 && (

@@ -10573,6 +10573,17 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 </button>
                 <button
                   type="button"
+                  id="btn-open-index-advisor"
+                  data-testid="btn-open-index-advisor"
+                  onClick={() => setShowIntelligentAdvisorModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow-2xs"
+                  title="Open Index Advisor to analyze expensive query history and suggest missing B-Tree indexes reducing scan costs"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Index Advisor</span>
+                </button>
+                <button
+                  type="button"
                   id="btn-modal-export-schema-state"
                   data-testid="btn-modal-export-schema-state"
                   onClick={handleExportSchemaState}
