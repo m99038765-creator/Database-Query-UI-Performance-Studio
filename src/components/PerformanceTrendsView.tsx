@@ -17,6 +17,8 @@ import { QueryReplayModal } from './QueryReplayModal';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { HistoricalLatencyAlertsPanel } from './HistoricalLatencyAlertsPanel';
 import { RegressionHistoryPanel } from './RegressionHistoryPanel';
+import { LatencyDrilldownComponent } from './LatencyDrilldownComponent';
+import { PredictiveAlertBanner } from './PredictiveAlertBanner';
 import { playAnomalyChime } from '../utils/soundEffects';
 import { createLatencyAnomalyLog } from '../utils/serializationLogger';
 import { exportAnomalyAuditJsonFile } from '../utils/anomalyAuditReportGenerator';
@@ -466,7 +468,9 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
   mutationHistory = [],
   alertThresholdMs = 100,
   onAlertThresholdChange,
-  onApplyFlags
+  onApplyFlags,
+  onFilterVirtualizedTable,
+  onNavigateToGrid
 }) => {
   const safeCurrentFlags = currentFlags || {
     batchEagerLoading: true,
@@ -481,6 +485,9 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
   const barChartRef = useRef<SVGSVGElement>(null);
 
   const [scaleType, setScaleType] = useState<'linear' | 'log'>('linear');
+  const [showTotalLatencyMetric, setShowTotalLatencyMetric] = useState<boolean>(true);
+  const [showIoWaitMetric, setShowIoWaitMetric] = useState<boolean>(true);
+  const [showCpuTimeMetric, setShowCpuTimeMetric] = useState<boolean>(true);
   const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
   const [replayPoint, setReplayPoint] = useState<LatencyTrendPoint | null>(null);
   const [isReplayModalOpen, setIsReplayModalOpen] = useState<boolean>(false);
@@ -1287,33 +1294,68 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
     }
 
     // D3 Area generator
-    const areaGenerator = d3
-      .area<LatencyTrendPoint>()
-      .x((_, i) => xScale(i))
-      .y0(innerHeight)
-      .y1((d) => yScale(Math.max(d.executionTimeMs, 0.05)))
-      .curve(d3.curveMonotoneX);
+    if (showTotalLatencyMetric) {
+      const areaGenerator = d3
+        .area<LatencyTrendPoint>()
+        .x((_, i) => xScale(i))
+        .y0(innerHeight)
+        .y1((d) => yScale(Math.max(d.executionTimeMs, 0.05)))
+        .curve(d3.curveMonotoneX);
 
-    g.append('path')
-      .datum(trendHistory)
-      .attr('fill', 'url(#latency-area-gradient)')
-      .attr('d', areaGenerator);
+      g.append('path')
+        .datum(trendHistory)
+        .attr('fill', 'url(#latency-area-gradient)')
+        .attr('d', areaGenerator);
 
-    // D3 Line generator
-    const lineGenerator = d3
-      .line<LatencyTrendPoint>()
-      .x((_, i) => xScale(i))
-      .y((d) => yScale(Math.max(d.executionTimeMs, 0.05)))
-      .curve(d3.curveMonotoneX);
+      // D3 Line generator
+      const lineGenerator = d3
+        .line<LatencyTrendPoint>()
+        .x((_, i) => xScale(i))
+        .y((d) => yScale(Math.max(d.executionTimeMs, 0.05)))
+        .curve(d3.curveMonotoneX);
 
-    g.append('path')
-      .datum(trendHistory)
-      .attr('fill', 'none')
-      .attr('stroke', '#059669')
-      .attr('stroke-width', 2.5)
-      .attr('stroke-linecap', 'round')
-      .attr('stroke-linejoin', 'round')
-      .attr('d', lineGenerator);
+      g.append('path')
+        .datum(trendHistory)
+        .attr('fill', 'none')
+        .attr('stroke', '#059669')
+        .attr('stroke-width', 2.5)
+        .attr('stroke-linecap', 'round')
+        .attr('stroke-linejoin', 'round')
+        .attr('d', lineGenerator);
+    }
+
+    if (showIoWaitMetric) {
+      const ioWaitLineGen = d3
+        .line<LatencyTrendPoint>()
+        .x((_, i) => xScale(i))
+        .y((d) => yScale(Math.max(d.executionTimeMs * 0.65, 0.05)))
+        .curve(d3.curveMonotoneX);
+
+      g.append('path')
+        .datum(trendHistory)
+        .attr('fill', 'none')
+        .attr('stroke', '#d97706')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '4,2')
+        .attr('stroke-linecap', 'round')
+        .attr('d', ioWaitLineGen);
+    }
+
+    if (showCpuTimeMetric) {
+      const cpuTimeLineGen = d3
+        .line<LatencyTrendPoint>()
+        .x((_, i) => xScale(i))
+        .y((d) => yScale(Math.max(d.executionTimeMs * 0.35, 0.05)))
+        .curve(d3.curveMonotoneX);
+
+      g.append('path')
+        .datum(trendHistory)
+        .attr('fill', 'none')
+        .attr('stroke', '#2563eb')
+        .attr('stroke-width', 2)
+        .attr('stroke-linecap', 'round')
+        .attr('d', cpuTimeLineGen);
+    }
 
     // 3-Sigma Moving Average and Upper Boundary Curves Overlay
     if (showMovingAverageLine && pointAnomalyMetrics.length > 0) {
@@ -2122,7 +2164,10 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
     pointAnomalyMetrics,
     showMovingAverageLine,
     anomalyDetectorMode,
-    movingAverageWindow
+    movingAverageWindow,
+    showTotalLatencyMetric,
+    showIoWaitMetric,
+    showCpuTimeMetric
   ]);
 
   // Secondary D3 Horizontal Breakdown Chart: Flag Impact
@@ -2205,6 +2250,25 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
 
   const content = (
     <div className="space-y-6" id="performance-trends-view">
+      {/* Predictive Alert Feature */}
+      <PredictiveAlertBanner
+        trendHistory={trendHistory}
+        currentFlags={safeCurrentFlags}
+        onApplyOptimizations={() => {
+          if (onApplyFlags) {
+            onApplyFlags({
+              batchEagerLoading: true,
+              btreeIndexing: true,
+              queryCaching: true,
+              virtualizedDOM: true,
+              deferredRendering: true
+            });
+          } else if (onToggleAll) {
+            onToggleAll(true);
+          }
+        }}
+      />
+
       {/* High-visibility Latency Spike Anomaly Alert Toast */}
       {activeAlertBanner && (
         <div
@@ -3291,6 +3355,67 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
               </div>
             </div>
 
+          {/* Interactive Legend for Latency Metrics Toggling */}
+          <div
+            id="performance-trends-interactive-legend"
+            data-testid="performance-trends-interactive-legend"
+            className="px-4 py-2.5 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center justify-between gap-3 text-xs"
+          >
+            <div className="flex items-center gap-2 font-bold text-zinc-800">
+              <Sliders className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Legend &amp; Metric Layers:</span>
+            </div>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <button
+                type="button"
+                id="legend-toggle-total-latency"
+                data-testid="legend-toggle-total-latency"
+                onClick={() => setShowTotalLatencyMetric(!showTotalLatencyMetric)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border shadow-2xs ${
+                  showTotalLatencyMetric
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950 ring-1 ring-emerald-400/40'
+                    : 'bg-zinc-100 border-zinc-300 text-zinc-400 line-through opacity-60'
+                }`}
+                title="Toggle visibility of Total Execution Latency trend line and area fill"
+              >
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" />
+                <span>Total Latency</span>
+              </button>
+
+              <button
+                type="button"
+                id="legend-toggle-io-wait"
+                data-testid="legend-toggle-io-wait"
+                onClick={() => setShowIoWaitMetric(!showIoWaitMetric)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border shadow-2xs ${
+                  showIoWaitMetric
+                    ? 'bg-amber-50 border-amber-300 text-amber-950 ring-1 ring-amber-400/40'
+                    : 'bg-zinc-100 border-zinc-300 text-zinc-400 line-through opacity-60'
+                }`}
+                title="Toggle visibility of I/O Wait time component line (Disk read/write stalls)"
+              >
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-600" />
+                <span>I/O Wait Time</span>
+              </button>
+
+              <button
+                type="button"
+                id="legend-toggle-cpu-time"
+                data-testid="legend-toggle-cpu-time"
+                onClick={() => setShowCpuTimeMetric(!showCpuTimeMetric)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all border shadow-2xs ${
+                  showCpuTimeMetric
+                    ? 'bg-blue-50 border-blue-300 text-blue-950 ring-1 ring-blue-400/40'
+                    : 'bg-zinc-100 border-zinc-300 text-zinc-400 line-through opacity-60'
+                }`}
+                title="Toggle visibility of CPU Processing Time component line (Tuple evaluation & query compute)"
+              >
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
+                <span>CPU Processing Time</span>
+              </button>
+            </div>
+          </div>
+
           {/* D3 Canvas Container */}
           <div ref={chartContainerRef} className="relative w-full flex-1 min-h-[340px]">
             <svg ref={svgRef} className="w-full h-full overflow-visible" />
@@ -3680,6 +3805,13 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
         onToggleFlag={onToggleFlag}
         onRunOptimizationSequence={onRunOptimizationSequence}
         isSimulatingSequence={isSimulatingSequence}
+      />
+
+      {/* 4d. Latency Drilldown & Query Interval Inspector */}
+      <LatencyDrilldownComponent
+        trendHistory={trendHistory}
+        onFilterVirtualizedTable={onFilterVirtualizedTable || (() => {})}
+        onNavigateToGrid={onNavigateToGrid || (() => {})}
       />
 
       {/* 5. Event History Chronology Table */}

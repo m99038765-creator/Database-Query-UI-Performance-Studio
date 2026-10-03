@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { QueryExecutionResult, OptimizationFlags } from '../types';
-import { Clock, Database, Layers, Monitor, CheckCircle, AlertTriangle, Zap } from 'lucide-react';
+import { Clock, Database, Layers, Monitor, CheckCircle, AlertTriangle, Zap, Sparkles } from 'lucide-react';
 
 interface AnimatedCounterOptions {
   duration?: number;
@@ -89,6 +89,11 @@ interface MetricsBarProps {
   heatmapModeEnabled?: boolean;
   onToggleHeatmapMode?: (enabled: boolean) => void;
   onResetMetrics?: () => void;
+  performanceBudgetMs?: number;
+  onPerformanceBudgetChange?: (val: number) => void;
+  onToggleFlag?: (flag: keyof OptimizationFlags) => void;
+  onApplyFlags?: (flags: OptimizationFlags) => void;
+  onAutoOptimize?: () => void;
 }
 
 export const MetricsBar: React.FC<MetricsBarProps> = ({
@@ -106,7 +111,12 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   onAlertThresholdChange,
   heatmapModeEnabled = true,
   onToggleHeatmapMode,
-  onResetMetrics
+  onResetMetrics,
+  performanceBudgetMs,
+  onPerformanceBudgetChange,
+  onToggleFlag,
+  onApplyFlags,
+  onAutoOptimize
 }) => {
   const safeFlags = flags || {
     batchEagerLoading: true,
@@ -126,6 +136,20 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   const isPoolHealthy = !queryResult?.simulatedError;
   const isThresholdExceeded = currentLatency > alertThresholdMs;
 
+  const [internalBudget, setInternalBudget] = useState<number>(200);
+  const effectiveBudget = performanceBudgetMs ?? internalBudget;
+  const setEffectiveBudget = onPerformanceBudgetChange ?? setInternalBudget;
+
+  const isBudgetExceeded = currentLatency > effectiveBudget;
+
+  const suggestedOptimizationFlag = useMemo(() => {
+    if (!safeFlags.btreeIndexing) return { key: 'btreeIndexing' as keyof OptimizationFlags, label: 'B-Tree Indexing' };
+    if (!safeFlags.queryCaching) return { key: 'queryCaching' as keyof OptimizationFlags, label: 'Query Caching' };
+    if (!safeFlags.batchEagerLoading) return { key: 'batchEagerLoading' as keyof OptimizationFlags, label: 'Batch Eager Loading' };
+    if (!safeFlags.virtualizedDOM) return { key: 'virtualizedDOM' as keyof OptimizationFlags, label: 'Virtualized DOM' };
+    return null;
+  }, [safeFlags]);
+
   // Animated counters with smooth cubic easing and CSS transitions
   const animatedLatency = useAnimatedCounter(currentLatency, { duration: 450, decimals: 1 });
   const animatedRowsScanned = useAnimatedCounter(queryResult?.rowsScanned ?? 0, { duration: 500, decimals: 0 });
@@ -135,7 +159,114 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   const animatedDbConnections = useAnimatedCounter(queryResult?.activeQueriesCount ?? 1, { duration: 300, decimals: 0 });
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+    <div className="space-y-3">
+      {/* Performance Budget Exceeded Warning Banner */}
+      {isBudgetExceeded && (
+        <div
+          id="performance-budget-warning-banner"
+          data-testid="performance-budget-warning-banner"
+          className="p-3.5 bg-gradient-to-r from-rose-950 via-amber-950 to-zinc-950 text-white rounded-xl border-2 border-rose-500 shadow-lg flex items-center justify-between gap-3 animate-fadeIn"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 bg-rose-600 text-white rounded-lg shadow-inner animate-pulse">
+              <AlertTriangle className="w-4 h-4 text-amber-200" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="font-extrabold text-xs text-white uppercase tracking-wider">
+                  ⚠️ Performance Budget Exceeded ({currentLatency.toFixed(1)}ms &gt; {effectiveBudget}ms global budget limit)
+                </h4>
+                <span className="font-mono text-[10px] bg-rose-500 text-white px-2 py-0.2 rounded-full font-bold uppercase">
+                  Budget Violation
+                </span>
+              </div>
+              <p className="text-[11px] text-rose-200 mt-0.5">
+                {suggestedOptimizationFlag ? (
+                  <>
+                    Recommended Optimization: Enable <strong className="text-amber-300 font-bold">{suggestedOptimizationFlag.label}</strong> to reduce latency below the performance budget.
+                  </>
+                ) : (
+                  'Average query execution time has exceeded the configured global performance budget threshold.'
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {suggestedOptimizationFlag && onToggleFlag && (
+              <button
+                type="button"
+                id="btn-apply-budget-recommendation"
+                data-testid="btn-apply-budget-recommendation"
+                onClick={() => onToggleFlag(suggestedOptimizationFlag.key)}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow transition-colors cursor-pointer flex items-center gap-1"
+              >
+                <Zap className="w-3 h-3 text-amber-200" />
+                <span>Enable {suggestedOptimizationFlag.label}</span>
+              </button>
+            )}
+            {onAutoOptimize && (
+              <button
+                type="button"
+                id="btn-metrics-auto-optimize"
+                data-testid="btn-metrics-auto-optimize"
+                onClick={onAutoOptimize}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold shadow transition-colors cursor-pointer"
+              >
+                Auto-Optimize All
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* AI-powered 'Quick Fix' badge for persistent N+1 query pattern */}
+      {(!safeFlags.batchEagerLoading || !safeFlags.btreeIndexing) && (
+        <div
+          id="ai-quick-fix-badge"
+          data-testid="ai-quick-fix-badge"
+          className="p-3.5 bg-gradient-to-r from-purple-950 via-indigo-950 to-zinc-950 text-white rounded-xl border-2 border-purple-400 shadow-lg flex items-center justify-between gap-3 animate-fadeIn"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 bg-purple-600 text-white rounded-lg shadow-inner animate-bounce">
+              <Sparkles className="w-4 h-4 text-amber-200" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="font-extrabold text-xs text-white uppercase tracking-wider">
+                  ⚡ AI Quick Fix: Persistent N+1 Query Cascade &amp; Scan Bottleneck Detected
+                </h4>
+                <span className="font-mono text-[10px] bg-purple-500 text-white px-2 py-0.2 rounded-full font-bold uppercase animate-pulse">
+                  AI Recommendation
+                </span>
+              </div>
+              <p className="text-[11px] text-purple-200 mt-0.5">
+                Unbatched child queries and unindexed heap scans are degrading throughput. Toggle <strong className="text-white font-bold">Batch Eager Loading</strong> &amp; <strong className="text-white font-bold">B-Tree Indexing</strong> simultaneously to resolve.
+              </p>
+            </div>
+          </div>
+          {onApplyFlags && (
+            <button
+              type="button"
+              id="btn-ai-quick-fix-apply"
+              data-testid="btn-ai-quick-fix-apply"
+              onClick={() => {
+                onApplyFlags({
+                  ...safeFlags,
+                  batchEagerLoading: true,
+                  btreeIndexing: true
+                });
+              }}
+              className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white rounded-xl text-xs font-bold shadow-md cursor-pointer shrink-0 flex items-center gap-1.5 transition-all transform hover:scale-105"
+              title="Simultaneously enable Batch Eager Loading and B-Tree Indexing"
+            >
+              <Zap className="w-3.5 h-3.5 text-amber-200" />
+              <span>Apply Quick Fix (Batch + Index)</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {/* 1. Query Execution Latency */}
       <div className={`bg-white rounded-xl border p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${isThresholdExceeded ? 'border-rose-300 ring-2 ring-rose-400/20 bg-rose-50/30' : 'border-zinc-200'} ${animatedLatency.isAnimating ? 'ring-2 ring-indigo-400/30 shadow-sm' : ''}`}>
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
@@ -520,12 +651,30 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
           </button>
         </div>
 
+        <div className="pt-1.5 mt-1.5 border-t border-zinc-100 flex items-center justify-between">
+          <span className="text-[11px] text-zinc-600 font-medium">Perf Budget</span>
+          <select
+            id="select-performance-budget"
+            data-testid="select-performance-budget"
+            value={effectiveBudget}
+            onChange={(e) => setEffectiveBudget(Number(e.target.value))}
+            className="bg-zinc-100 hover:bg-zinc-200 text-zinc-800 font-mono text-[11px] font-bold px-2 py-0.5 rounded border border-zinc-300 cursor-pointer focus:outline-hidden"
+            title="Set global maximum allowable latency performance budget"
+          >
+            <option value={50}>50ms (Strict)</option>
+            <option value={100}>100ms (Standard)</option>
+            <option value={200}>200ms (Relaxed)</option>
+            <option value={500}>500ms (Enterprise)</option>
+          </select>
+        </div>
+
         <div
           className={`absolute bottom-0 left-0 right-0 h-1 transition-all duration-500 ease-out ${
             isPoolHealthy ? 'bg-emerald-500' : 'bg-rose-500'
           }`}
         />
       </div>
+    </div>
     </div>
   );
 };

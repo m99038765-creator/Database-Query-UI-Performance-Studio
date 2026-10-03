@@ -138,6 +138,17 @@ export const KeyboardShortcutsModal: React.FC<KeyboardShortcutsModalProps> = ({
     {
       category: 'system' as const,
       categoryLabel: 'Global Operations',
+      keys: [`${modKey}+Shift+F`],
+      action: 'Fix All (Ctrl+Shift+F)',
+      description: 'Automatically applies all missing indexes and optimization flags suggested by the current state of the ExplainPlanViewer.',
+      isToggleAll: true,
+      status: Object.values(flags).every(Boolean),
+      icon: Sparkles,
+      impact: 'Instant Auto-Fix'
+    },
+    {
+      category: 'system' as const,
+      categoryLabel: 'Global Operations',
       keys: ['?', 'Shift+/'],
       action: 'Toggle Shortcuts Cheat Sheet',
       description: 'Opens or closes this interactive keyboard shortcut guide and quick-action launcher.',

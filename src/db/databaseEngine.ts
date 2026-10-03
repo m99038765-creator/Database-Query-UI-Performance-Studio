@@ -346,6 +346,29 @@ export function setPlanCacheTTLSeconds(seconds: number): void {
   }
 }
 
+let globalQueryThrottleLatencyMs = 0;
+export function setQueryThrottleLatencyMs(ms: number): void {
+  globalQueryThrottleLatencyMs = Math.max(0, Math.min(5000, Math.round(ms)));
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('enterprise_query_throttle_latency_ms', String(globalQueryThrottleLatencyMs));
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+export function getQueryThrottleLatencyMs(): number {
+  if (globalQueryThrottleLatencyMs === 0) {
+    try {
+      const saved = localStorage.getItem('enterprise_query_throttle_latency_ms');
+      if (saved) globalQueryThrottleLatencyMs = Number(saved);
+    } catch {
+      // ignore
+    }
+  }
+  return globalQueryThrottleLatencyMs;
+}
+
 export function getPlanCacheStats() {
   return {
     size: QUERY_CACHE.size,
@@ -594,6 +617,10 @@ export function executeQuery(
     // Seq scan penalty scales proportionally with heap size (50,000 baseline = 48.5ms)
     const heapScale = DB_RECORDS.length / 50000;
     executionTimeMs += 48.5 * heapScale;
+  }
+  const throttleMs = getQueryThrottleLatencyMs();
+  if (throttleMs > 0) {
+    executionTimeMs += throttleMs;
   }
 
   // Format Explain Plan Node

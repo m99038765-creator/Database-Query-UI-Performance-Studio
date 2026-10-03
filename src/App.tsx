@@ -206,6 +206,7 @@ export default function App() {
   const [pageSize] = useState(100);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(false);
   const [alertThresholdMs, setAlertThresholdMs] = useState<number>(100);
+  const [performanceBudgetMs, setPerformanceBudgetMs] = useState<number>(200);
   const [showLatencyHeatmap, setShowLatencyHeatmap] = useState(true);
   const [showQueryIntensityOverlay, setShowQueryIntensityOverlay] = useState<boolean>(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -518,6 +519,22 @@ export default function App() {
           return;
         }
       }
+
+      // 8. Ctrl+Shift+F / ⌘Shift+F -> Fix All (Automatically apply all missing optimizations & indexes)
+      if (isModifier && e.shiftKey && key === 'f') {
+        if (!isInput) {
+          e.preventDefault();
+          setFlags({
+            batchEagerLoading: true,
+            btreeIndexing: true,
+            queryCaching: true,
+            virtualizedDOM: true,
+            deferredRendering: true
+          });
+          notifyShortcut(e.metaKey ? '⌘Shift+F' : 'Ctrl+Shift+F', 'Fix All (Applied All Optimizations)', true);
+          return;
+        }
+      }
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
@@ -825,6 +842,17 @@ export default function App() {
         onAlertThresholdChange={(val) => setAlertThresholdMs(val)}
         heatmapModeEnabled={showLatencyHeatmap}
         onToggleHeatmapMode={setShowLatencyHeatmap}
+        performanceBudgetMs={performanceBudgetMs}
+        onPerformanceBudgetChange={setPerformanceBudgetMs}
+        onToggleFlag={handleToggleFlag}
+        onApplyFlags={(newFlags) => setFlags(newFlags)}
+        onAutoOptimize={() => setFlags({
+          batchEagerLoading: true,
+          btreeIndexing: true,
+          queryCaching: true,
+          virtualizedDOM: true,
+          deferredRendering: true
+        })}
         onResetMetrics={() => {
           setTrendHistory([]);
           setSerializationLogs([]);
@@ -958,6 +986,8 @@ export default function App() {
             dataTapeEntries={dataTapeEntries}
             alertThresholdMs={alertThresholdMs}
             onAlertThresholdChange={(val) => setAlertThresholdMs(val)}
+            onFilterVirtualizedTable={(query) => setSearchQuery(query)}
+            onNavigateToGrid={() => setActiveView('grid')}
           />
         )}
       </main>

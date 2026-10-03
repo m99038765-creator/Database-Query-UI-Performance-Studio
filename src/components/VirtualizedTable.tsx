@@ -3529,33 +3529,83 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </span>
           )}
         </div>
-        <div className="col-span-3">Customer &amp; Account</div>
-        <div className="col-span-2">Category</div>
-        <div className="col-span-1">Status</div>
-        <div className="col-span-2 text-right">Amount</div>
-        <div className="col-span-1 text-center flex items-center justify-center gap-1">
-          <span>Items</span>
-          <button
-            type="button"
-            id="btn-header-cost-heatmap-toggle"
-            data-testid="btn-header-cost-heatmap-toggle"
-            onClick={() => {
-              if (isAnyHeatmapLayerActive) {
-                handleSetAllHeatmapLayers(false);
-              } else {
-                handleSetAllHeatmapLayers(true);
-              }
-            }}
-            className={`p-0.5 rounded transition-colors cursor-pointer ${
-              isAnyHeatmapLayerActive
-                ? 'text-rose-600 hover:bg-rose-100/50'
-                : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200'
-            }`}
-            title={`Execution Cost Heatmap Layers: ${isAnyHeatmapLayerActive ? `${activeHeatmapLayerCount}/3 Active (Click to disable)` : 'Inactive (Click to enable all)'}`}
-            aria-label="Toggle Execution Cost Heatmap Layers"
+        <div className="col-span-3 flex items-center justify-between gap-1">
+          <span>Customer &amp; Account</span>
+          <span
+            id="header-render-cost-customer"
+            data-testid="header-render-cost-customer"
+            className="text-[9px] font-mono text-rose-900 bg-rose-50 px-1 py-0.2 rounded border border-rose-200 font-bold"
+            title="Highest layout shift contribution: 4.8ms (32%)"
           >
-            <Flame className={`w-3.5 h-3.5 ${isAnyHeatmapLayerActive ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
-          </button>
+            4.8ms (32%) ⚠️
+          </span>
+        </div>
+        <div className="col-span-2 flex items-center justify-between gap-1">
+          <span>Category</span>
+          <span
+            id="header-render-cost-category"
+            data-testid="header-render-cost-category"
+            className="text-[9px] font-mono text-zinc-600 bg-zinc-100 px-1 py-0.2 rounded border border-zinc-200"
+            title="DOM layout shift contribution: 1.5ms (10%)"
+          >
+            1.5ms (10%)
+          </span>
+        </div>
+        <div className="col-span-1 flex items-center justify-between gap-1">
+          <span>Status</span>
+          <span
+            id="header-render-cost-status"
+            data-testid="header-render-cost-status"
+            className="text-[9px] font-mono text-zinc-600 bg-zinc-100 px-1 py-0.2 rounded border border-zinc-200"
+            title="DOM layout shift contribution: 0.8ms (5%)"
+          >
+            0.8ms (5%)
+          </span>
+        </div>
+        <div className="col-span-2 text-right flex items-center justify-end gap-1.5">
+          <span
+            id="header-render-cost-amount"
+            data-testid="header-render-cost-amount"
+            className="text-[9px] font-mono text-amber-900 bg-amber-50 px-1 py-0.2 rounded border border-amber-200"
+            title="DOM layout shift contribution: 3.2ms (21%)"
+          >
+            3.2ms (21%)
+          </span>
+          <span>Amount</span>
+        </div>
+        <div className="col-span-1 text-center flex items-center justify-between gap-1">
+          <div className="flex items-center gap-1">
+            <span>Items</span>
+            <button
+              type="button"
+              id="btn-header-cost-heatmap-toggle"
+              data-testid="btn-header-cost-heatmap-toggle"
+              onClick={() => {
+                if (isAnyHeatmapLayerActive) {
+                  handleSetAllHeatmapLayers(false);
+                } else {
+                  handleSetAllHeatmapLayers(true);
+                }
+              }}
+              className={`p-0.5 rounded transition-colors cursor-pointer ${
+                isAnyHeatmapLayerActive
+                  ? 'text-rose-600 hover:bg-rose-100/50'
+                  : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200'
+              }`}
+              title={`Execution Cost Heatmap Layers: ${isAnyHeatmapLayerActive ? `${activeHeatmapLayerCount}/3 Active (Click to disable)` : 'Inactive (Click to enable all)'}`}
+              aria-label="Toggle Execution Cost Heatmap Layers"
+            >
+              <Flame className={`w-3.5 h-3.5 ${isAnyHeatmapLayerActive ? 'text-rose-600 animate-pulse' : 'text-zinc-400'}`} />
+            </button>
+          </div>
+          <span
+            id="header-render-cost-items"
+            data-testid="header-render-cost-items"
+            className="text-[9px] font-mono text-zinc-600 bg-zinc-100 px-1 py-0.2 rounded border border-zinc-200"
+            title="DOM layout shift contribution: 2.6ms (18%)"
+          >
+            2.6ms (18%)
+          </span>
         </div>
       </div>
 
