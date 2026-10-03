@@ -1637,6 +1637,18 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
     activeExporting
   ]);
 
+  // Ctrl+H keyboard shortcut to toggle Data Density heatmap overlay
+  useEffect(() => {
+    const handleDataDensityShortcut = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'H' || e.key === 'h')) {
+        e.preventDefault();
+        setShowLatencyHeatmap(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleDataDensityShortcut);
+    return () => window.removeEventListener('keydown', handleDataDensityShortcut);
+  }, []);
+
   const [internalIncludeHeaders, setInternalIncludeHeaders] = useState<boolean>(includeCsvHeaders);
   const activeIncludeHeaders = includeCsvHeaders !== undefined ? includeCsvHeaders : internalIncludeHeaders;
 
@@ -3510,46 +3522,86 @@ export const VirtualizedTable: React.FC<VirtualizedTableProps> = ({
             </span>
           )}
         </div>
-        <div className="col-span-2 flex items-center gap-1.5 flex-wrap">
-          <span>Order ID</span>
-          <span
-            className="text-[9px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.2 rounded font-normal hidden sm:inline-flex items-center gap-0.5 select-none"
-            title="Hover or click 'Insight' on any row to reveal specific query plan node latency contributions"
-          >
-            <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
-            <span>Plan Insights</span>
-          </span>
-          {showSelectedOnly && (
+        <div className="col-span-2 flex items-center justify-between gap-1 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span>Order ID</span>
             <span
-              id="header-selected-only-indicator"
-              className="text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded border border-emerald-300 inline-flex items-center gap-1"
+              className="text-[9px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-1.5 py-0.2 rounded font-normal hidden sm:inline-flex items-center gap-0.5 select-none"
+              title="Hover or click 'Insight' on any row to reveal specific query plan node latency contributions"
             >
-              <Eye className="w-2.5 h-2.5 text-emerald-600" />
-              <span>Selected Only</span>
+              <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
+              <span>Plan Insights</span>
             </span>
-          )}
+            {showSelectedOnly && (
+              <span
+                id="header-selected-only-indicator"
+                className="text-[10px] font-semibold bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded border border-emerald-300 inline-flex items-center gap-1"
+              >
+                <Eye className="w-2.5 h-2.5 text-emerald-600" />
+                <span>Selected Only</span>
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <span
+              id="header-scan-density-order-id"
+              data-testid="header-scan-density-order-id"
+              className="text-[9px] font-mono text-rose-800 bg-rose-50 px-1 py-0.2 rounded border border-rose-200 font-bold"
+              title="Scan Density: 50,000 scanned / 100 returned (500:1 Inefficient Filter Ratio)"
+            >
+              Scan: 500:1 ⚠️
+            </span>
+            <span
+              id="header-render-cost-order-id"
+              data-testid="header-render-cost-order-id"
+              className="text-[9px] font-mono text-amber-900 bg-amber-50 px-1 py-0.2 rounded border border-amber-200"
+              title="DOM layout shift contribution: 2.1ms (14%)"
+            >
+              2.1ms (14%)
+            </span>
+          </div>
         </div>
         <div className="col-span-3 flex items-center justify-between gap-1">
           <span>Customer &amp; Account</span>
-          <span
-            id="header-render-cost-customer"
-            data-testid="header-render-cost-customer"
-            className="text-[9px] font-mono text-rose-900 bg-rose-50 px-1 py-0.2 rounded border border-rose-200 font-bold"
-            title="Highest layout shift contribution: 4.8ms (32%)"
-          >
-            4.8ms (32%) ⚠️
-          </span>
+          <div className="flex items-center gap-1">
+            <span
+              id="header-scan-density-customer"
+              data-testid="header-scan-density-customer"
+              className="text-[9px] font-mono text-amber-800 bg-amber-50 px-1 py-0.2 rounded border border-amber-200 font-bold"
+              title="Scan Density: 25,000 scanned / 100 returned (250:1)"
+            >
+              Scan: 250:1
+            </span>
+            <span
+              id="header-render-cost-customer"
+              data-testid="header-render-cost-customer"
+              className="text-[9px] font-mono text-rose-900 bg-rose-50 px-1 py-0.2 rounded border border-rose-200 font-bold"
+              title="Highest layout shift contribution: 4.8ms (32%)"
+            >
+              4.8ms (32%) ⚠️
+            </span>
+          </div>
         </div>
         <div className="col-span-2 flex items-center justify-between gap-1">
           <span>Category</span>
-          <span
-            id="header-render-cost-category"
-            data-testid="header-render-cost-category"
-            className="text-[9px] font-mono text-zinc-600 bg-zinc-100 px-1 py-0.2 rounded border border-zinc-200"
-            title="DOM layout shift contribution: 1.5ms (10%)"
-          >
-            1.5ms (10%)
-          </span>
+          <div className="flex items-center gap-1">
+            <span
+              id="header-scan-density-category"
+              data-testid="header-scan-density-category"
+              className="text-[9px] font-mono text-emerald-800 bg-emerald-50 px-1 py-0.2 rounded border border-emerald-300 font-bold"
+              title="Scan Density: 100 scanned / 100 returned (1:1 Optimal Index Seek)"
+            >
+              Scan: 1:1 ✨
+            </span>
+            <span
+              id="header-render-cost-category"
+              data-testid="header-render-cost-category"
+              className="text-[9px] font-mono text-zinc-600 bg-zinc-100 px-1 py-0.2 rounded border border-zinc-200"
+              title="DOM layout shift contribution: 1.5ms (10%)"
+            >
+              1.5ms (10%)
+            </span>
+          </div>
         </div>
         <div className="col-span-1 flex items-center justify-between gap-1">
           <span>Status</span>

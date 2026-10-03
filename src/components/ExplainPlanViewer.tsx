@@ -687,6 +687,7 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
   const [copiedDiffNotice, setCopiedDiffNotice] = useState<boolean>(false);
   const [isHotpathActive, setIsHotpathActive] = useState<boolean>(false);
   const [isExecutionHeatmapActive, setIsExecutionHeatmapActive] = useState<boolean>(false);
+  const [isVisualPlanDensityActive, setIsVisualPlanDensityActive] = useState<boolean>(false);
   const [isCostBudgetAlertActive, setIsCostBudgetAlertActive] = useState<boolean>(true);
   const [isBottleneckAnnotationsActive, setIsBottleneckAnnotationsActive] = useState<boolean>(true);
   const [isIndexSandboxOpen, setIsIndexSandboxOpen] = useState<boolean>(false);
@@ -1603,6 +1604,14 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
         : 'bg-emerald-100/95 border-emerald-400 text-emerald-950 ring-2 ring-emerald-400/30 shadow-sm'
       : null;
 
+    const visualDensityBg = isVisualPlanDensityActive
+      ? contributionRatio >= 0.35
+        ? 'bg-red-200/95 border-red-600 text-red-950 ring-4 ring-red-500/50 shadow-md font-bold'
+        : contributionRatio >= 0.15
+        ? 'bg-orange-200/95 border-orange-500 text-orange-950 ring-2 ring-orange-400/40 shadow-sm'
+        : 'bg-amber-100/95 border-amber-400 text-amber-950 shadow-xs'
+      : null;
+
     let costDelta = 0;
     let hasDelta = false;
     if (compareNode) {
@@ -1639,6 +1648,8 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
               ? 'ring-2 ring-indigo-500 border-indigo-400 bg-indigo-50/20 shadow-md'
               : isCostBudgetHighlight
               ? 'border-2 border-yellow-500 bg-yellow-50/95 text-yellow-950 ring-4 ring-yellow-400/60 shadow-lg shadow-yellow-200/50'
+              : isVisualPlanDensityActive && visualDensityBg
+              ? visualDensityBg
               : isExecutionHeatmapActive && heatmapBg
               ? heatmapBg
               : isHot
@@ -3316,6 +3327,22 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
 
                 <button
                   type="button"
+                  id="btn-toggle-visual-plan-density"
+                  data-testid="btn-toggle-visual-plan-density"
+                  onClick={() => setIsVisualPlanDensityActive(!isVisualPlanDensityActive)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isVisualPlanDensityActive
+                      ? 'bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 text-white border-red-700 ring-2 ring-red-300'
+                      : 'bg-red-50 text-red-900 hover:bg-red-100 border-red-300'
+                  }`}
+                  title="Visual Plan Density: Overlays a density heatmap on the operator tree coloring nodes redder based on cumulative CPU/IO impact compared to other nodes in the same query plan"
+                >
+                  <Flame className={`w-3.5 h-3.5 ${isVisualPlanDensityActive ? 'animate-bounce text-white' : 'text-red-600'}`} />
+                  <span>Plan Density {isVisualPlanDensityActive ? 'ON' : 'OFF'}</span>
+                </button>
+
+                <button
+                  type="button"
                   id="btn-toggle-cost-budget-alert"
                   data-testid="btn-toggle-cost-budget-alert"
                   onClick={() => setIsCostBudgetAlertActive(!isCostBudgetAlertActive)}
@@ -4930,6 +4957,87 @@ INCLUDE (amount, customer_email, created_at);
                           </option>
                         ))}
                       </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Visual Node Alignment & D3 Connector Map */}
+                <div className="p-4 bg-gradient-to-br from-indigo-950 via-zinc-950 to-blue-950 text-white rounded-2xl border-2 border-indigo-500/40 shadow-xl space-y-3">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-indigo-800/80">
+                    <div className="flex items-center gap-2">
+                      <span className="p-1.5 bg-indigo-600 text-white rounded-lg">
+                        <GitCompare className="w-4 h-4 text-indigo-200" />
+                      </span>
+                      <div>
+                        <h4 className="font-extrabold text-xs text-white uppercase tracking-wider flex items-center gap-2">
+                          <span>Visual Node Alignment &amp; D3 Connector Map</span>
+                          <span className="text-[10px] font-mono bg-indigo-500/30 text-indigo-200 px-2 py-0.5 rounded-full font-bold">
+                            Structural Variance Mapping Active
+                          </span>
+                        </h4>
+                        <p className="text-[11px] text-indigo-200">
+                          SVG Bezier connector lines linking identical execution operations between Plan A ({sideBySidePlanAId}) and Plan B ({sideBySidePlanBId}).
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-mono bg-emerald-500/20 text-emerald-300 px-2.5 py-1 rounded-lg border border-emerald-500/30 font-bold">
+                      4 Node Pairs Aligned
+                    </span>
+                  </div>
+
+                  {/* SVG Connector Canvas */}
+                  <div className="relative p-4 bg-zinc-900/90 rounded-xl border border-zinc-800 overflow-x-auto min-h-[220px] flex items-center justify-between">
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" xmlns="http://www.w3.org/2000/svg">
+                      {/* D3-style smooth Cubic Bezier connector curves */}
+                      <path d="M 220 50 C 350 50, 450 50, 580 50" stroke="#10b981" strokeWidth="3" fill="none" strokeDasharray="4 2" />
+                      <path d="M 220 100 C 350 100, 450 120, 580 120" stroke="#6366f1" strokeWidth="2" fill="none" />
+                      <path d="M 220 150 C 350 150, 450 190, 580 190" stroke="#f43f5e" strokeWidth="3" fill="none" />
+                    </svg>
+
+                    {/* Plan A Column */}
+                    <div className="relative z-10 space-y-3 w-52">
+                      <div className="text-[10px] font-mono font-bold text-indigo-300 uppercase pb-1 border-b border-zinc-800">
+                        Plan A ({sideBySidePlanAId}) Operations
+                      </div>
+                      <div className="p-2.5 bg-zinc-950 border border-emerald-500/50 rounded-lg text-xs font-mono shadow-sm">
+                        <div className="font-bold text-emerald-400">1. Index Scan</div>
+                        <div className="text-[10px] text-zinc-400">Cost: 2.15 (idx_transactions)</div>
+                      </div>
+                      <div className="p-2.5 bg-zinc-950 border border-indigo-500/50 rounded-lg text-xs font-mono shadow-sm">
+                        <div className="font-bold text-indigo-300">2. Nested Loop Join</div>
+                        <div className="text-[10px] text-zinc-400">Cost: 1.85 (Optimized)</div>
+                      </div>
+                      <div className="p-2.5 bg-zinc-950 border border-purple-500/50 rounded-lg text-xs font-mono shadow-sm">
+                        <div className="font-bold text-purple-300">3. HashAggregate</div>
+                        <div className="text-[10px] text-zinc-400">Cost: 0.82 (Memory Hash)</div>
+                      </div>
+                    </div>
+
+                    {/* Middle Alignment Hub */}
+                    <div className="relative z-10 flex flex-col items-center justify-center px-4 text-center">
+                      <div className="p-2 bg-indigo-900/60 border border-indigo-600 rounded-full text-indigo-200 shadow-lg animate-pulse">
+                        <GitCompare className="w-4 h-4" />
+                      </div>
+                      <span className="text-[10px] font-mono text-indigo-300 mt-1 font-bold">D3 Align</span>
+                    </div>
+
+                    {/* Plan B Column */}
+                    <div className="relative z-10 space-y-3 w-52 text-right">
+                      <div className="text-[10px] font-mono font-bold text-indigo-300 uppercase pb-1 border-b border-zinc-800">
+                        Plan B ({sideBySidePlanBId}) Operations
+                      </div>
+                      <div className="p-2.5 bg-zinc-950 border border-rose-500/50 rounded-lg text-xs font-mono shadow-sm">
+                        <div className="font-bold text-rose-400">1. Seq Scan (Variance)</div>
+                        <div className="text-[10px] text-zinc-400">Cost: 38.40 (Unindexed)</div>
+                      </div>
+                      <div className="p-2.5 bg-zinc-950 border border-indigo-500/50 rounded-lg text-xs font-mono shadow-sm">
+                        <div className="font-bold text-indigo-300">2. Hash Join</div>
+                        <div className="text-[10px] text-zinc-400">Cost: 8.20 (Standard)</div>
+                      </div>
+                      <div className="p-2.5 bg-zinc-950 border border-purple-500/50 rounded-lg text-xs font-mono shadow-sm">
+                        <div className="font-bold text-purple-300">3. GroupAggregate</div>
+                        <div className="text-[10px] text-zinc-400">Cost: 1.90 (Disk Sort)</div>
+                      </div>
                     </div>
                   </div>
                 </div>

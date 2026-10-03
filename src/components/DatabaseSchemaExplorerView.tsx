@@ -12,6 +12,7 @@ import { IndexImpactMap, IndexImpactMapItem } from './IndexImpactMap';
 import { IndexHealthMonitor } from './IndexHealthMonitor';
 import { IndexStorageHeatmap } from './IndexStorageHeatmap';
 import { GlobalIndexCorrelationChart } from './GlobalIndexCorrelationChart';
+import { IndexChangeHistoryPanel } from './IndexChangeHistoryPanel';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -329,7 +330,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [isApplyingBulkOptimize, setIsApplyingBulkOptimize] = useState<boolean>(false);
   const [animatingBulkIndexName, setAnimatingBulkIndexName] = useState<string | null>(null);
   const [showAiSuggestionsSidePanel, setShowAiSuggestionsSidePanel] = useState<boolean>(true);
-  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap' | 'lifecycle-analytics' | 'index-usage' | 'correlation'>('complexity-heatmap');
+  const [sidePanelViewMode, setSidePanelViewMode] = useState<'suggestions' | 'complexity-heatmap' | 'lifecycle-analytics' | 'index-usage' | 'correlation' | 'history'>('complexity-heatmap');
   const [disabledImpactEdges, setDisabledImpactEdges] = useState<Record<string, boolean>>({});
   const [selectedCompositeSuggestionId, setSelectedCompositeSuggestionId] = useState<string>('idx_transactions_email_status');
   const [compositePatternFilter, setCompositePatternFilter] = useState<'all' | 'transactions' | 'line_items' | 'customers'>('all');
@@ -8230,6 +8231,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                 <TrendingUp className="w-3.5 h-3.5" />
                 <span>Correlation</span>
               </button>
+              <button
+                type="button"
+                id="btn-side-panel-tab-history"
+                data-testid="btn-side-panel-tab-history"
+                onClick={() => setSidePanelViewMode('history')}
+                className={`flex-1 py-1.5 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  sidePanelViewMode === 'history'
+                    ? 'bg-purple-600 text-white shadow-xs'
+                    : 'text-zinc-600 hover:text-zinc-900 hover:bg-zinc-200/50'
+                }`}
+              >
+                <History className="w-3.5 h-3.5" />
+                <span>History</span>
+              </button>
             </div>
 
             {sidePanelViewMode === 'complexity-heatmap' ? (
@@ -8264,8 +8279,98 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               />
             ) : sidePanelViewMode === 'correlation' ? (
               <GlobalIndexCorrelationChart />
+            ) : sidePanelViewMode === 'history' ? (
+              <IndexChangeHistoryPanel />
             ) : (
               <>
+            {/* High-Read Query Pattern Automator & One-Click Apply Index */}
+            <div className="p-3.5 bg-gradient-to-br from-indigo-50/90 via-purple-50/70 to-indigo-50/90 rounded-xl border border-indigo-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-indigo-950 text-xs flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-indigo-600" />
+                  <span>High-Read Query Pattern Automator</span>
+                </span>
+                <span className="font-mono text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-bold">
+                  4 Patterns Identified
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-600 leading-relaxed">
+                AI analyzer identified high-read-count query execution traces lacking covering indexes. Click <strong>'One-Click Apply Index'</strong> to instantly resolve full table scan bottlenecks.
+              </p>
+              <div className="space-y-2">
+                {[
+                  {
+                    id: 'hr_1',
+                    query: 'SELECT * FROM transactions WHERE customer_id = $1 AND status = $2',
+                    reads: '420 queries/min',
+                    missingIndex: 'idx_transactions_customer_status_covering',
+                    createStatement: 'CREATE INDEX CONCURRENTLY idx_transactions_customer_status_covering ON transactions (customer_id, status) INCLUDE (amount);',
+                    isApplied: appliedEngineIndexIds.includes('rec_transactions_full_scan') || appliedEngineIndexIds.includes('hr_1')
+                  },
+                  {
+                    id: 'hr_2',
+                    query: 'SELECT sum(quantity) FROM order_items WHERE product_id = $1 GROUP BY product_id',
+                    reads: '280 queries/min',
+                    missingIndex: 'idx_order_items_product_covering',
+                    createStatement: 'CREATE INDEX CONCURRENTLY idx_order_items_product_covering ON order_items (product_id) INCLUDE (quantity, unit_price);',
+                    isApplied: appliedEngineIndexIds.includes('rec_order_items_scan') || appliedEngineIndexIds.includes('hr_2')
+                  },
+                  {
+                    id: 'hr_3',
+                    query: 'SELECT email FROM customers WHERE tier = \'enterprise\' AND signup_date > ...',
+                    reads: '190 queries/min',
+                    missingIndex: 'idx_customers_tier_covering',
+                    createStatement: 'CREATE INDEX CONCURRENTLY idx_customers_tier_covering ON customers (tier) INCLUDE (signup_date, email);',
+                    isApplied: appliedEngineIndexIds.includes('rec_customers_tier_scan') || appliedEngineIndexIds.includes('hr_3')
+                  },
+                  {
+                    id: 'hr_4',
+                    query: 'SELECT * FROM audit_logs WHERE timestamp >= NOW() - INTERVAL \'1 hour\'',
+                    reads: '510 queries/min',
+                    missingIndex: 'idx_audit_logs_timestamp_covering',
+                    createStatement: 'CREATE INDEX CONCURRENTLY idx_audit_logs_timestamp_covering ON audit_logs (timestamp) INCLUDE (severity, message);',
+                    isApplied: appliedEngineIndexIds.includes('rec_audit_logs_scan') || appliedEngineIndexIds.includes('hr_4')
+                  }
+                ].map((pat) => (
+                  <div key={pat.id} className="p-2.5 bg-white rounded-lg border border-indigo-100 shadow-2xs space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-mono text-[10px] font-bold text-zinc-900 truncate max-w-[200px]" title={pat.query}>
+                          {pat.query}
+                        </div>
+                        <div className="text-[10px] text-zinc-500 mt-0.5 flex items-center gap-2">
+                          <span className="font-semibold text-rose-700">{pat.reads}</span>
+                          <span className="font-mono text-indigo-800">{pat.missingIndex}</span>
+                        </div>
+                      </div>
+                      <div>
+                        {pat.isApplied ? (
+                          <span className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded font-bold text-[10px] inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Applied</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            id={`btn-one-click-apply-${pat.id}`}
+                            data-testid={`btn-one-click-apply-${pat.id}`}
+                            onClick={() => {
+                              setAppliedEngineIndexIds(prev => Array.from(new Set([...prev, pat.id])));
+                              if (!flags.btreeIndexing) onToggleFlag('btreeIndexing');
+                            }}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded text-[10px] cursor-pointer shadow-xs transition-colors flex items-center gap-1"
+                          >
+                            <Sparkles className="w-3 h-3" />
+                            <span>One-Click Apply Index</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {/* Query History Analytics Strip */}
             <div className="p-3 bg-white rounded-xl border border-indigo-100 shadow-2xs space-y-2.5">
               <div className="flex items-center justify-between text-[11px]">
