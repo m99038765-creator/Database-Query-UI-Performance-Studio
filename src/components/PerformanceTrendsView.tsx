@@ -13,6 +13,7 @@ import { LatencyHistogramCard } from './LatencyHistogramCard';
 import { SnapshotCompareModal } from './SnapshotCompareModal';
 import { DatabaseStatePopover } from './DatabaseStatePopover';
 import { PdfReportModal } from './PdfReportModal';
+import { QueryReplayModal } from './QueryReplayModal';
 import { SerializationErrorLogPanel } from './SerializationErrorLogPanel';
 import { HistoricalLatencyAlertsPanel } from './HistoricalLatencyAlertsPanel';
 import { RegressionHistoryPanel } from './RegressionHistoryPanel';
@@ -82,6 +83,7 @@ interface PerformanceTrendsViewProps {
   mutationHistory?: DatabaseMutationHistoryEntry[];
   alertThresholdMs?: number;
   onAlertThresholdChange?: (val: number) => void;
+  onApplyFlags?: (flags: OptimizationFlags) => void;
 }
 
 
@@ -176,7 +178,16 @@ export function getPointAnnotation(
     thresholdSeconds?: number;
     elapsedSeconds?: number;
     timestamp?: number;
-  }> = []
+  }> = [],
+  anomalyMetric?: {
+    isOutlier?: boolean;
+    isThreeSigmaOutlier?: boolean;
+    zScore?: number;
+    deviation?: number;
+    movingAverage?: number;
+    movingStdDev?: number;
+    thresholdCutoff?: number;
+  }
 ): EventAnnotationConfig | null {
   // 0. High-Duration Mutation: Check correlation with mutation threshold violations
   const highDuration = checkHighDurationMutationCorrelation(point, thresholdViolations);
@@ -194,6 +205,26 @@ export function getPointAnnotation(
       textColor: '#9f1239',
       subTextColor: '#be123c',
       leaderColor: '#e11d48',
+      isSpike: true
+    };
+  }
+
+  // 0b. Automated Anomaly Detector: Automatically tag as Outlier when deviating by >3 standard deviations from moving average
+  if (point.isOutlier || anomalyMetric?.isOutlier) {
+    const zScore = anomalyMetric?.zScore ?? point.zScore;
+    const deviation = anomalyMetric?.deviation ?? point.anomalyDeviation;
+    const zScoreStr = zScore !== undefined ? `${zScore.toFixed(1)}σ` : '>3σ';
+    const devStr = deviation !== undefined ? `+${deviation.toFixed(1)}ms` : `${point.executionTimeMs.toFixed(1)}ms`;
+
+    return {
+      label: `⚡ Outlier (${zScoreStr})`,
+      subLabel: `3σ Anomaly (${devStr} vs MA)`,
+      badgeType: 'spike',
+      bgColor: '#fff1f2',
+      borderColor: '#f43f5e',
+      textColor: '#9f1239',
+      subTextColor: '#e11d48',
+      leaderColor: '#f43f5e',
       isSpike: true
     };
   }
@@ -434,7 +465,8 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
   mutationThreshold = 5,
   mutationHistory = [],
   alertThresholdMs = 100,
-  onAlertThresholdChange
+  onAlertThresholdChange,
+  onApplyFlags
 }) => {
   const safeCurrentFlags = currentFlags || {
     batchEagerLoading: true,
@@ -450,10 +482,13 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
 
   const [scaleType, setScaleType] = useState<'linear' | 'log'>('linear');
   const [selectedPointIndex, setSelectedPointIndex] = useState<number | null>(null);
+  const [replayPoint, setReplayPoint] = useState<LatencyTrendPoint | null>(null);
+  const [isReplayModalOpen, setIsReplayModalOpen] = useState<boolean>(false);
   const [hoveredPoint, setHoveredPoint] = useState<{
     point: LatencyTrendPoint;
     x: number;
     y: number;
+    index?: number;
   } | null>(null);
 
   // Real-Time 'Live' Mode State (Appends synthetic background metrics every 5 seconds)
@@ -612,6 +647,11 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
   // Anomaly Threshold slider state (latency variance threshold in milliseconds)
   const [anomalyThreshold, setAnomalyThreshold] = useState<number>(50);
 
+  // Automated Anomaly Detector State (3-Sigma from Moving Average)
+  const [anomalyDetectorMode, setAnomalyDetectorMode] = useState<'three_sigma' | 'threshold'>('three_sigma');
+  const [movingAverageWindow, setMovingAverageWindow] = useState<number>(5);
+  const [showMovingAverageLine, setShowMovingAverageLine] = useState<boolean>(true);
+
   // Statistical calculations for anomaly and variance detection
   const baselineLatency = useMemo(() => {
     if (trendHistory.length === 0) return 0;
@@ -635,12 +675,53 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
     return baselineLatency + anomalyThreshold;
   }, [baselineLatency, anomalyThreshold]);
 
-  const outlierPoints = useMemo(() => {
-    return trendHistory.filter((p) => {
-      const variance = p.executionTimeMs - baselineLatency;
-      return variance >= anomalyThreshold;
+  // Per-point 3-Sigma Moving Average Anomaly Analysis
+  const pointAnomalyMetrics = useMemo(() => {
+    if (trendHistory.length === 0) return [];
+    const half = Math.floor(movingAverageWindow / 2);
+
+    return trendHistory.map((point, i) => {
+      const start = Math.max(0, i - half);
+      const end = Math.min(trendHistory.length - 1, i + half);
+      const windowSlice = trendHistory.slice(start, end + 1);
+
+      // Local moving average (SMA)
+      const sum = windowSlice.reduce((acc, p) => acc + p.executionTimeMs, 0);
+      const movingAverage = sum / windowSlice.length;
+
+      // Robust neighbor baseline std deviation (excluding candidate point to prevent single-spike self inflation)
+      const neighborSlice = windowSlice.filter((_, idx) => idx !== (i - start));
+      const baseSlice = neighborSlice.length >= 2 ? neighborSlice : windowSlice;
+      const baseMean = baseSlice.reduce((acc, p) => acc + p.executionTimeMs, 0) / baseSlice.length;
+      const variance = baseSlice.reduce((acc, p) => acc + Math.pow(p.executionTimeMs - baseMean, 2), 0) / baseSlice.length;
+      const rawStdDev = Math.sqrt(variance);
+      const movingStdDev = Math.max(rawStdDev, 0.12);
+
+      const deviation = Math.abs(point.executionTimeMs - movingAverage);
+      const zScore = deviation / movingStdDev;
+      const thresholdCutoff = movingAverage + 3 * movingStdDev;
+
+      // Automatically tag as Outlier when deviating by more than 3 standard deviations from moving average
+      const isThreeSigmaOutlier = deviation > 3 * movingStdDev;
+      const isThresholdOutlier = (point.executionTimeMs - baselineLatency) >= anomalyThreshold;
+
+      const isOutlier = anomalyDetectorMode === 'three_sigma' ? isThreeSigmaOutlier : isThresholdOutlier;
+
+      return {
+        movingAverage: Number(movingAverage.toFixed(2)),
+        movingStdDev: Number(movingStdDev.toFixed(2)),
+        deviation: Number(deviation.toFixed(2)),
+        zScore: Number(zScore.toFixed(2)),
+        thresholdCutoff: Number(thresholdCutoff.toFixed(2)),
+        isOutlier,
+        isThreeSigmaOutlier
+      };
     });
-  }, [trendHistory, baselineLatency, anomalyThreshold]);
+  }, [trendHistory, movingAverageWindow, anomalyDetectorMode, anomalyThreshold, baselineLatency]);
+
+  const outlierPoints = useMemo(() => {
+    return trendHistory.filter((_, idx) => pointAnomalyMetrics[idx]?.isOutlier);
+  }, [trendHistory, pointAnomalyMetrics]);
 
   // Push-notifications & Browser Alerts state
   const [alertsEnabled, setAlertsEnabled] = useState<boolean>(true);
@@ -800,13 +881,17 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
     if (trendHistory.length === 0) return;
 
     // Latest trend point
-    const latestPoint = trendHistory[trendHistory.length - 1];
+    const latestIdx = trendHistory.length - 1;
+    const latestPoint = trendHistory[latestIdx];
     if (!latestPoint) return;
 
     const highDuration = checkHighDurationMutationCorrelation(latestPoint, thresholdViolations);
     const isHighDuration = highDuration.isHighDurationMutation;
     const variance = latestPoint.executionTimeMs - baselineLatency;
-    const isSpike = variance >= anomalyThreshold;
+    const isFixedThresholdSpike = variance >= anomalyThreshold;
+    const latestMetric = pointAnomalyMetrics[latestIdx];
+    const isThreeSigmaOutlier = latestMetric?.isThreeSigmaOutlier ?? false;
+    const isSpike = anomalyDetectorMode === 'three_sigma' ? isThreeSigmaOutlier : isFixedThresholdSpike;
 
     if ((isSpike || isHighDuration) && !loggedSpikeIdsRef.current.has(latestPoint.id)) {
       loggedSpikeIdsRef.current.add(latestPoint.id);
@@ -817,10 +902,16 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
           latestPoint,
           baselineLatency,
           anomalyThreshold,
-          isHighDuration ? `High-Duration Mutation: ${highDuration.reason}` : undefined
+          isHighDuration
+            ? `High-Duration Mutation: ${highDuration.reason}`
+            : isThreeSigmaOutlier && latestMetric
+            ? `Outlier (${latestMetric.zScore.toFixed(1)}σ > 3σ from MA ${latestMetric.movingAverage.toFixed(1)}ms ± ${latestMetric.movingStdDev.toFixed(1)}ms)`
+            : undefined
         );
         if (isHighDuration) {
           anomalyLog.message = `High-Duration Mutation Anomaly: ${latestPoint.triggerEvent || 'Mutation'} exceeded duration threshold. Latency: ${latestPoint.executionTimeMs.toFixed(1)}ms (${highDuration.reason}).`;
+        } else if (isThreeSigmaOutlier && latestMetric) {
+          anomalyLog.message = `3-Sigma Outlier Anomaly: Latency reached ${latestPoint.executionTimeMs.toFixed(1)}ms (${latestMetric.zScore.toFixed(1)}σ deviation > 3σ from moving average ${latestMetric.movingAverage.toFixed(1)}ms ± ${latestMetric.movingStdDev.toFixed(1)}ms).`;
         }
         onLogLatencyAnomaly(anomalyLog);
       }
@@ -840,10 +931,14 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
             new Notification(
               isHighDuration
                 ? '🚨 High-Duration Mutation Anomaly Detected'
+                : isThreeSigmaOutlier
+                ? '🚨 3σ Latency Outlier Detected'
                 : '🚨 Latency Spike Anomaly Detected',
               {
                 body: isHighDuration
                   ? `High-Duration Mutation: ${latestPoint.triggerEvent || 'Mutation'} correlated with threshold violation (${latestPoint.executionTimeMs.toFixed(1)}ms).`
+                  : isThreeSigmaOutlier && latestMetric
+                  ? `Outlier: Query latency reached ${latestPoint.executionTimeMs.toFixed(1)}ms (${latestMetric.zScore.toFixed(1)}σ > 3σ from moving avg) during ${latestPoint.triggerEvent || 'query execution'}.`
                   : `Query latency reached ${latestPoint.executionTimeMs.toFixed(1)}ms (+${variance.toFixed(1)}ms variance, threshold: +${anomalyThreshold}ms) during ${latestPoint.triggerEvent || 'query execution'}.`,
                 tag: `anomaly-${latestPoint.id}`
               }
@@ -858,9 +953,13 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
           id: latestPoint.id,
           title: isHighDuration
             ? 'High-Duration Mutation Anomaly'
+            : isThreeSigmaOutlier
+            ? '3-Sigma Latency Outlier Detected'
             : 'Latency Spike Exceeded Threshold',
           message: isHighDuration
             ? `Query latency correlated with mutation threshold violation during ${latestPoint.triggerEvent || 'mutation execution'}. ${highDuration.reason}.`
+            : isThreeSigmaOutlier && latestMetric
+            ? `Query latency spiked to ${latestPoint.executionTimeMs.toFixed(1)}ms (${latestMetric.zScore.toFixed(1)}σ > 3σ deviation from moving average ${latestMetric.movingAverage.toFixed(1)}ms ± ${latestMetric.movingStdDev.toFixed(1)}ms). Tagged as OUTLIER.`
             : `Query latency spiked to ${latestPoint.executionTimeMs.toFixed(1)}ms (+${variance.toFixed(1)}ms variance above ${baselineLatency.toFixed(1)}ms baseline). Threshold is +${anomalyThreshold}ms.`,
           varianceMs: variance,
           executionTimeMs: latestPoint.executionTimeMs,
@@ -869,7 +968,7 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
         });
       }
     }
-  }, [trendHistory, baselineLatency, anomalyThreshold, alertsEnabled, onLogLatencyAnomaly, thresholdViolations]);
+  }, [trendHistory, baselineLatency, anomalyThreshold, alertsEnabled, onLogLatencyAnomaly, thresholdViolations, pointAnomalyMetrics, anomalyDetectorMode]);
 
   // Auto-dismiss alert toast after 8 seconds
   useEffect(() => {
@@ -897,8 +996,8 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
 
   // Count active annotated points
   const annotatedPointsCount = useMemo(() => {
-    return trendHistory.filter((p) => getPointAnnotation(p, thresholdViolations) !== null).length;
-  }, [trendHistory, thresholdViolations]);
+    return trendHistory.filter((p, idx) => getPointAnnotation(p, thresholdViolations, pointAnomalyMetrics[idx]) !== null).length;
+  }, [trendHistory, thresholdViolations, pointAnomalyMetrics]);
 
   // Update chart container dimensions for accurate popover boundary positioning
   useEffect(() => {
@@ -1216,6 +1315,63 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
       .attr('stroke-linejoin', 'round')
       .attr('d', lineGenerator);
 
+    // 3-Sigma Moving Average and Upper Boundary Curves Overlay
+    if (showMovingAverageLine && pointAnomalyMetrics.length > 0) {
+      // 0. 3-Sigma Corridor Band Area (Subtle Rose Shading between Moving Average and 3σ Upper Limit)
+      const corridorAreaGen = d3
+        .area<{ x: number; y0: number; y1: number }>()
+        .x((d) => xScale(d.x))
+        .y0((d) => yScale(Math.max(d.y0, 0.05)))
+        .y1((d) => yScale(Math.max(d.y1, 0.05)))
+        .curve(d3.curveMonotoneX);
+
+      const corridorData = pointAnomalyMetrics.map((m, idx) => ({
+        x: idx,
+        y0: m.movingAverage,
+        y1: m.thresholdCutoff
+      }));
+
+      g.append('path')
+        .datum(corridorData)
+        .attr('class', 'chart-3sigma-corridor-band')
+        .attr('fill', '#f43f5e')
+        .attr('opacity', 0.08);
+
+      // 1. Moving Average Curve (Indigo Dashed)
+      const maLineGen = d3
+        .line<{ x: number; y: number }>()
+        .x((d) => xScale(d.x))
+        .y((d) => yScale(Math.max(d.y, 0.05)))
+        .curve(d3.curveMonotoneX);
+
+      const maData = pointAnomalyMetrics.map((m, idx) => ({ x: idx, y: m.movingAverage }));
+      g.append('path')
+        .datum(maData)
+        .attr('class', 'chart-moving-average-line')
+        .attr('fill', 'none')
+        .attr('stroke', '#6366f1')
+        .attr('stroke-width', 1.8)
+        .attr('stroke-dasharray', '5,4')
+        .attr('opacity', 0.85);
+
+      // 2. 3-Sigma Boundary Line (+3σ, Rose Dashed)
+      const sigmaLineGen = d3
+        .line<{ x: number; y: number }>()
+        .x((d) => xScale(d.x))
+        .y((d) => yScale(Math.max(d.y, 0.05)))
+        .curve(d3.curveMonotoneX);
+
+      const sigmaData = pointAnomalyMetrics.map((m, idx) => ({ x: idx, y: m.thresholdCutoff }));
+      g.append('path')
+        .datum(sigmaData)
+        .attr('class', 'chart-3sigma-boundary-line')
+        .attr('fill', 'none')
+        .attr('stroke', '#f43f5e')
+        .attr('stroke-width', 1.5)
+        .attr('stroke-dasharray', '3,3')
+        .attr('opacity', 0.8);
+    }
+
     // Secondary Y-Scale & Mutation Frequency Overlay
     const maxFreqDomain = Math.max(Math.ceil(maxMutationFreq * 1.25), 4);
     const yMutationScale = d3
@@ -1488,8 +1644,8 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
       // Check if point exceeds anomaly threshold variance or correlates with a mutation threshold violation
       const highDuration = checkHighDurationMutationCorrelation(point, thresholdViolations);
       const isHighDuration = highDuration.isHighDurationMutation;
-      const pointVariance = point.executionTimeMs - baselineLatency;
-      const isOutlier = pointVariance >= anomalyThreshold || isHighDuration;
+      const anomalyMetric = pointAnomalyMetrics[idx];
+      const isOutlier = (anomalyMetric?.isOutlier ?? false) || isHighDuration;
 
       // Outer glowing beacon halo for High-Duration Mutation or Outliers
       if (isHighDuration) {
@@ -1520,12 +1676,14 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
         g.append('circle')
           .attr('cx', cx)
           .attr('cy', cy)
-          .attr('r', 12)
+          .attr('r', 13)
           .attr('fill', '#ffe4e6')
           .attr('stroke', '#f43f5e')
-          .attr('stroke-width', 1.8)
+          .attr('stroke-width', 2.0)
           .attr('stroke-dasharray', '3,2')
-          .attr('opacity', 0.85);
+          .attr('opacity', 0.9)
+          .attr('data-testid', `beacon-outlier-${idx}`)
+          .attr('class', 'animate-pulse');
       }
 
       // Outer ring for compare target A (Amber)
@@ -1628,7 +1786,12 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
         }
         const pointWithFreq: LatencyTrendPoint = {
           ...point,
-          mutationFrequencyPerMin: pointMutationFreqs[idx]
+          mutationFrequencyPerMin: pointMutationFreqs[idx],
+          isOutlier: anomalyMetric?.isOutlier,
+          movingAverage: anomalyMetric?.movingAverage,
+          movingStdDev: anomalyMetric?.movingStdDev,
+          zScore: anomalyMetric?.zScore,
+          anomalyDeviation: anomalyMetric?.deviation
         };
         setSelectedPointIndex(idx);
         setPopoverPoint({
@@ -1645,6 +1808,7 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
           circle.attr('r', 7.5).attr('fill', pointColor);
           setHoveredPoint({
             point,
+            index: idx,
             x: cx + margin.left,
             y: cy + margin.top
           });
@@ -1657,12 +1821,12 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
         });
     });
 
-    // 5. On-Graph Text Annotations for Specific Events (Bulk Ingest, Spikes, Baseline, High-Duration Mutation)
+    // 5. On-Graph Text Annotations for Specific Events (Bulk Ingest, Spikes, Baseline, High-Duration Mutation, Outliers)
     if (showAnnotations) {
       const annotationLayer = g.append('g').attr('class', 'chart-annotations-layer');
 
       trendHistory.forEach((point, idx) => {
-        const ann = getPointAnnotation(point, thresholdViolations);
+        const ann = getPointAnnotation(point, thresholdViolations, pointAnomalyMetrics[idx]);
         if (!ann) return;
 
         const isHighDurationAnn = ann.label.includes('High-Duration');
@@ -1706,9 +1870,19 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
             if (event && event.stopPropagation) {
               event.stopPropagation();
             }
+            const aMetric = pointAnomalyMetrics[idx];
+            const pointWithMetrics: LatencyTrendPoint = {
+              ...point,
+              mutationFrequencyPerMin: pointMutationFreqs[idx],
+              isOutlier: aMetric?.isOutlier,
+              movingAverage: aMetric?.movingAverage,
+              movingStdDev: aMetric?.movingStdDev,
+              zScore: aMetric?.zScore,
+              anomalyDeviation: aMetric?.deviation
+            };
             setSelectedPointIndex(idx);
             setPopoverPoint({
-              point,
+              point: pointWithMetrics,
               index: idx,
               x: cx + margin.left,
               y: cy + margin.top
@@ -1813,22 +1987,23 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
     trendHistory.forEach((point, idx) => {
       const highDuration = checkHighDurationMutationCorrelation(point, thresholdViolations);
       const isHighDuration = highDuration.isHighDurationMutation;
-      const variance = point.executionTimeMs - baselineLatency;
-      const isOutlier = variance >= anomalyThreshold || isHighDuration;
+      const anomalyMetric = pointAnomalyMetrics[idx];
+      const isOutlier = (anomalyMetric?.isOutlier ?? false) || isHighDuration;
       if (!isOutlier) return;
 
       const cx = xScale(idx);
       const cy = yScale(Math.max(point.executionTimeMs, 0.05));
       const isNearTop = cy < 75;
-      const tagText = isHighDuration ? '⚡ High-Duration Mutation' : '⚡ OUTLIER';
-      const tagWidth = isHighDuration ? 144 : 68;
+      const zScoreText = anomalyMetric ? `${anomalyMetric.zScore.toFixed(1)}σ` : '>3σ';
+      const tagText = isHighDuration ? '⚡ High-Duration Mutation' : `⚡ OUTLIER (${zScoreText})`;
+      const tagWidth = isHighDuration ? 144 : 88;
       const tagHeight = 18;
 
       let tagX = cx - tagWidth / 2;
       if (tagX < 2) tagX = 2;
       if (tagX + tagWidth > innerWidth - 2) tagX = innerWidth - tagWidth - 2;
 
-      const hasAnnotation = showAnnotations && getPointAnnotation(point, thresholdViolations) !== null;
+      const hasAnnotation = showAnnotations && getPointAnnotation(point, thresholdViolations, pointAnomalyMetrics[idx]) !== null;
       let tagY: number;
 
       if (hasAnnotation) {
@@ -1855,7 +2030,7 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
           'title',
           isHighDuration
             ? `High-Duration Mutation: ${point.executionTimeMs.toFixed(1)}ms (${highDuration.reason}) - Click to view technical specs`
-            : `Outlier Spike: ${point.executionTimeMs.toFixed(1)}ms (+${variance.toFixed(1)}ms variance) - Click to view technical specs`
+            : `Outlier (>3σ Deviation): ${point.executionTimeMs.toFixed(1)}ms (${anomalyMetric?.zScore.toFixed(2)}σ from Moving Avg ${anomalyMetric?.movingAverage.toFixed(1)}ms ± ${anomalyMetric?.movingStdDev.toFixed(1)}ms) - Click to view technical specs`
         )
         .on('click', (event: any) => {
           if (event && event.stopPropagation) {
@@ -1863,7 +2038,12 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
           }
           const pointWithFreq: LatencyTrendPoint = {
             ...point,
-            mutationFrequencyPerMin: pointMutationFreqs[idx]
+            mutationFrequencyPerMin: pointMutationFreqs[idx],
+            isOutlier: anomalyMetric?.isOutlier,
+            movingAverage: anomalyMetric?.movingAverage,
+            movingStdDev: anomalyMetric?.movingStdDev,
+            zScore: anomalyMetric?.zScore,
+            anomalyDeviation: anomalyMetric?.deviation
           };
           setSelectedPointIndex(idx);
           setPopoverPoint({
@@ -1938,7 +2118,11 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
     thresholdViolations,
     mutationHistory,
     pointMutationFreqs,
-    maxMutationFreq
+    maxMutationFreq,
+    pointAnomalyMetrics,
+    showMovingAverageLine,
+    anomalyDetectorMode,
+    movingAverageWindow
   ]);
 
   // Secondary D3 Horizontal Breakdown Chart: Flag Impact
@@ -2747,9 +2931,29 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                 <span>Violation Markers</span>
                 {showViolationMarkers && (
                   <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full font-bold bg-rose-200 text-rose-950">
-                    {highDurationMutationsCount + trendHistory.filter((p) => (p.executionTimeMs - baselineLatency) >= anomalyThreshold).length}
+                    {highDurationMutationsCount + outlierPoints.length}
                   </span>
                 )}
+              </button>
+
+              {/* Query Replay Button */}
+              <button
+                id="btn-open-query-replay"
+                data-testid="btn-open-query-replay"
+                type="button"
+                onClick={() => {
+                  const pt = activeDetailPoint || trendHistory[trendHistory.length - 1];
+                  if (pt) {
+                    setReplayPoint(pt);
+                    setIsReplayModalOpen(true);
+                  }
+                }}
+                disabled={trendHistory.length === 0}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border bg-indigo-50 border-indigo-300 text-indigo-900 hover:bg-indigo-100 transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Replay historical performance trend data point to reproduce bottleneck"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Query Replay</span>
               </button>
 
               {/* D3 Scale Selector */}
@@ -2802,33 +3006,69 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
             </div>
           )}
 
-          {/* Anomaly Threshold & Latency Variance Slider Control Bar */}
-          <div className="bg-zinc-50/90 border border-zinc-200/90 rounded-xl p-3 mb-3.5 space-y-2.5">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              {/* Slider Title & Live Variance Readout */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="p-1 rounded-md bg-rose-100 text-rose-700 border border-rose-200">
-                  <Sliders className="w-3.5 h-3.5" />
+          {/* Automated Anomaly Detector (3-Sigma Moving Average & Threshold Controls) */}
+          <div className="bg-zinc-50/95 border border-zinc-200/90 rounded-xl p-3.5 mb-3.5 space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              {/* Title & Mode Switcher */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-lg bg-rose-100 text-rose-700 border border-rose-200">
+                    <Activity className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-xs font-bold text-zinc-900">
+                        Automated Anomaly Detector
+                      </h4>
+                      <span className="font-mono text-[10px] bg-rose-100 text-rose-800 border border-rose-300 px-2 py-0.5 rounded-full font-bold">
+                        3-Sigma Moving Average
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      Automatically tags points as 'Outliers' when deviating by &gt; 3 standard deviations (3σ) from the moving average.
+                    </p>
+                  </div>
                 </div>
-                <label
-                  htmlFor="anomaly-threshold-slider"
-                  className="text-xs font-bold text-zinc-900 cursor-pointer"
-                >
-                  Anomaly Threshold:
-                </label>
-                <span className="font-mono text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded shadow-2xs">
-                  +{anomalyThreshold} ms variance
-                </span>
-                <span className="text-[11px] text-zinc-500">
-                  (Cutoff: &gt; {effectiveAnomalyCutoff.toFixed(1)} ms)
-                </span>
+
+                {/* Mode Selector */}
+                <div className="inline-flex p-0.5 bg-zinc-200/80 rounded-lg text-[10px] font-medium border border-zinc-200">
+                  <button
+                    id="btn-mode-three-sigma"
+                    data-testid="btn-mode-three-sigma"
+                    type="button"
+                    onClick={() => setAnomalyDetectorMode('three_sigma')}
+                    className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                      anomalyDetectorMode === 'three_sigma'
+                        ? 'bg-white text-zinc-900 font-bold shadow-2xs'
+                        : 'text-zinc-600 hover:text-zinc-900'
+                    }`}
+                    title="Auto-detect outliers deviating by > 3 standard deviations from local moving average"
+                  >
+                    3-Sigma Moving Avg (Auto)
+                  </button>
+                  <button
+                    id="btn-mode-fixed-threshold"
+                    data-testid="btn-mode-fixed-threshold"
+                    type="button"
+                    onClick={() => setAnomalyDetectorMode('threshold')}
+                    className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
+                      anomalyDetectorMode === 'threshold'
+                        ? 'bg-white text-zinc-900 font-bold shadow-2xs'
+                        : 'text-zinc-600 hover:text-zinc-900'
+                    }`}
+                    title="Detect outliers exceeding a fixed millisecond variance threshold"
+                  >
+                    Fixed Variance (+Δms)
+                  </button>
+                </div>
               </div>
 
-              {/* Detected Outliers Badge & Quick Variance Presets */}
+              {/* Detected Outliers Badge & Export Button */}
               <div className="flex items-center gap-2 flex-wrap">
                 <span
                   id="outliers-detected-badge"
-                  className={`inline-flex items-center gap-1.5 text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full border transition-all ${
+                  data-testid="outliers-detected-badge"
+                  className={`inline-flex items-center gap-1.5 text-[11px] font-mono font-bold px-2.5 py-1 rounded-full border transition-all ${
                     outlierPoints.length > 0
                       ? 'bg-rose-50 text-rose-800 border-rose-300 shadow-2xs'
                       : 'bg-emerald-50 text-emerald-800 border-emerald-200'
@@ -2837,100 +3077,130 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                   {outlierPoints.length > 0 ? (
                     <>
                       <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
-                      <span>{outlierPoints.length} Outlier{outlierPoints.length === 1 ? '' : 's'} Marked</span>
+                      <span>{outlierPoints.length} Outlier{outlierPoints.length === 1 ? '' : 's'} Tagged (&gt;3σ)</span>
                     </>
                   ) : (
                     <>
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      <span>0 Outliers (Normal)</span>
+                      <span>0 Outliers (Normal within 3σ)</span>
                     </>
                   )}
                 </span>
 
-                {/* Inline Export Anomaly Report Shortcut */}
+                {/* Inline Export Anomaly Report */}
                 <button
                   id="btn-export-anomaly-report-inline"
                   data-testid="btn-export-anomaly-report-inline"
                   type="button"
                   onClick={handleExportAnomalyReport}
                   disabled={isExportingAnomalyReport || trendHistory.length === 0}
-                  className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
-                  title="Generate JSON file containing all latency anomalies, correlated mutation events, and system metrics for performance audit"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white hover:bg-amber-50 text-amber-900 border border-amber-300 text-[11px] font-semibold transition-colors cursor-pointer shadow-2xs disabled:opacity-50"
+                  title="Generate JSON audit file containing all latency anomalies and 3σ outlier statistics"
                 >
                   <Download className="w-3 h-3 text-amber-600" />
                   <span>Export Anomaly Report</span>
                 </button>
-
-                {/* Quick Presets */}
-                <div className="inline-flex p-0.5 bg-zinc-200/80 rounded-lg text-[10px] font-medium border border-zinc-200">
-                  <button
-                    type="button"
-                    onClick={() => setAnomalyThreshold(25)}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                      anomalyThreshold === 25
-                        ? 'bg-white text-zinc-900 font-bold shadow-2xs'
-                        : 'text-zinc-600 hover:text-zinc-900'
-                    }`}
-                    title="Set 25ms variance threshold (Strict detection)"
-                  >
-                    Strict (25ms)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAnomalyThreshold(50)}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                      anomalyThreshold === 50
-                        ? 'bg-white text-zinc-900 font-bold shadow-2xs'
-                        : 'text-zinc-600 hover:text-zinc-900'
-                    }`}
-                    title="Set 50ms variance threshold (Balanced detection)"
-                  >
-                    Balanced (50ms)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAnomalyThreshold(100)}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                      anomalyThreshold === 100
-                        ? 'bg-white text-zinc-900 font-bold shadow-2xs'
-                        : 'text-zinc-600 hover:text-zinc-900'
-                    }`}
-                    title="Set 100ms variance threshold (Relaxed detection)"
-                  >
-                    Relaxed (100ms)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAnomalyThreshold(200)}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                      anomalyThreshold === 200
-                        ? 'bg-white text-zinc-900 font-bold shadow-2xs'
-                        : 'text-zinc-600 hover:text-zinc-900'
-                    }`}
-                    title="Set 200ms variance threshold (Only massive spikes)"
-                  >
-                    High (200ms)
-                  </button>
-                </div>
               </div>
             </div>
 
-            {/* Slider Track with Interactive Input */}
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] font-mono text-zinc-500 font-medium w-10">10ms</span>
-              <input
-                id="anomaly-threshold-slider"
-                type="range"
-                min={10}
-                max={300}
-                step={5}
-                value={anomalyThreshold}
-                onChange={(e) => setAnomalyThreshold(Number(e.target.value))}
-                className="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-rose-600 focus:outline-none focus:ring-2 focus:ring-rose-500/40"
-                title={`Anomaly threshold slider: currently +${anomalyThreshold}ms latency variance`}
-              />
-              <span className="text-[10px] font-mono text-zinc-500 font-medium w-10 text-right">300ms</span>
+            {/* Sub-Controls: Window size, Statistics & Visual Overlay Toggle */}
+            <div className="pt-2 border-t border-zinc-200/80 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-3 flex-wrap">
+                {anomalyDetectorMode === 'three_sigma' ? (
+                  <>
+                    <div className="flex items-center gap-1.5 text-zinc-700">
+                      <span className="font-semibold text-zinc-900">Moving Window:</span>
+                      <div className="inline-flex p-0.5 bg-zinc-200/70 rounded-md text-[10px] font-medium border border-zinc-200">
+                        {[3, 5, 7, 10].map((w) => (
+                          <button
+                            key={w}
+                            type="button"
+                            onClick={() => setMovingAverageWindow(w)}
+                            className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                              movingAverageWindow === w
+                                ? 'bg-white text-zinc-900 font-bold shadow-2xs'
+                                : 'text-zinc-600 hover:text-zinc-900'
+                            }`}
+                            title={`Set moving average window to ${w} points`}
+                          >
+                            {w} pts{w === 5 ? ' (Default)' : ''}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 font-mono text-[11px] text-zinc-600 flex-wrap">
+                      <span className="bg-zinc-100 border border-zinc-200 px-2 py-0.5 rounded">
+                        Mean (μ): <strong className="text-zinc-900">{meanLatency.toFixed(2)}ms</strong>
+                      </span>
+                      <span className="bg-zinc-100 border border-zinc-200 px-2 py-0.5 rounded">
+                        Std Dev (σ): <strong className="text-zinc-900">{stdDevLatency.toFixed(2)}ms</strong>
+                      </span>
+                      <span className="bg-rose-50 border border-rose-200 text-rose-800 px-2 py-0.5 rounded font-bold">
+                        3σ Limit: ±{(3 * stdDevLatency).toFixed(2)}ms
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-zinc-900">Fixed Threshold:</span>
+                    <span className="font-mono text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded shadow-2xs">
+                      +{anomalyThreshold} ms variance
+                    </span>
+                    <div className="inline-flex p-0.5 bg-zinc-200/70 rounded-md text-[10px] font-medium border border-zinc-200">
+                      {[25, 50, 100, 200].map((val) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => setAnomalyThreshold(val)}
+                          className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
+                            anomalyThreshold === val
+                              ? 'bg-white text-zinc-900 font-bold shadow-2xs'
+                              : 'text-zinc-600 hover:text-zinc-900'
+                          }`}
+                        >
+                          {val}ms
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Chart Visual Toggles */}
+              <div className="flex items-center gap-3">
+                <label className="inline-flex items-center gap-1.5 cursor-pointer select-none text-zinc-700 hover:text-zinc-900">
+                  <input
+                    type="checkbox"
+                    checked={showMovingAverageLine}
+                    onChange={(e) => setShowMovingAverageLine(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500/30 cursor-pointer"
+                  />
+                  <span className="font-medium text-[11px] flex items-center gap-1">
+                    <span className="w-2.5 h-0.5 bg-indigo-500 inline-block" />
+                    Show Moving Average &amp; 3σ Boundary
+                  </span>
+                </label>
+
+                <label
+                  htmlFor="checkbox-enable-anomaly-alerts"
+                  className="inline-flex items-center gap-1.5 cursor-pointer select-none text-zinc-700 hover:text-zinc-900"
+                >
+                  <input
+                    id="checkbox-enable-anomaly-alerts"
+                    type="checkbox"
+                    checked={alertsEnabled}
+                    onChange={(e) => handleToggleAlerts(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-zinc-300 text-rose-600 focus:ring-rose-500/30 cursor-pointer"
+                  />
+                  <span className="font-medium text-[11px] flex items-center gap-1">
+                    <Bell className={`w-3 h-3 ${alertsEnabled ? 'text-rose-600' : 'text-zinc-400'}`} />
+                    Push Alerts
+                  </span>
+                </label>
+              </div>
             </div>
+          </div>
 
             {/* Anomaly Alerts Checkbox & Integration Control Bar */}
             <div className="pt-2.5 border-t border-zinc-200/80 flex flex-col md:flex-row md:items-center justify-between gap-2.5">
@@ -3020,8 +3290,6 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                 )}
               </div>
             </div>
-          </div>
-
 
           {/* D3 Canvas Container */}
           <div ref={chartContainerRef} className="relative w-full flex-1 min-h-[340px]">
@@ -3104,15 +3372,21 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                       </div>
                     );
                   }
-                  if (hoveredPoint.point.executionTimeMs - baselineLatency >= anomalyThreshold) {
+                  const hIdx = hoveredPoint.index ?? trendHistory.findIndex(p => p.id === hoveredPoint.point.id);
+                  const aMetric = hIdx >= 0 ? pointAnomalyMetrics[hIdx] : null;
+                  if (aMetric?.isOutlier) {
                     return (
-                      <div className="flex items-center justify-between text-[11px] bg-rose-950/90 border border-rose-800 text-rose-200 px-2 py-1 rounded my-1.5 font-mono">
+                      <div
+                        id="tooltip-badge-outlier-spike"
+                        data-testid="tooltip-badge-outlier-spike"
+                        className="flex items-center justify-between text-[11px] bg-rose-950/90 border border-rose-700 text-rose-200 px-2 py-1 rounded my-1.5 font-mono shadow-xs"
+                      >
                         <span className="flex items-center gap-1 font-bold text-rose-300">
-                          <AlertTriangle className="w-3 h-3 text-rose-400" />
-                          Outlier Spike
+                          <AlertTriangle className="w-3 h-3 text-rose-400 animate-pulse" />
+                          Outlier (&gt;3σ Anomaly)
                         </span>
-                        <span className="font-semibold">
-                          +{(hoveredPoint.point.executionTimeMs - baselineLatency).toFixed(1)}ms variance
+                        <span className="font-semibold text-rose-200">
+                          {aMetric.zScore.toFixed(2)}σ (+{aMetric.deviation.toFixed(1)}ms)
                         </span>
                       </div>
                     );
@@ -3169,6 +3443,11 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                   setIsCompareOpen(true);
                   setPopoverPoint(null);
                 }}
+                onReplayQuery={(point) => {
+                  setReplayPoint(point);
+                  setIsReplayModalOpen(true);
+                  setPopoverPoint(null);
+                }}
                 onClose={() => setPopoverPoint(null)}
               />
             )}
@@ -3190,9 +3469,21 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                 <span>Degraded (&gt;60ms)</span>
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-3.5 h-3.5 rounded-full bg-rose-100 border-2 border-rose-600 inline-block" />
-                <span className="text-rose-700 font-semibold">Outlier Spike (&gt;+{anomalyThreshold}ms)</span>
+                <span className="w-3.5 h-3.5 rounded-full bg-rose-100 border-2 border-rose-600 inline-block animate-pulse" />
+                <span className="text-rose-700 font-semibold">Outlier (&gt;3σ Anomaly)</span>
               </span>
+              {showMovingAverageLine && (
+                <>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-5 h-0.5 border-t-2 border-dashed border-indigo-500 inline-block" />
+                    <span className="text-indigo-700 font-medium">Moving Avg (MA-{movingAverageWindow})</span>
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-5 h-0.5 border-t-2 border-dashed border-rose-500 inline-block" />
+                    <span className="text-rose-600 font-medium">3σ Boundary (+3σ)</span>
+                  </span>
+                </>
+              )}
               <span className="flex items-center gap-1.5">
                 <span className="w-3.5 h-3.5 rounded-full bg-rose-200 border-2 border-rose-700 border-dashed inline-block" />
                 <span className="text-rose-900 font-bold flex items-center gap-1">
@@ -3284,10 +3575,67 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                 </div>
               </div>
 
+              {/* 3-Sigma Anomaly Diagnostic Status */}
+              {(() => {
+                const detailIdx = selectedPointIndex !== null ? selectedPointIndex : (trendHistory.length - 1);
+                const detailMetric = detailIdx >= 0 ? pointAnomalyMetrics[detailIdx] : null;
+                if (!detailMetric) return null;
+
+                return (
+                  <div className={`mt-3 p-2.5 rounded-xl border ${
+                    detailMetric.isOutlier
+                      ? 'bg-rose-50/90 border-rose-300 text-rose-950 shadow-2xs'
+                      : 'bg-zinc-50 border-zinc-200 text-zinc-800'
+                  }`}>
+                    <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        {detailMetric.isOutlier ? (
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600 animate-pulse" />
+                        ) : (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        )}
+                        <span className="font-bold text-xs">
+                          {detailMetric.isOutlier ? 'Tagged as Outlier (>3σ Deviation)' : 'Normal Latency (Within 3σ Envelope)'}
+                        </span>
+                      </div>
+                      <span className={`font-mono text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                        detailMetric.isOutlier
+                          ? 'bg-rose-200 text-rose-950 border border-rose-300'
+                          : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                      }`}>
+                        {detailMetric.zScore.toFixed(2)}σ
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono text-zinc-600 pt-1 border-t border-zinc-200/60">
+                      <div>Moving Avg (MA-{movingAverageWindow}): <strong className="text-zinc-900">{detailMetric.movingAverage.toFixed(2)}ms</strong></div>
+                      <div>Moving Std Dev (σ): <strong className="text-zinc-900">{detailMetric.movingStdDev.toFixed(2)}ms</strong></div>
+                      <div>3σ Upper Limit: <strong className={detailMetric.isOutlier ? 'text-rose-700 font-bold' : 'text-zinc-900'}>{detailMetric.thresholdCutoff.toFixed(2)}ms</strong></div>
+                      <div>Deviation from MA: <strong className={detailMetric.isOutlier ? 'text-rose-700 font-bold' : 'text-zinc-900'}>+{detailMetric.deviation.toFixed(2)}ms</strong></div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Flags State at that Snapshot */}
               <div className="mt-3 pt-3 border-t border-zinc-100">
-                <div className="text-[11px] font-semibold text-zinc-700 mb-2">
-                  Flags at Snapshot:
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[11px] font-semibold text-zinc-700">
+                    Flags at Snapshot:
+                  </div>
+                  <button
+                    id="btn-inspect-replay-query"
+                    data-testid="btn-inspect-replay-query"
+                    type="button"
+                    onClick={() => {
+                      setReplayPoint(activeDetailPoint);
+                      setIsReplayModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200 shadow-2xs transition-colors cursor-pointer"
+                    title="Replay this exact query state and flags to reproduce bottleneck"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Replay Query State</span>
+                  </button>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {Object.entries(activeDetailPoint?.flags || {
@@ -3407,8 +3755,18 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                         const width = containerDimensions.width;
                         const height = containerDimensions.height;
                         const frac = originalIndex / Math.max(trendHistory.length - 1, 1);
+                        const aMetric = pointAnomalyMetrics[originalIndex];
+                        const pointWithMetrics: LatencyTrendPoint = {
+                          ...point,
+                          mutationFrequencyPerMin: pointMutationFreqs[originalIndex],
+                          isOutlier: aMetric?.isOutlier,
+                          movingAverage: aMetric?.movingAverage,
+                          movingStdDev: aMetric?.movingStdDev,
+                          zScore: aMetric?.zScore,
+                          anomalyDeviation: aMetric?.deviation
+                        };
                         setPopoverPoint({
-                          point,
+                          point: pointWithMetrics,
                           index: originalIndex,
                           x: 65 + frac * (width - 100),
                           y: height * 0.4
@@ -3417,6 +3775,20 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                       className="px-1.5 py-0.5 rounded text-[10px] font-bold border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors cursor-pointer"
                     >
                       Specs
+                    </button>
+                    <button
+                      type="button"
+                      id={`btn-replay-point-${point.id}`}
+                      data-testid={`btn-replay-point-${point.id}`}
+                      title="Replay this exact query state and flags to reproduce bottleneck"
+                      onClick={() => {
+                        setReplayPoint(point);
+                        setIsReplayModalOpen(true);
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-bold border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5 text-indigo-600" />
+                      <span>Replay</span>
                     </button>
                     <button
                       type="button"
@@ -3476,29 +3848,35 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
                     }
                     return null;
                   })()}
-                  {(() => {
-                    const highDuration = checkHighDurationMutationCorrelation(point, thresholdViolations);
-                    if (highDuration.isHighDurationMutation) {
-                      return (
-                        <span
-                          className="inline-flex items-center gap-1 font-mono font-bold text-[10px] text-rose-800 bg-rose-100 border border-rose-400 px-1.5 py-0.5 rounded shadow-2xs"
-                          title={`High-Duration Mutation (${highDuration.reason})`}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
-                          HIGH-DURATION MUTATION
-                        </span>
-                      );
-                    }
-                    if (point.executionTimeMs - baselineLatency >= anomalyThreshold) {
-                      return (
-                        <span className="inline-flex items-center gap-1 font-mono font-bold text-[10px] text-rose-700 bg-rose-50 border border-rose-300 px-1.5 py-0.5 rounded shadow-2xs">
-                          <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
-                          OUTLIER
-                        </span>
-                      );
-                    }
-                    return null;
-                  })()}
+                    {(() => {
+                      const highDuration = checkHighDurationMutationCorrelation(point, thresholdViolations);
+                      if (highDuration.isHighDurationMutation) {
+                        return (
+                          <span
+                            className="inline-flex items-center gap-1 font-mono font-bold text-[10px] text-rose-800 bg-rose-100 border border-rose-400 px-1.5 py-0.5 rounded shadow-2xs"
+                            title={`High-Duration Mutation (${highDuration.reason})`}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
+                            HIGH-DURATION MUTATION
+                          </span>
+                        );
+                      }
+                      const anomalyMetric = pointAnomalyMetrics[originalIndex];
+                      if (anomalyMetric?.isOutlier) {
+                        return (
+                          <span
+                            id={`tag-table-outlier-${point.id}`}
+                            data-testid={`tag-table-outlier-${point.id}`}
+                            className="inline-flex items-center gap-1 font-mono font-bold text-[10px] text-rose-800 bg-rose-50 border border-rose-300 px-1.5 py-0.5 rounded shadow-2xs"
+                            title={`Outlier: Deviates by ${anomalyMetric.zScore.toFixed(2)}σ > 3σ from Moving Avg (${anomalyMetric.movingAverage.toFixed(1)}ms ± ${anomalyMetric.movingStdDev.toFixed(1)}ms, 3σ limit: ${anomalyMetric.thresholdCutoff.toFixed(1)}ms)`}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-600 animate-pulse" />
+                            OUTLIER ({anomalyMetric.zScore.toFixed(1)}σ)
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
                   <span
                     className={`font-bold px-2 py-0.5 rounded text-xs ${
                       isFast
@@ -3595,6 +3973,31 @@ export const PerformanceTrendsView: React.FC<PerformanceTrendsViewProps> = ({
           indexB={compareIndexB}
           svgElement={svgRef.current}
           onClose={() => setIsPdfModalOpen(false)}
+        />
+      )}
+
+      {/* Query Replay & Bottleneck Reproducer Modal */}
+      {isReplayModalOpen && replayPoint && (
+        <QueryReplayModal
+          isOpen={isReplayModalOpen}
+          onClose={() => {
+            setIsReplayModalOpen(false);
+            setReplayPoint(null);
+          }}
+          point={replayPoint}
+          currentFlags={safeCurrentFlags}
+          onApplyFlags={(targetFlags) => {
+            if (onApplyFlags) {
+              onApplyFlags(targetFlags);
+            } else {
+              (Object.keys(targetFlags || {}) as (keyof OptimizationFlags)[]).forEach((flagKey) => {
+                if ((safeCurrentFlags || {})[flagKey] !== (targetFlags || {})[flagKey]) {
+                  onToggleFlag?.(flagKey);
+                }
+              });
+            }
+          }}
+          onAppendTrendPoint={onAppendTrendPoint}
         />
       )}
     </div>

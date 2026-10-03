@@ -8,6 +8,7 @@ import { ComplexityHeatmapPanel } from './ComplexityHeatmapPanel';
 import { IndexLifecycleAnalyticsPanel } from './IndexLifecycleAnalyticsPanel';
 import { IndexUsageOverviewDashboard } from './IndexUsageOverviewDashboard';
 import { IntelligentIndexingAdvisorModal, CoveringIndexPatch, COVERING_INDEX_CATALOG } from './IntelligentIndexingAdvisorModal';
+import { IndexImpactMap, IndexImpactMapItem } from './IndexImpactMap';
 
 interface DatabaseSchemaExplorerViewProps {
   flags: OptimizationFlags;
@@ -351,7 +352,8 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     const newComposite = COVERING_INDEX_CATALOG.map((p) => p.indexName);
     setCreatedCompositeIndexes((prev) => Array.from(new Set([...prev, ...newComposite])));
   };
-  const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards'>('table');
+  const [indexListLayout, setIndexListLayout] = useState<'table' | 'cards' | 'map'>('table');
+  const [showIndexImpactMap, setShowIndexImpactMap] = useState<boolean>(false);
   const [isGroupByTable, setIsGroupByTable] = useState<boolean>(false);
   const [collapsedTables, setCollapsedTables] = useState<Record<string, boolean>>({});
   const [isWhatIfAnalysisActive, setIsWhatIfAnalysisActive] = useState<boolean>(false);
@@ -3415,6 +3417,27 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
     }));
   }, [allRankedSchemaIndexes]);
 
+  const indexImpactMapItems: IndexImpactMapItem[] = useMemo(() => {
+    return allRankedSchemaIndexes.map((item) => ({
+      name: item.index.name,
+      table: item.table,
+      columns: item.index.columns,
+      type: item.index.type,
+      reads: item.usageHeat.reads,
+      writes: item.usageHeat.writes,
+      ratio: item.usageHeat.ratio,
+      readPercentage: item.usageHeat.readPercentage,
+      writePercentage: item.usageHeat.writePercentage,
+      queryCostMs: item.latencyHeat.queryLatencyContributionMs,
+      impactScore: item.impact.score,
+      healthScore: item.health.score,
+      isRemoved: item.isRemoved,
+      isLocked: item.isLocked,
+      active: item.index.active,
+      entityBadge: item.entityBadge
+    }));
+  }, [allRankedSchemaIndexes]);
+
   // Total count of indexes inactive for more than 7 days
   const lowUsageFlaggedCount = useMemo(() => {
     let count = 0;
@@ -5075,6 +5098,24 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                     <Layers className="w-3.5 h-3.5 text-indigo-600" />
                     <span>Cards View</span>
                   </button>
+                  <button
+                    type="button"
+                    id="btn-index-view-impact-map"
+                    data-testid="btn-index-view-impact-map"
+                    onClick={() => {
+                      setIndexListLayout('map');
+                      setShowIndexImpactMap(true);
+                    }}
+                    className={`px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
+                      indexListLayout === 'map'
+                        ? 'bg-white text-indigo-900 shadow-xs font-bold'
+                        : 'text-zinc-600 hover:text-zinc-900'
+                    }`}
+                    title="Switch to coordinate-based Index Impact Map view"
+                  >
+                    <Compass className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Impact Map</span>
+                  </button>
                 </div>
 
                 {/* Group by Table Toggle Button */}
@@ -5202,6 +5243,31 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
                   <span>Usage Heatmap (R/W)</span>
                   <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showUsageHeatmap ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'}`}>
                     {showUsageHeatmap ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+
+                {/* Index Impact Map Toggle Button */}
+                <button
+                  type="button"
+                  id="btn-toggle-index-impact-map"
+                  data-testid="btn-toggle-index-impact-map"
+                  onClick={() => {
+                    const nextState = !showIndexImpactMap;
+                    setShowIndexImpactMap(nextState);
+                    if (nextState) setIndexListLayout('map');
+                    else if (indexListLayout === 'map') setIndexListLayout('table');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1.5 transition-all border ${
+                    showIndexImpactMap || indexListLayout === 'map'
+                      ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs ring-1 ring-indigo-400'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700'
+                  }`}
+                  title="Toggle visual Index Impact Map: Displays coordinate grid correlating Read/Write activity with query execution costs to isolate inefficient index clusters"
+                >
+                  <Compass className={`w-3.5 h-3.5 ${showIndexImpactMap || indexListLayout === 'map' ? 'text-indigo-200' : 'text-indigo-600'}`} />
+                  <span>Index Impact Map</span>
+                  <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${showIndexImpactMap || indexListLayout === 'map' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'}`}>
+                    {showIndexImpactMap || indexListLayout === 'map' ? 'ON' : 'OFF'}
                   </span>
                 </button>
 
@@ -5724,8 +5790,35 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
               })}
             </div>
 
-            {/* Index List Views: Ranked Index Table vs Grouped by Table Segments vs Cards */}
-            {indexListLayout === 'table' ? (
+            {/* Index List Views: Ranked Index Table vs Grouped by Table Segments vs Cards vs Impact Map */}
+            {(showIndexImpactMap || indexListLayout === 'map') ? (
+              <IndexImpactMap
+                indexes={indexImpactMapItems}
+                onSelectIndex={(idxName) => {
+                  handleToggleSelectIndex(idxName);
+                }}
+                onReindex={(idxName) => handleReindexIndex(idxName)}
+                onDropIndex={(idxName) => {
+                  setRemovedIndexes((prev) => [...prev, idxName]);
+                  setImportSuccessNotice(`🗑️ [Index Dropped] "${idxName}" removed. Observe query plan sequential scan impact.`);
+                  setTimeout(() => setImportSuccessNotice(null), 4000);
+                }}
+                onWhatIf={(idxName) => {
+                  const targetIdx = allRankedSchemaIndexes.find(i => i.index.name === idxName);
+                  if (targetIdx) {
+                    setActiveWhatIfModalIndex({
+                      name: targetIdx.index.name,
+                      tableName: targetIdx.table,
+                      columns: targetIdx.index.columns
+                    });
+                  }
+                }}
+                onClose={() => {
+                  setShowIndexImpactMap(false);
+                  setIndexListLayout('table');
+                }}
+              />
+            ) : indexListLayout === 'table' ? (
               isGroupByTable ? (
                 <div id="indexes-grouped-by-table-container" data-testid="indexes-grouped-by-table-container" className="space-y-4">
                   {groupedByTableIndexes.length === 0 ? (

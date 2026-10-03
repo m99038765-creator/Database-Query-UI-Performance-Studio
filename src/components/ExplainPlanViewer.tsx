@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ExplainPlanNode, OptimizationFlags, QueryExecutionResult } from '../types';
+import { executeQuery } from '../db/databaseEngine';
 import { SqlHealthInspector } from './SqlHealthInspector';
 import {
   Terminal,
@@ -22,6 +23,7 @@ import {
   Copy,
   Check,
   RefreshCw,
+  RotateCcw,
   X,
   FileCode,
   Sliders,
@@ -29,9 +31,189 @@ import {
   Flame,
   ArrowUp,
   ArrowDown,
-  Lightbulb
+  Lightbulb,
+  HardDrive,
+  Info,
+  Server
 } from 'lucide-react';
 import * as d3 from 'd3';
+
+export interface NodeCostBreakdown {
+  cpuCost: number;
+  ioCost: number;
+  memoryCost: number;
+  totalCost: number;
+  cpuPercent: number;
+  ioPercent: number;
+  memoryPercent: number;
+  cpuExplanation: string;
+  ioExplanation: string;
+  memoryExplanation: string;
+  primaryResourceBottleneck: 'CPU' | 'I/O' | 'Memory';
+}
+
+export const getCpuExplanation = (node: ExplainPlanNode, cpuCost: number, cpuPercent: number): string => {
+  const nodeType = (node.nodeType || '').toLowerCase();
+  if (nodeType.includes('seq scan') || nodeType.includes('sequential')) {
+    return `Evaluates predicates and deserializes tuples across ${node.rowsScanned.toLocaleString()} candidate heap rows (${cpuPercent}% CPU share).`;
+  }
+  if (nodeType.includes('index scan') || nodeType.includes('index')) {
+    return `Traverses B-Tree binary search levels, evaluates index conditions, and extracts matching row pointers (${cpuPercent}% CPU share).`;
+  }
+  if (nodeType.includes('hash join') || nodeType.includes('hash')) {
+    return `Calculates cryptographic/murmur hashes on join keys and probes candidate entries in memory (${cpuPercent}% CPU share).`;
+  }
+  if (nodeType.includes('nested loop') || nodeType.includes('loop')) {
+    return `Executes O(M×N) loop dispatch cycles and re-evaluates the inner relation for each outer tuple (${cpuPercent}% CPU share).`;
+  }
+  if (nodeType.includes('sort')) {
+    return `Performs CPU-bound comparator evaluations and quicksort element swaps across ${node.rowsReturned} records (${cpuPercent}% CPU share).`;
+  }
+  if (nodeType.includes('cache') || nodeType.includes('lru')) {
+    return `Performs instant key hash computation and memory pointer resolution with zero disk cycles (${cpuPercent}% CPU share).`;
+  }
+  return `Performs CPU tuple evaluations, expressions, and filtering logic (${cpuPercent}% CPU share).`;
+};
+
+export const getIoExplanation = (node: ExplainPlanNode, ioCost: number, ioPercent: number): string => {
+  const nodeType = (node.nodeType || '').toLowerCase();
+  if (nodeType.includes('seq scan') || nodeType.includes('sequential')) {
+    const pages = Math.max(1, Math.round(node.rowsScanned / 80));
+    return `Fetches ${pages.toLocaleString()} unindexed 8KB heap disk pages from storage blocks sequentially (${ioPercent}% I/O share).`;
+  }
+  if (nodeType.includes('index scan') || nodeType.includes('index')) {
+    return `Performs targeted random page block reads for B-Tree index pages and table heap lookups (${ioPercent}% I/O share).`;
+  }
+  if (nodeType.includes('cache') || nodeType.includes('lru')) {
+    return `Zero disk I/O; query result was served 100% from RAM cache.`;
+  }
+  if (nodeType.includes('hash join') || nodeType.includes('hash')) {
+    return `Streams data blocks from child scan operations into the hash join pipeline (${ioPercent}% I/O share).`;
+  }
+  if (nodeType.includes('nested loop') || nodeType.includes('loop')) {
+    return `Generates repeated page access requests to the inner relation table blocks (${ioPercent}% I/O share).`;
+  }
+  return `Transfers database storage blocks and index pages from disk subsystem (${ioPercent}% I/O share).`;
+};
+
+export const getMemExplanation = (node: ExplainPlanNode, memoryCost: number, memoryPercent: number): string => {
+  const nodeType = (node.nodeType || '').toLowerCase();
+  if (nodeType.includes('hash join') || nodeType.includes('hash')) {
+    return `Allocates hash table structures and tuple buckets in work_mem memory space (${memoryPercent}% RAM share).`;
+  }
+  if (nodeType.includes('sort')) {
+    return `Allocates dedicated quicksort buffer frames in work_mem for in-memory sorting (${memoryPercent}% RAM share).`;
+  }
+  if (nodeType.includes('cache') || nodeType.includes('lru')) {
+    return `Maintains hash bucket entries, LRU doubly-linked pointers, and cached serialization frames in RAM (${memoryPercent}% RAM share).`;
+  }
+  if (nodeType.includes('index scan') || nodeType.includes('index')) {
+    return `Pins B-Tree index pages and index tuple cache frames in shared buffer memory (${memoryPercent}% RAM share).`;
+  }
+  if (nodeType.includes('seq scan') || nodeType.includes('sequential')) {
+    return `Pins shared buffer pool frames and ring buffer memory during the heap sweep (${memoryPercent}% RAM share).`;
+  }
+  return `Pins shared buffer cache pool frames and manages query execution memory (${memoryPercent}% RAM share).`;
+};
+
+export const getNodeCostBreakdown = (node: ExplainPlanNode): NodeCostBreakdown => {
+  const total = Math.max(0.01, node.cost || 0.01);
+
+  if (
+    typeof node.cpuCost === 'number' &&
+    typeof node.ioCost === 'number' &&
+    typeof node.memoryCost === 'number'
+  ) {
+    const cpu = Number(node.cpuCost.toFixed(2));
+    const io = Number(node.ioCost.toFixed(2));
+    const mem = Number(node.memoryCost.toFixed(2));
+    const sum = Math.max(0.001, cpu + io + mem);
+    const cpuPercent = Number(((cpu / sum) * 100).toFixed(1));
+    const ioPercent = Number(((io / sum) * 100).toFixed(1));
+    const memoryPercent = Number(Math.max(0, 100 - cpuPercent - ioPercent).toFixed(1));
+
+    let primary: 'CPU' | 'I/O' | 'Memory' = 'I/O';
+    if (cpu >= io && cpu >= mem) primary = 'CPU';
+    else if (io >= cpu && io >= mem) primary = 'I/O';
+    else primary = 'Memory';
+
+    return {
+      cpuCost: cpu,
+      ioCost: io,
+      memoryCost: mem,
+      totalCost: total,
+      cpuPercent,
+      ioPercent,
+      memoryPercent,
+      cpuExplanation: getCpuExplanation(node, cpu, cpuPercent),
+      ioExplanation: getIoExplanation(node, io, ioPercent),
+      memoryExplanation: getMemExplanation(node, mem, memoryPercent),
+      primaryResourceBottleneck: primary
+    };
+  }
+
+  let cpuRatio = 0.35;
+  let ioRatio = 0.45;
+  let memRatio = 0.20;
+
+  const nodeType = (node.nodeType || '').toLowerCase();
+  if (nodeType.includes('lru') || nodeType.includes('cache')) {
+    cpuRatio = 0.70;
+    ioRatio = 0.00;
+    memRatio = 0.30;
+  } else if (nodeType.includes('seq scan') || nodeType.includes('sequential')) {
+    cpuRatio = 0.25;
+    ioRatio = 0.65;
+    memRatio = 0.10;
+  } else if (nodeType.includes('index scan') || nodeType.includes('index')) {
+    cpuRatio = 0.50;
+    ioRatio = 0.30;
+    memRatio = 0.20;
+  } else if (nodeType.includes('hash join') || nodeType.includes('hash')) {
+    cpuRatio = 0.45;
+    ioRatio = 0.15;
+    memRatio = 0.40;
+  } else if (nodeType.includes('nested loop') || nodeType.includes('loop')) {
+    cpuRatio = 0.60;
+    ioRatio = 0.30;
+    memRatio = 0.10;
+  } else if (nodeType.includes('sort')) {
+    cpuRatio = 0.55;
+    ioRatio = 0.10;
+    memRatio = 0.35;
+  } else if (nodeType.includes('bitmap')) {
+    cpuRatio = 0.40;
+    ioRatio = 0.35;
+    memRatio = 0.25;
+  }
+
+  const cpuCost = Number((total * cpuRatio).toFixed(2));
+  const ioCost = Number((total * ioRatio).toFixed(2));
+  const memoryCost = Number(Math.max(0, total - cpuCost - ioCost).toFixed(2));
+
+  const cpuPercent = Number((cpuRatio * 100).toFixed(1));
+  const ioPercent = Number((ioRatio * 100).toFixed(1));
+  const memoryPercent = Number(Math.max(0, 100 - cpuPercent - ioPercent).toFixed(1));
+
+  let primary: 'CPU' | 'I/O' | 'Memory' = 'I/O';
+  if (cpuCost >= ioCost && cpuCost >= memoryCost) primary = 'CPU';
+  else if (ioCost >= cpuCost && ioCost >= memoryCost) primary = 'I/O';
+  else primary = 'Memory';
+
+  return {
+    cpuCost,
+    ioCost,
+    memoryCost,
+    totalCost: total,
+    cpuPercent,
+    ioPercent,
+    memoryPercent,
+    cpuExplanation: getCpuExplanation(node, cpuCost, cpuPercent),
+    ioExplanation: getIoExplanation(node, ioCost, ioPercent),
+    memoryExplanation: getMemExplanation(node, memoryCost, memoryPercent),
+    primaryResourceBottleneck: primary
+  };
+};
 
 export interface PlanReplayResult {
   planId: string;
@@ -49,6 +231,9 @@ export interface PlanReplayResult {
   diskTier: string;
   replayedAt: string;
   explanation: string;
+  replayedNodeType?: string;
+  speedupMultiplier?: number;
+  activeFlags?: OptimizationFlags;
 }
 
 export interface BottleneckAnnotation {
@@ -458,12 +643,14 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
   const [copiedDiffNotice, setCopiedDiffNotice] = useState<boolean>(false);
   const [isHotpathActive, setIsHotpathActive] = useState<boolean>(false);
   const [isExecutionHeatmapActive, setIsExecutionHeatmapActive] = useState<boolean>(false);
+  const [isCostBudgetAlertActive, setIsCostBudgetAlertActive] = useState<boolean>(true);
   const [isBottleneckAnnotationsActive, setIsBottleneckAnnotationsActive] = useState<boolean>(true);
   const [isIndexSandboxOpen, setIsIndexSandboxOpen] = useState<boolean>(false);
   const [isAutoFixerOpen, setIsAutoFixerOpen] = useState<boolean>(false);
   const [isSuggestIndexesOpen, setIsSuggestIndexesOpen] = useState<boolean>(false);
   const [appliedIndexNotice, setAppliedIndexNotice] = useState<string | null>(null);
   const [isCostEstimatorOpen, setIsCostEstimatorOpen] = useState<boolean>(false);
+  const [hoveredCostBreakdownNodeId, setHoveredCostBreakdownNodeId] = useState<string | null>(null);
   const [customSqlInput, setCustomSqlInput] = useState<string>(
     `SELECT id, order_number, customer_name, amount, status\nFROM transactions\nWHERE status = 'completed' AND category = 'Cloud Infrastructure'\nORDER BY created_at DESC\nLIMIT 50;`
   );
@@ -547,6 +734,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
     relationName: 'transactions',
     indexName: safeFlags.btreeIndexing ? 'idx_orders_status_category' : undefined,
     cost: safeFlags.btreeIndexing ? 4.82 : 48.5,
+    cpuCost: safeFlags.btreeIndexing ? 2.41 : 12.12,
+    ioCost: safeFlags.btreeIndexing ? 1.45 : 31.53,
+    memoryCost: safeFlags.btreeIndexing ? 0.96 : 4.85,
     actualTimeMs: result?.executionTimeMs ?? 1.2,
     rowsScanned: result?.rowsScanned ?? 32,
     rowsReturned: result?.records?.length ?? 32,
@@ -568,6 +758,46 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
     { id: 'v2', name: 'Version 2 (3h ago - Partial Index)', cost: 14.20, time: 5.6, type: 'Bitmap Index Scan' },
     { id: 'v1', name: 'Version 1 (1d ago - Initial Baseline)', cost: 62.10, time: 34.5, type: 'Seq Scan' }
   ];
+
+  // Helper to compute total query cost from a plan tree
+  const calculateTotalPlanCost = (plan: ExplainPlanNode): number => {
+    const collectCosts = (n: ExplainPlanNode): number[] => {
+      let c = [n.cost || 0];
+      if (n.subNodes) {
+        n.subNodes.forEach((child) => {
+          c = c.concat(collectCosts(child));
+        });
+      }
+      return c;
+    };
+    const all = collectCosts(plan);
+    return Math.max(...all, plan.cost || 0, 0.01);
+  };
+
+  const totalEffectiveCost = useMemo(() => {
+    return calculateTotalPlanCost(effectiveExplainPlan);
+  }, [effectiveExplainPlan]);
+
+  // Cost Budget Alert (>30% of total query cost) flagged nodes
+  const flaggedCostBudgetNodes = useMemo(() => {
+    const list: Array<{ node: ExplainPlanNode; cost: number; contributionPercent: string; contributionRatio: number }> = [];
+    const checkNode = (n: ExplainPlanNode) => {
+      const ratio = totalEffectiveCost > 0 ? (n.cost / totalEffectiveCost) : 0;
+      if (ratio > 0.30) {
+        list.push({
+          node: n,
+          cost: n.cost,
+          contributionPercent: (ratio * 100).toFixed(1),
+          contributionRatio: ratio
+        });
+      }
+      if (n.subNodes) {
+        n.subNodes.forEach(checkNode);
+      }
+    };
+    checkNode(effectiveExplainPlan);
+    return list;
+  }, [effectiveExplainPlan, totalEffectiveCost]);
 
   // Generates a one-sentence AI-powered breakdown of why this specific node is the primary performance bottleneck
   const generateSmartSummaryForNode = async (
@@ -681,6 +911,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
         relationName: 'transactions',
         indexName: 'idx_orders_status_category',
         cost: 4.82,
+        cpuCost: 2.41,
+        ioCost: 1.45,
+        memoryCost: 0.96,
         actualTimeMs: 1.2,
         rowsScanned: 32,
         rowsReturned: 32,
@@ -691,6 +924,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
             relationName: 'order_items',
             indexName: 'idx_order_items_order_id',
             cost: 0.85,
+            cpuCost: 0.43,
+            ioCost: 0.25,
+            memoryCost: 0.17,
             actualTimeMs: 0.35,
             rowsScanned: 64,
             rowsReturned: 64,
@@ -705,6 +941,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
         relationName: 'transactions',
         indexName: 'idx_transactions_status',
         cost: 6.15,
+        cpuCost: 3.08,
+        ioCost: 1.84,
+        memoryCost: 1.23,
         actualTimeMs: 1.8,
         rowsScanned: 64,
         rowsReturned: 32,
@@ -714,6 +953,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
             nodeType: 'Nested Loop',
             relationName: 'order_items',
             cost: 2.10,
+            cpuCost: 1.26,
+            ioCost: 0.63,
+            memoryCost: 0.21,
             actualTimeMs: 1.1,
             rowsScanned: 128,
             rowsReturned: 64,
@@ -727,6 +969,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
         nodeType: 'Seq Scan',
         relationName: 'transactions',
         cost: 48.50,
+        cpuCost: 12.12,
+        ioCost: 31.53,
+        memoryCost: 4.85,
         actualTimeMs: 24.0,
         rowsScanned: 50000,
         rowsReturned: 32,
@@ -736,6 +981,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
             nodeType: 'Seq Scan',
             relationName: 'order_items',
             cost: 25.40,
+            cpuCost: 6.35,
+            ioCost: 16.51,
+            memoryCost: 2.54,
             actualTimeMs: 18.2,
             rowsScanned: 25000,
             rowsReturned: 64,
@@ -750,6 +998,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
         relationName: 'transactions',
         indexName: 'idx_status_partial',
         cost: 14.20,
+        cpuCost: 5.68,
+        ioCost: 4.97,
+        memoryCost: 3.55,
         actualTimeMs: 5.6,
         rowsScanned: 1500,
         rowsReturned: 32,
@@ -759,6 +1010,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
             nodeType: 'Hash Join',
             relationName: 'order_items',
             cost: 6.80,
+            cpuCost: 3.06,
+            ioCost: 1.02,
+            memoryCost: 2.72,
             actualTimeMs: 3.2,
             rowsScanned: 3200,
             rowsReturned: 64,
@@ -772,6 +1026,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
       nodeType: 'Seq Scan',
       relationName: 'transactions',
       cost: 62.10,
+      cpuCost: 15.52,
+      ioCost: 40.37,
+      memoryCost: 6.21,
       actualTimeMs: 34.5,
       rowsScanned: 50000,
       rowsReturned: 32,
@@ -781,6 +1038,9 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
           nodeType: 'Seq Scan',
           relationName: 'order_items',
           cost: 38.20,
+          cpuCost: 9.55,
+          ioCost: 24.83,
+          memoryCost: 3.82,
           actualTimeMs: 26.0,
           rowsScanned: 40000,
           rowsReturned: 64,
@@ -809,27 +1069,41 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
       const histTime = targetMeta.time;
       const histCost = targetMeta.cost;
 
-      // Realistic jitter verifying execution stability against current DB state
-      const jitter = 0.96 + Math.random() * 0.07; // -4% to +3% execution fluctuation
-      const replayedTime = Number((histTime * jitter).toFixed(2));
-      const replayedCost = Number((histCost * (0.99 + Math.random() * 0.02)).toFixed(2));
+      // Re-run the specific query plan with current indexing flags active
+      const queryExec = executeQuery({
+        searchTerm,
+        category: categoryFilter as any,
+        status: statusFilter as any,
+        page: 1,
+        pageSize
+      }, safeFlags);
+
+      const liveReplayedTime = +(queryExec.executionTimeMs * diskMultiplier).toFixed(2);
+      const replayedPlanType = queryExec.explainPlan?.nodeType || (safeFlags.btreeIndexing ? 'Index Scan' : 'Seq Scan');
+      const replayedCost = +( (queryExec.explainPlan?.cost || (safeFlags.btreeIndexing ? 4.82 : 48.5)) ).toFixed(2);
+
+      // If comparing against historical plan version (e.g. v3 unindexed) or current
+      const replayedTime = targetPlanId === 'current'
+        ? Number((liveReplayedTime * (0.97 + Math.random() * 0.06)).toFixed(2))
+        : liveReplayedTime;
 
       const variance = Number((replayedTime - histTime).toFixed(2));
       const variancePct = Number(((Math.abs(variance) / Math.max(0.1, histTime)) * 100).toFixed(1));
+      const speedup = Number((histTime / Math.max(0.05, replayedTime)).toFixed(1));
       const stability = Number(Math.max(86, Math.min(99.9, 100 - variancePct * 0.4)).toFixed(1));
 
       let status: PlanReplayResult['stabilityStatus'] = 'STABLE';
-      let explanation = `Re-executed ${targetMeta.name} across ${totalRecs.toLocaleString()} records on ${diskTier} storage tier.`;
+      let explanation = `Re-executed "${targetMeta.name}" with current indexing flags active (${safeFlags.btreeIndexing ? 'B-Tree Indexing ON' : 'B-Tree Indexing OFF'}, ${safeFlags.batchEagerLoading ? 'Batch Eager Loading ON' : 'N+1 Scan OFF'}).`;
 
-      if (stability >= 95) {
+      if (replayedTime < histTime) {
+        status = 'OPTIMAL';
+        explanation += ` Latency improved by ${Math.abs(variance).toFixed(2)}ms (${variancePct}% reduction, ${speedup}x speedup) due to active indexing strategies.`;
+      } else if (variance === 0 || Math.abs(variance) < 1.0) {
         status = 'STABLE';
-        explanation += ` Performance stability verified at ${stability}% (SLA Variance: ${variance > 0 ? `+${variance}` : variance}ms). Execution plan exhibits minimal drift.`;
-      } else if (stability >= 90) {
-        status = 'ACCEPTABLE';
-        explanation += ` Performance is within acceptable tolerances (Stability: ${stability}%, Variance: ${variance > 0 ? `+${variance}` : variance}ms).`;
+        explanation += ` Performance verified consistent with historical baseline (${stability}% stability index).`;
       } else {
         status = 'DRIFT';
-        explanation += ` Performance drift detected during replay under current memory/heap concurrency.`;
+        explanation += ` Replayed execution took +${variance.toFixed(2)}ms longer under current indexing flags.`;
       }
 
       setReplayResult({
@@ -847,7 +1121,10 @@ export const ExplainPlanViewer: React.FC<ExplainPlanViewerProps> = ({
         recordsEvaluated: totalRecs,
         diskTier,
         replayedAt: timeStr,
-        explanation
+        explanation,
+        replayedNodeType: replayedPlanType,
+        speedupMultiplier: speedup,
+        activeFlags: safeFlags
       });
 
       setIsReplayingPlan(false);
@@ -1239,6 +1516,19 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
     const contributionRatio = Math.min(1.0, Math.max(0.0, nodeTime / Math.max(0.1, totalPlanTime)));
     const contributionPercent = (contributionRatio * 100).toFixed(1);
 
+    // Cost Budget Alert (>30% contribution to total query cost)
+    const targetPlanTree = isPreviousVersion && compareNode ? compareNode : (isPreviousVersion ? targetPreviousPlanTree : effectiveExplainPlan);
+    const totalPlanCost = Math.max(0.01, calculateTotalPlanCost(targetPlanTree));
+    const nodeCost = node.cost || 0;
+    const costContributionRatio = totalPlanCost > 0 ? (nodeCost / totalPlanCost) : 0;
+    const costContributionPercent = (costContributionRatio * 100).toFixed(1);
+    const isCostBudgetExceeded = costContributionRatio > 0.30;
+    const isCostBudgetHighlight = isCostBudgetAlertActive && isCostBudgetExceeded;
+
+    // Granular Cost Breakdown (CPU, I/O, Memory estimates)
+    const breakdown = getNodeCostBreakdown(node);
+    const isHoveredBreakdown = hoveredCostBreakdownNodeId === nodeId;
+
     const heatmapBg = isExecutionHeatmapActive
       ? contributionRatio >= 0.4
         ? 'bg-rose-100/95 border-rose-500 text-rose-950 ring-2 ring-rose-400/40 shadow-sm'
@@ -1267,8 +1557,16 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
     return (
       <div key={`${node.relationName}-${depth}-${node.nodeType}`} className="flex flex-col gap-2">
         <div
-          className={`p-3 rounded-xl border text-xs transition-all ${
-            isExecutionHeatmapActive && heatmapBg
+          id={`plan-node-${nodeId}`}
+          data-testid={`plan-node-${nodeId}`}
+          onMouseEnter={() => setHoveredCostBreakdownNodeId(nodeId)}
+          onMouseLeave={() => setHoveredCostBreakdownNodeId(null)}
+          className={`relative p-3 rounded-xl border text-xs transition-all ${
+            isHoveredBreakdown ? 'z-40' : 'z-10'
+          } ${
+            isCostBudgetHighlight
+              ? 'border-2 border-yellow-500 bg-yellow-50/95 text-yellow-950 ring-4 ring-yellow-400/60 shadow-lg shadow-yellow-200/50'
+              : isExecutionHeatmapActive && heatmapBg
               ? heatmapBg
               : isHot
               ? 'ring-4 ring-amber-400/80 border-amber-500 bg-amber-50/90 shadow-lg shadow-amber-200/50 animate-pulse'
@@ -1288,7 +1586,9 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
             <div className="flex items-center gap-2 flex-wrap">
               <span
                 className={`font-mono font-bold px-2 py-0.5 rounded text-[11px] ${
-                  isIndex
+                  isCostBudgetHighlight
+                    ? 'bg-yellow-300 text-yellow-950 font-extrabold border border-yellow-500'
+                    : isIndex
                     ? 'bg-emerald-200 text-emerald-900'
                     : isNPlusOne
                     ? 'bg-rose-200 text-rose-900'
@@ -1309,6 +1609,17 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                   Critical Hotpath
                 </span>
               )}
+              {isCostBudgetHighlight && (
+                <span
+                  id={`badge-cost-budget-alert-${nodeId}`}
+                  data-testid={`badge-cost-budget-alert-${nodeId}`}
+                  className="inline-flex items-center gap-1 font-mono text-[10px] font-extrabold bg-yellow-400 text-yellow-950 px-2.5 py-0.5 rounded-full border border-yellow-600 shadow-xs animate-pulse"
+                  title={`Cost Budget Alert: Node cost (${nodeCost.toFixed(2)}) is ${costContributionPercent}% of total cost (${totalPlanCost.toFixed(2)}), exceeding the 30% budget!`}
+                >
+                  <AlertTriangle className="w-3 h-3 text-yellow-900 fill-yellow-950/20" />
+                  <span>Cost Budget Alert ({costContributionPercent}% &gt; 30%)</span>
+                </span>
+              )}
               {isExecutionHeatmapActive && (
                 <span className={`inline-flex items-center gap-1 font-mono text-[10px] font-extrabold px-2 py-0.5 rounded-full shadow-xs ${
                   contributionRatio >= 0.4 ? 'bg-rose-600 text-white' : contributionRatio >= 0.15 ? 'bg-amber-600 text-white' : 'bg-emerald-600 text-white'
@@ -1326,6 +1637,200 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
               <span>
                 Rows: {node.rowsReturned} / {node.rowsScanned.toLocaleString()}
               </span>
+
+              {/* Interactive Granular Cost Breakdown Pill Trigger & Tooltip (CPU, I/O, Memory) */}
+              <div className="relative inline-flex items-center">
+                <button
+                  type="button"
+                  id={`btn-cost-breakdown-${nodeId}`}
+                  data-testid={`btn-cost-breakdown-${nodeId}`}
+                  onMouseEnter={() => setHoveredCostBreakdownNodeId(nodeId)}
+                  onMouseLeave={() => setHoveredCostBreakdownNodeId(null)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setHoveredCostBreakdownNodeId((prev) => (prev === nodeId ? null : nodeId));
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono text-[11px] font-bold cursor-pointer transition-all border shadow-2xs ${
+                    isCostBudgetHighlight
+                      ? 'bg-yellow-200/95 text-yellow-950 border-yellow-400 hover:bg-yellow-300 ring-1 ring-yellow-400/50'
+                      : isHoveredBreakdown
+                      ? 'bg-indigo-50 text-indigo-900 border-indigo-300 ring-1 ring-indigo-200'
+                      : 'bg-zinc-100 hover:bg-zinc-200 text-zinc-800 border-zinc-300'
+                  }`}
+                  title="Hover for granular CPU, I/O, and Memory cost breakdown estimates"
+                  aria-label={`Granular Cost Breakdown: CPU ${breakdown.cpuCost.toFixed(2)}, I/O ${breakdown.ioCost.toFixed(2)}, Memory ${breakdown.memoryCost.toFixed(2)}`}
+                >
+                  <Sliders className="w-3 h-3 text-indigo-600 shrink-0" />
+                  <span className="font-sans font-semibold text-zinc-700 hidden sm:inline">Breakdown:</span>
+                  <span className="text-indigo-700 font-bold">CPU {breakdown.cpuPercent}%</span>
+                  <span className="text-zinc-300">·</span>
+                  <span className="text-amber-700 font-bold">I/O {breakdown.ioPercent}%</span>
+                  <span className="text-zinc-300">·</span>
+                  <span className="text-emerald-700 font-bold">Mem {breakdown.memoryPercent}%</span>
+                  <Info className="w-3 h-3 text-zinc-400 shrink-0" />
+                </button>
+
+                {/* Interactive Tooltip Popover displaying precise CPU, I/O, Memory cost estimates */}
+                {isHoveredBreakdown && (
+                  <div
+                    id={`tooltip-node-cost-breakdown-${nodeId}`}
+                    data-testid={`tooltip-node-cost-breakdown-${nodeId}`}
+                    role="tooltip"
+                    aria-label={`Granular Cost Breakdown for ${node.nodeType}: CPU ${breakdown.cpuCost.toFixed(2)}, I/O ${breakdown.ioCost.toFixed(2)}, Memory ${breakdown.memoryCost.toFixed(2)}`}
+                    data-cpu-cost={breakdown.cpuCost}
+                    data-io-cost={breakdown.ioCost}
+                    data-memory-cost={breakdown.memoryCost}
+                    data-cost-budget-exceeded={isCostBudgetExceeded}
+                    onMouseEnter={() => setHoveredCostBreakdownNodeId(nodeId)}
+                    onMouseLeave={() => setHoveredCostBreakdownNodeId(null)}
+                    className="absolute right-0 top-full mt-2 w-84 sm:w-96 bg-zinc-950/95 backdrop-blur-md text-white rounded-xl p-3.5 shadow-2xl border border-zinc-700/80 z-50 animate-in fade-in zoom-in-95 duration-150 select-text font-sans pointer-events-auto"
+                  >
+                    {/* Header */}
+                    <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-zinc-800">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/40">
+                          <Sliders className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <div className="font-bold text-xs text-zinc-100 flex items-center gap-1.5">
+                            <span>Cost Estimate Breakdown</span>
+                            <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-zinc-800 text-zinc-300 font-normal">
+                              {node.nodeType}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400 font-mono">
+                            {node.relationName}{node.indexName ? ` (${node.indexName})` : ''}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-mono font-bold text-xs text-white">
+                          {node.cost.toFixed(2)} cost
+                        </div>
+                        <div className="text-[10px] text-zinc-400 font-mono">
+                          {costContributionPercent}% of query
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Cost Budget Warning in Tooltip if exceeding 30% */}
+                    {isCostBudgetExceeded && (
+                      <div
+                        id={`tooltip-cost-budget-alert-${nodeId}`}
+                        data-testid={`tooltip-cost-budget-alert-${nodeId}`}
+                        className="mb-2.5 p-2 rounded-lg bg-yellow-400/15 border border-yellow-400/50 text-yellow-200 text-[11px] flex items-start gap-2"
+                      >
+                        <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-bold uppercase tracking-wider text-[10px] text-yellow-300 block">
+                            ⚠️ 30% Cost Budget Exceeded ({costContributionPercent}%)
+                          </span>
+                          <p className="text-[10px] text-yellow-100/90 leading-tight mt-0.5">
+                            This node accounts for {costContributionPercent}% of the total plan cost, marking it as the primary optimizer headache.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Segmented Cumulative Resource Proportional Bar */}
+                    <div className="mb-2.5 space-y-1">
+                      <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                        <span>Resource Contribution</span>
+                        <span>Dominant: <strong className="text-zinc-200 font-bold">{breakdown.primaryResourceBottleneck}</strong></span>
+                      </div>
+                      <div className="h-2 w-full rounded-full bg-zinc-800 overflow-hidden flex shadow-inner">
+                        <div
+                          style={{ width: `${breakdown.cpuPercent}%` }}
+                          className="bg-indigo-500 transition-all duration-300"
+                          title={`CPU: ${breakdown.cpuCost.toFixed(2)} (${breakdown.cpuPercent}%)`}
+                        />
+                        <div
+                          style={{ width: `${breakdown.ioPercent}%` }}
+                          className="bg-amber-500 transition-all duration-300"
+                          title={`I/O: ${breakdown.ioCost.toFixed(2)} (${breakdown.ioPercent}%)`}
+                        />
+                        <div
+                          style={{ width: `${breakdown.memoryPercent}%` }}
+                          className="bg-emerald-500 transition-all duration-300"
+                          title={`Memory: ${breakdown.memoryCost.toFixed(2)} (${breakdown.memoryPercent}%)`}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Three Granular Breakdown Estimates: CPU, I/O, Memory */}
+                    <div className="space-y-1.5 font-sans">
+                      {/* 1. Precise CPU Cost Estimate */}
+                      <div
+                        id={`tooltip-cpu-cost-${nodeId}`}
+                        data-testid={`tooltip-cpu-cost-${nodeId}`}
+                        className="p-2 rounded-lg bg-zinc-900/90 border border-zinc-800/80 hover:border-indigo-500/40 transition-colors"
+                      >
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                            <span className="font-semibold text-zinc-200">CPU Cost Estimate</span>
+                          </div>
+                          <div className="font-mono text-right">
+                            <span className="font-bold text-indigo-300 text-xs">{breakdown.cpuCost.toFixed(2)}</span>
+                            <span className="text-[10px] text-zinc-400 ml-1">({breakdown.cpuPercent}%)</span>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-zinc-400 leading-snug">
+                          {breakdown.cpuExplanation}
+                        </p>
+                      </div>
+
+                      {/* 2. Precise I/O Cost Estimate */}
+                      <div
+                        id={`tooltip-io-cost-${nodeId}`}
+                        data-testid={`tooltip-io-cost-${nodeId}`}
+                        className="p-2 rounded-lg bg-zinc-900/90 border border-zinc-800/80 hover:border-amber-500/40 transition-colors"
+                      >
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <HardDrive className="w-3.5 h-3.5 text-amber-400" />
+                            <span className="font-semibold text-zinc-200">I/O Cost Estimate</span>
+                          </div>
+                          <div className="font-mono text-right">
+                            <span className="font-bold text-amber-300 text-xs">{breakdown.ioCost.toFixed(2)}</span>
+                            <span className="text-[10px] text-zinc-400 ml-1">({breakdown.ioPercent}%)</span>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-zinc-400 leading-snug">
+                          {breakdown.ioExplanation}
+                        </p>
+                      </div>
+
+                      {/* 3. Precise Memory Cost Estimate */}
+                      <div
+                        id={`tooltip-memory-cost-${nodeId}`}
+                        data-testid={`tooltip-memory-cost-${nodeId}`}
+                        className="p-2 rounded-lg bg-zinc-900/90 border border-zinc-800/80 hover:border-emerald-500/40 transition-colors"
+                      >
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="font-semibold text-zinc-200">Memory Cost Estimate</span>
+                          </div>
+                          <div className="font-mono text-right">
+                            <span className="font-bold text-emerald-300 text-xs">{breakdown.memoryCost.toFixed(2)}</span>
+                            <span className="text-[10px] text-zinc-400 ml-1">({breakdown.memoryPercent}%)</span>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-zinc-400 leading-snug">
+                          {breakdown.memoryExplanation}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Footer summary stats */}
+                    <div className="mt-2.5 pt-2 border-t border-zinc-800 flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                      <span>Rows: {node.rowsReturned} / {node.rowsScanned.toLocaleString()}</span>
+                      <span>Actual Time: {node.actualTimeMs.toFixed(2)}ms</span>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Smart Summary Button on Each Node */}
               <button
@@ -1412,6 +1917,40 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
           )}
 
           <p className="text-[11px] text-zinc-600 mt-1">{node.details}</p>
+
+          {/* Cost Budget Alert Callout Banner: Primary Optimizer Headache */}
+          {isCostBudgetHighlight && (
+            <div
+              id={`callout-cost-budget-alert-${nodeId}`}
+              data-testid={`callout-cost-budget-alert-${nodeId}`}
+              className="mt-2.5 p-3 rounded-xl bg-yellow-100/90 border-2 border-yellow-400 text-yellow-950 text-xs shadow-xs animate-fadeIn"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <div className="p-1.5 rounded-lg bg-yellow-400 text-yellow-950 shrink-0 mt-0.5 shadow-2xs">
+                    <AlertTriangle className="w-4 h-4 text-yellow-950" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-extrabold text-[11px] uppercase tracking-wide text-yellow-950">
+                        Cost Budget Alert: Exceeds 30% Threshold
+                      </span>
+                      <span className="font-mono text-[10px] font-bold bg-yellow-200 text-yellow-950 px-1.5 py-0.2 rounded border border-yellow-400">
+                        {costContributionPercent}% of Query Cost
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-yellow-900 mt-1 leading-relaxed">
+                      <strong>Primary Optimizer Headache:</strong> This <code>{node.nodeType}</code> operation on <code>{node.relationName}</code> contributes{' '}
+                      <strong>{node.cost.toFixed(2)}</strong> of <strong>{totalPlanCost.toFixed(2)}</strong> total planner cost units ({costContributionPercent}%). It breaches the 30% cost budget and serves as the primary optimization headache.
+                    </p>
+                  </div>
+                </div>
+                <span className="px-2 py-0.5 text-[9px] font-mono font-extrabold uppercase rounded-full bg-yellow-400 text-yellow-950 border border-yellow-500 shrink-0 shadow-2xs">
+                  &gt;30% Budget
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Smart Summary Loading Skeleton */}
           {isLoadingSummary && (
@@ -1598,17 +2137,38 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
 
   const D3CostBreakdownChart: React.FC<{ plan: ExplainPlanNode }> = ({ plan }) => {
     const svgRef = useRef<SVGSVGElement | null>(null);
+    const [d3HoveredNode, setD3HoveredNode] = useState<{
+      node: ExplainPlanNode;
+      name: string;
+      clientX: number;
+      clientY: number;
+    } | null>(null);
+
+    const chartTotalCost = useMemo(() => {
+      const collectCosts = (n: ExplainPlanNode): number[] => {
+        let c = [n.cost || 0];
+        if (n.subNodes) {
+          n.subNodes.forEach((child) => {
+            c = c.concat(collectCosts(child));
+          });
+        }
+        return c;
+      };
+      const all = collectCosts(plan);
+      return Math.max(...all, plan.cost || 0, 0.01);
+    }, [plan]);
 
     useEffect(() => {
       if (!svgRef.current) return;
 
       // Extract nodes recursively
-      const nodesList: Array<{ name: string; cost: number; type: string }> = [];
+      const nodesList: Array<{ name: string; cost: number; type: string; node: ExplainPlanNode }> = [];
       const traverse = (n: ExplainPlanNode) => {
         nodesList.push({
           name: `${n.nodeType} (${n.relationName})`,
           cost: n.cost,
-          type: n.nodeType
+          type: n.nodeType,
+          node: n
         });
         if (n.subNodes) {
           n.subNodes.forEach(traverse);
@@ -1667,8 +2227,32 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
         .attr('y', (d) => y(d.name) || 0)
         .attr('width', (d) => x(d.cost))
         .attr('height', y.bandwidth())
-        .attr('fill', (d) => (d.type.includes('Index') ? '#10b981' : d.type.includes('Seq') ? '#f43f5e' : '#6366f1'))
-        .attr('rx', 4);
+        .attr('fill', (d) => {
+          const ratio = chartTotalCost > 0 ? (d.cost / chartTotalCost) : 0;
+          if (isCostBudgetAlertActive && ratio > 0.30) {
+            return '#eab308'; // Yellow for Cost Budget alert
+          }
+          return d.type.includes('Index') ? '#10b981' : d.type.includes('Seq') ? '#f43f5e' : '#6366f1';
+        })
+        .attr('stroke', (d) => {
+          const ratio = chartTotalCost > 0 ? (d.cost / chartTotalCost) : 0;
+          return isCostBudgetAlertActive && ratio > 0.30 ? '#ca8a04' : 'none';
+        })
+        .attr('stroke-width', (d) => {
+          const ratio = chartTotalCost > 0 ? (d.cost / chartTotalCost) : 0;
+          return isCostBudgetAlertActive && ratio > 0.30 ? 2 : 0;
+        })
+        .attr('rx', 4)
+        .attr('class', 'cursor-pointer transition-opacity hover:opacity-85')
+        .on('mouseenter', (event, d) => {
+          setD3HoveredNode({ node: d.node, name: d.name, clientX: event.clientX, clientY: event.clientY });
+        })
+        .on('mousemove', (event) => {
+          setD3HoveredNode((prev) => (prev ? { ...prev, clientX: event.clientX, clientY: event.clientY } : null));
+        })
+        .on('mouseleave', () => {
+          setD3HoveredNode(null);
+        });
 
       // Value labels
       g.selectAll('.text-label')
@@ -1677,15 +2261,136 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
         .append('text')
         .attr('x', (d) => x(d.cost) + 6)
         .attr('y', (d) => (y(d.name) || 0) + y.bandwidth() / 2 + 4)
-        .text((d) => `Cost: ${d.cost.toFixed(2)}`)
+        .text((d) => {
+          const ratio = chartTotalCost > 0 ? (d.cost / chartTotalCost) : 0;
+          const pct = (ratio * 100).toFixed(1);
+          if (isCostBudgetAlertActive && ratio > 0.30) {
+            return `Cost: ${d.cost.toFixed(2)} (${pct}% - ⚠️ Cost Budget >30%)`;
+          }
+          return `Cost: ${d.cost.toFixed(2)} (${pct}%)`;
+        })
         .attr('font-size', '10px')
         .attr('font-family', 'monospace')
-        .attr('fill', '#52525b');
-    }, [plan]);
+        .attr('fill', (d) => {
+          const ratio = chartTotalCost > 0 ? (d.cost / chartTotalCost) : 0;
+          return isCostBudgetAlertActive && ratio > 0.30 ? '#854d0e' : '#52525b';
+        })
+        .attr('font-weight', (d) => {
+          const ratio = chartTotalCost > 0 ? (d.cost / chartTotalCost) : 0;
+          return isCostBudgetAlertActive && ratio > 0.30 ? 'bold' : 'normal';
+        })
+        .attr('class', 'cursor-pointer')
+        .on('mouseenter', (event, d) => {
+          setD3HoveredNode({ node: d.node, name: d.name, clientX: event.clientX, clientY: event.clientY });
+        })
+        .on('mousemove', (event) => {
+          setD3HoveredNode((prev) => (prev ? { ...prev, clientX: event.clientX, clientY: event.clientY } : null));
+        })
+        .on('mouseleave', () => {
+          setD3HoveredNode(null);
+        });
+    }, [plan, isCostBudgetAlertActive, chartTotalCost]);
+
+    const d3Breakdown = d3HoveredNode ? getNodeCostBreakdown(d3HoveredNode.node) : null;
+    const d3CostContributionRatio =
+      d3HoveredNode && chartTotalCost > 0 ? d3HoveredNode.node.cost / chartTotalCost : 0;
+    const d3CostContributionPercent = (d3CostContributionRatio * 100).toFixed(1);
+    const d3IsCostBudgetExceeded = d3CostContributionRatio > 0.30;
 
     return (
-      <div className="w-full overflow-x-auto flex justify-center py-2">
+      <div className="relative w-full overflow-x-auto flex flex-col items-center py-2">
         <svg ref={svgRef} className="max-w-full h-auto" />
+
+        {/* Floating D3 Interactive Tooltip on Node Hover */}
+        {d3HoveredNode && d3Breakdown && (
+          <div
+            id="tooltip-d3-cost-breakdown"
+            data-testid="tooltip-d3-cost-breakdown"
+            role="tooltip"
+            aria-label={`Cost Breakdown: CPU ${d3Breakdown.cpuCost.toFixed(2)}, I/O ${d3Breakdown.ioCost.toFixed(2)}, Memory ${d3Breakdown.memoryCost.toFixed(2)}`}
+            data-cpu-cost={d3Breakdown.cpuCost}
+            data-io-cost={d3Breakdown.ioCost}
+            data-memory-cost={d3Breakdown.memoryCost}
+            data-cost-budget-exceeded={d3IsCostBudgetExceeded}
+            className="fixed z-50 pointer-events-auto bg-zinc-950/95 backdrop-blur-md text-white rounded-xl p-3.5 shadow-2xl border border-zinc-700/80 w-80 sm:w-88 animate-in fade-in zoom-in-95 duration-100 text-xs font-sans"
+            style={{
+              left: Math.min(window.innerWidth - 360, Math.max(16, d3HoveredNode.clientX + 14)),
+              top: Math.min(window.innerHeight - 320, Math.max(16, d3HoveredNode.clientY - 60))
+            }}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between gap-2 pb-2 mb-2 border-b border-zinc-800">
+              <div>
+                <div className="font-bold text-xs text-zinc-100 flex items-center gap-1.5">
+                  <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Cost Estimate Breakdown</span>
+                </div>
+                <div className="text-[10px] text-zinc-400 font-mono">
+                  {d3HoveredNode.name}
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="font-mono font-bold text-xs text-white">
+                  {d3HoveredNode.node.cost.toFixed(2)} cost
+                </div>
+                <div className="text-[10px] text-zinc-400 font-mono">
+                  {d3CostContributionPercent}% of query
+                </div>
+              </div>
+            </div>
+
+            {/* Cost Budget Warning */}
+            {d3IsCostBudgetExceeded && (
+              <div className="mb-2 p-1.5 rounded-lg bg-yellow-400/15 border border-yellow-400/50 text-yellow-200 text-[10px] flex items-center gap-1.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
+                <span className="font-bold uppercase tracking-wider text-yellow-300">
+                  ⚠️ 30% Cost Budget Exceeded ({d3CostContributionPercent}%)
+                </span>
+              </div>
+            )}
+
+            {/* Proportional Resource Meter */}
+            <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden flex mb-2.5 shadow-inner">
+              <div style={{ width: `${d3Breakdown.cpuPercent}%` }} className="bg-indigo-500" />
+              <div style={{ width: `${d3Breakdown.ioPercent}%` }} className="bg-amber-500" />
+              <div style={{ width: `${d3Breakdown.memoryPercent}%` }} className="bg-emerald-500" />
+            </div>
+
+            {/* Three Breakdown Estimates */}
+            <div className="space-y-1.5 font-sans">
+              <div className="p-1.5 rounded bg-zinc-900/90 border border-zinc-800/80 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5 text-zinc-300">
+                  <Cpu className="w-3 h-3 text-indigo-400" />
+                  <span>CPU Estimate:</span>
+                </div>
+                <div className="font-mono">
+                  <strong className="text-indigo-300 font-bold">{d3Breakdown.cpuCost.toFixed(2)}</strong>
+                  <span className="text-zinc-400 text-[10px] ml-1">({d3Breakdown.cpuPercent}%)</span>
+                </div>
+              </div>
+              <div className="p-1.5 rounded bg-zinc-900/90 border border-zinc-800/80 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5 text-zinc-300">
+                  <HardDrive className="w-3 h-3 text-amber-400" />
+                  <span>I/O Estimate:</span>
+                </div>
+                <div className="font-mono">
+                  <strong className="text-amber-300 font-bold">{d3Breakdown.ioCost.toFixed(2)}</strong>
+                  <span className="text-zinc-400 text-[10px] ml-1">({d3Breakdown.ioPercent}%)</span>
+                </div>
+              </div>
+              <div className="p-1.5 rounded bg-zinc-900/90 border border-zinc-800/80 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5 text-zinc-300">
+                  <Layers className="w-3 h-3 text-emerald-400" />
+                  <span>Memory Estimate:</span>
+                </div>
+                <div className="font-mono">
+                  <strong className="text-emerald-300 font-bold">{d3Breakdown.memoryCost.toFixed(2)}</strong>
+                  <span className="text-zinc-400 text-[10px] ml-1">({d3Breakdown.memoryPercent}%)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -1738,10 +2443,10 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                   ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 animate-pulse'
                   : 'bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white'
               }`}
-              title={`Replay Step: Re-run "${activePlanVersionData.name}" against current database state (${result?.totalCount || 50000} records) to verify performance stability`}
+              title={`Replay Plan Execution: Re-run "${activePlanVersionData.name}" with current active indexing flags to compare execution time`}
             >
-              <Play className={`w-3 h-3 ${isReplayingPlan ? 'animate-spin fill-none' : 'fill-current'}`} />
-              <span>{isReplayingPlan ? 'Replaying...' : 'Replay Step'}</span>
+              <RotateCcw className={`w-3 h-3 ${isReplayingPlan ? 'animate-spin' : ''}`} />
+              <span>{isReplayingPlan ? 'Replaying...' : 'Replay Plan Execution'}</span>
             </button>
           </div>
 
@@ -2130,30 +2835,30 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
               <div
                 id="panel-plan-replay-stability"
                 data-testid="panel-plan-replay-stability"
-                className="p-4 bg-gradient-to-r from-emerald-50/95 via-teal-50/80 to-emerald-50/95 rounded-xl border-2 border-emerald-400 shadow-md space-y-3 animate-fadeIn text-xs"
+                className="p-4 bg-gradient-to-br from-emerald-50/95 via-teal-50/80 to-white rounded-xl border-2 border-emerald-400 shadow-md space-y-3.5 animate-fadeIn text-xs"
               >
                 <div className="flex items-start justify-between gap-3 border-b border-emerald-200/80 pb-2.5">
                   <div className="flex items-center gap-2">
                     <span className="p-1.5 bg-emerald-600 text-white rounded-lg shadow-2xs">
-                      <Play className="w-4 h-4 fill-current" />
+                      <RotateCcw className="w-4 h-4" />
                     </span>
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <h4 className="font-bold text-zinc-900 text-sm">
-                          Plan Step Replayed: <span className="text-emerald-950 font-mono">{replayResult.planName}</span>
+                          Plan Execution Replay: Side-by-Side Comparison
                         </h4>
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-600 text-white shadow-2xs">
                           <CheckCircle2 className="w-3 h-3" />
                           <span>{replayResult.stabilityScore}% Performance Stability</span>
                         </span>
                         <span className="text-[10px] font-mono text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full font-bold">
-                          {replayResult.stabilityStatus === 'STABLE' ? 'VERIFIED STABLE SLA' : 'ACCEPTABLE VARIANCE'}
+                          {replayResult.stabilityStatus === 'OPTIMAL' ? 'OPTIMIZED REPLAY' : replayResult.stabilityStatus === 'STABLE' ? 'VERIFIED STABLE' : 'VARIANCE DETECTED'}
                         </span>
                         <span className="text-[10px] font-mono text-zinc-500">
                           Replayed at {replayResult.replayedAt}
                         </span>
                       </div>
-                      <p className="text-[11px] text-emerald-900 mt-1 font-sans">
+                      <p className="text-[11px] text-emerald-950 mt-1 font-sans">
                         {replayResult.explanation}
                       </p>
                     </div>
@@ -2167,7 +2872,7 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                       onClick={() => handleReplayHistoricalPlan()}
                       disabled={isReplayingPlan}
                       className="px-2.5 py-1 bg-white hover:bg-emerald-50 text-emerald-800 font-bold border border-emerald-300 rounded-lg shadow-2xs transition-colors cursor-pointer flex items-center gap-1"
-                      title="Re-run the replay simulation against current database state"
+                      title="Re-run the replay simulation with active flags"
                     >
                       <RefreshCw className={`w-3 h-3 ${isReplayingPlan ? 'animate-spin' : ''}`} />
                       <span>Re-Run</span>
@@ -2176,46 +2881,146 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                       type="button"
                       onClick={() => setReplayResult(null)}
                       className="p-1 text-emerald-700 hover:text-emerald-950 rounded-lg hover:bg-emerald-100 cursor-pointer"
-                      title="Dismiss verification card"
+                      title="Dismiss comparison card"
                     >
                       <X className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
 
-                {/* Replay Verification Telemetry Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
-                  <div className="bg-white/90 p-2.5 rounded-lg border border-emerald-200 shadow-2xs">
-                    <span className="text-[10px] font-semibold text-zinc-500 block uppercase">Historical Baseline</span>
-                    <div className="flex items-baseline gap-1 mt-0.5">
-                      <span className="font-mono text-sm font-bold text-zinc-800">{replayResult.historicalTimeMs.toFixed(2)} ms</span>
-                      <span className="text-[10px] font-mono text-zinc-400">Cost: {replayResult.historicalCost.toFixed(2)}</span>
+                {/* Primary Side-by-Side Comparison Columns: New vs Original Execution Time */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1">
+                  {/* Column 1: Original Execution */}
+                  <div className="p-3.5 bg-white/95 rounded-xl border border-zinc-200 shadow-xs space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-zinc-500 uppercase tracking-wider">
+                      <span>Original Plan Execution</span>
+                      <span className="font-mono text-[10px] text-zinc-400">Baseline</span>
                     </div>
-                  </div>
 
-                  <div className="bg-white/90 p-2.5 rounded-lg border border-emerald-200 shadow-2xs">
-                    <span className="text-[10px] font-semibold text-zinc-500 block uppercase">Current Database Replay</span>
-                    <div className="flex items-baseline gap-1 mt-0.5">
-                      <span className="font-mono text-sm font-bold text-emerald-700">{replayResult.replayedTimeMs.toFixed(2)} ms</span>
-                      <span className="text-[10px] font-mono text-emerald-600">Cost: {replayResult.replayedCost.toFixed(2)}</span>
-                    </div>
-                  </div>
-
-                  <div className="bg-white/90 p-2.5 rounded-lg border border-emerald-200 shadow-2xs">
-                    <span className="text-[10px] font-semibold text-zinc-500 block uppercase">Measured Variance</span>
-                    <div className="flex items-baseline gap-1 mt-0.5">
-                      <span className={`font-mono text-sm font-bold ${replayResult.varianceMs > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>
-                        {replayResult.varianceMs > 0 ? `+${replayResult.varianceMs.toFixed(2)}` : `${replayResult.varianceMs.toFixed(2)}`} ms
+                    <div className="flex items-baseline justify-between gap-2">
+                      <div className="text-2xl font-black font-mono text-zinc-800 tabular-nums">
+                        {replayResult.historicalTimeMs.toFixed(2)}
+                        <span className="text-xs font-semibold text-zinc-400 ml-1">ms</span>
+                      </div>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-100 text-zinc-700 border border-zinc-200 font-medium">
+                        Cost: {replayResult.historicalCost.toFixed(2)}
                       </span>
-                      <span className="text-[10px] font-mono text-zinc-500">({replayResult.variancePercent}%)</span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-600">
+                        <span>Plan Structure:</span>
+                        <span className="font-mono font-bold text-zinc-800">{replayResult.planName}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-zinc-600">
+                        <span>Node Type:</span>
+                        <span className="font-mono text-zinc-700">{replayResult.planType}</span>
+                      </div>
+                    </div>
+
+                    {/* Latency Bar */}
+                    <div className="w-full bg-zinc-100 rounded-full h-2 overflow-hidden mt-1">
+                      <div className="bg-zinc-400 h-full rounded-full w-full" />
                     </div>
                   </div>
 
-                  <div className="bg-white/90 p-2.5 rounded-lg border border-emerald-200 shadow-2xs">
-                    <span className="text-[10px] font-semibold text-zinc-500 block uppercase">Target Environment</span>
-                    <div className="text-[11px] font-mono font-medium text-zinc-800 mt-0.5 truncate" title={`${replayResult.recordsEvaluated.toLocaleString()} rows • ${replayResult.diskTier} Tier`}>
-                      <span>{replayResult.recordsEvaluated.toLocaleString()} rows • {replayResult.diskTier}</span>
+                  {/* Column 2: New Replay Execution (Current Active Flags) */}
+                  <div className="p-3.5 bg-gradient-to-br from-emerald-50 via-teal-50/50 to-white rounded-xl border-2 border-emerald-300 shadow-xs space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-emerald-800 uppercase tracking-wider">
+                      <span className="flex items-center gap-1">
+                        <Zap className="w-3 h-3 text-emerald-600" />
+                        New Execution (Active Flags)
+                      </span>
+                      <span className="font-mono text-[10px] text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded font-bold">
+                        Replayed
+                      </span>
                     </div>
+
+                    <div className="flex items-baseline justify-between gap-2">
+                      <div className={`text-2xl font-black font-mono tabular-nums ${
+                        replayResult.replayedTimeMs <= replayResult.historicalTimeMs
+                          ? 'text-emerald-700'
+                          : 'text-amber-700'
+                      }`}>
+                        {replayResult.replayedTimeMs.toFixed(2)}
+                        <span className="text-xs font-semibold text-emerald-600 ml-1">ms</span>
+                      </div>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold">
+                        Cost: {replayResult.replayedCost.toFixed(2)}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] text-emerald-900">
+                        <span>Active Plan Node:</span>
+                        <span className="font-mono font-bold text-emerald-950">
+                          {replayResult.replayedNodeType || (safeFlags.btreeIndexing ? 'Index Scan' : 'Seq Scan')}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-emerald-900">
+                        <span>Active Indexing:</span>
+                        <span className="font-mono font-semibold">
+                          {safeFlags.btreeIndexing ? 'B-Tree Active (Logarithmic)' : 'Sequential Scan (Heap)'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Latency Bar */}
+                    <div className="w-full bg-emerald-100 rounded-full h-2 overflow-hidden mt-1">
+                      <div
+                        className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                        style={{
+                          width: `${Math.min(100, Math.max(4, (replayResult.replayedTimeMs / Math.max(replayResult.historicalTimeMs, replayResult.replayedTimeMs)) * 100))}%`
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Performance Difference & Active Flags Strip */}
+                <div className="p-3 bg-white/95 rounded-xl border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-[11px] font-semibold text-zinc-600">
+                      Execution Variance:
+                    </span>
+                    <span className={`font-mono text-sm font-extrabold flex items-center gap-1 ${
+                      replayResult.varianceMs < 0 ? 'text-emerald-700' : 'text-amber-700'
+                    }`}>
+                      {replayResult.varianceMs < 0
+                        ? `↓ ${Math.abs(replayResult.varianceMs).toFixed(2)} ms faster (-${replayResult.variancePercent}%)`
+                        : `↑ +${replayResult.varianceMs.toFixed(2)} ms slower (+${replayResult.variancePercent}%)`}
+                    </span>
+                    {replayResult.speedupMultiplier && replayResult.speedupMultiplier > 1.1 && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
+                        ⚡ {replayResult.speedupMultiplier}x Speedup
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Active Indexing Flags Indicators */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase mr-1">Active Flags:</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                      safeFlags.btreeIndexing
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-zinc-100 text-zinc-500 border-zinc-200 line-through'
+                    }`}>
+                      B-Tree: {safeFlags.btreeIndexing ? 'ON' : 'OFF'}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                      safeFlags.batchEagerLoading
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-zinc-100 text-zinc-500 border-zinc-200 line-through'
+                    }`}>
+                      Batch Join: {safeFlags.batchEagerLoading ? 'ON' : 'OFF'}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                      safeFlags.queryCaching
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        : 'bg-zinc-100 text-zinc-500 border-zinc-200 line-through'
+                    }`}>
+                      LRU Cache: {safeFlags.queryCaching ? 'ON' : 'OFF'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -2240,6 +3045,23 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                 >
                   <Sparkles className="w-3.5 h-3.5" />
                   <span>Index Sandbox {isSandboxComputed ? '(Simulated)' : ''}</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-replay-plan-execution"
+                  data-testid="btn-replay-plan-execution"
+                  onClick={() => handleReplayHistoricalPlan()}
+                  disabled={isReplayingPlan}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isReplayingPlan
+                      ? 'bg-emerald-100 text-emerald-900 border-emerald-300 animate-pulse'
+                      : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white border-emerald-700 shadow-2xs'
+                  }`}
+                  title="Replay Plan Execution: Re-run query plan with current active indexing flags to see side-by-side execution time comparison"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${isReplayingPlan ? 'animate-spin' : ''}`} />
+                  <span>{isReplayingPlan ? 'Replaying...' : 'Replay Plan Execution'}</span>
                 </button>
 
                 <button
@@ -2346,6 +3168,22 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
 
                 <button
                   type="button"
+                  id="btn-toggle-cost-budget-alert"
+                  data-testid="btn-toggle-cost-budget-alert"
+                  onClick={() => setIsCostBudgetAlertActive(!isCostBudgetAlertActive)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs ${
+                    isCostBudgetAlertActive
+                      ? 'bg-yellow-400 text-yellow-950 border-yellow-500 ring-2 ring-yellow-300 shadow-sm'
+                      : 'bg-yellow-50 text-yellow-900 hover:bg-yellow-100 border-yellow-300'
+                  }`}
+                  title="Cost Budget Alert: Highlights any plan node exceeding a 30% contribution to total query cost in yellow to immediately draw attention to the primary optimizer headache"
+                >
+                  <AlertTriangle className={`w-3.5 h-3.5 ${isCostBudgetAlertActive ? 'text-yellow-950 fill-yellow-950/20' : 'text-yellow-700'}`} />
+                  <span>Cost Budget Alert ({flaggedCostBudgetNodes.length} &gt; 30%)</span>
+                </button>
+
+                <button
+                  type="button"
                   id="btn-toggle-bottleneck-annotation"
                   data-testid="btn-toggle-bottleneck-annotation"
                   onClick={() => setIsBottleneckAnnotationsActive(!isBottleneckAnnotationsActive)}
@@ -2397,6 +3235,19 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                 >
                   <Sparkles className={`w-3.5 h-3.5 ${isGeneratingAllSummaries ? 'animate-spin text-purple-600' : 'text-purple-600'}`} />
                   <span>{isGeneratingAllSummaries ? 'Generating AI...' : 'Smart Summaries (All)'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  id="btn-replay-plan-execution-action"
+                  data-testid="btn-replay-plan-execution-action"
+                  onClick={() => handleReplayHistoricalPlan()}
+                  disabled={isReplayingPlan}
+                  className="px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border shadow-xs bg-emerald-50 text-emerald-900 hover:bg-emerald-100 border-emerald-300"
+                  title="Replay Plan Execution: Re-run query plan with current indexing flags active to compare new vs original execution time"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 text-emerald-600 ${isReplayingPlan ? 'animate-spin' : ''}`} />
+                  <span>Replay Plan Execution</span>
                 </button>
 
                 <button
@@ -2459,6 +3310,17 @@ WHERE i.order_id IN (/* Batched 50 IDs from Query 1 */);`;
                     className="rounded border-amber-300 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer"
                   />
                   <span>Hotpath</span>
+                </label>
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-yellow-900 cursor-pointer bg-yellow-50 hover:bg-yellow-100/70 px-2.5 py-1 rounded-lg transition-colors border border-yellow-300">
+                  <input
+                    type="checkbox"
+                    id="checkbox-cost-budget-alert"
+                    data-testid="checkbox-cost-budget-alert"
+                    checked={isCostBudgetAlertActive}
+                    onChange={(e) => setIsCostBudgetAlertActive(e.target.checked)}
+                    className="rounded border-yellow-400 text-yellow-600 focus:ring-yellow-500 w-3.5 h-3.5 cursor-pointer"
+                  />
+                  <span>Cost Budget Alert (&gt;30%)</span>
                 </label>
                 <label className="flex items-center gap-1.5 text-xs font-semibold text-amber-900 cursor-pointer bg-amber-50 hover:bg-amber-100/70 px-2.5 py-1 rounded-lg transition-colors border border-amber-200">
                   <input
@@ -3421,6 +4283,46 @@ INCLUDE (amount, customer_email, created_at);
                       </p>
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* Cost Budget Alert Summary Banner */}
+            {isCostBudgetAlertActive && flaggedCostBudgetNodes.length > 0 && (
+              <div
+                id="banner-cost-budget-alert"
+                data-testid="banner-cost-budget-alert"
+                className="p-3 bg-yellow-50/95 border-2 border-yellow-400 rounded-xl text-xs flex items-center justify-between flex-wrap gap-3 shadow-xs mb-3 text-yellow-950 animate-fadeIn"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="p-1.5 rounded-lg bg-yellow-400 text-yellow-950 shrink-0 shadow-2xs">
+                    <AlertTriangle className="w-4 h-4 text-yellow-950" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-extrabold text-xs uppercase tracking-wide text-yellow-950">
+                        Cost Budget Alert Active
+                      </span>
+                      <span className="font-mono text-[10px] bg-yellow-200 text-yellow-950 border border-yellow-400 px-2 py-0.5 rounded-full font-bold">
+                        {flaggedCostBudgetNodes.length} Node{flaggedCostBudgetNodes.length === 1 ? '' : 's'} Exceeding 30% Cost Budget
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-yellow-900 mt-0.5">
+                      Nodes highlighted in <strong>yellow</strong> exceed the <strong>30% cost budget</strong> contribution threshold (total planner cost: {totalEffectiveCost.toFixed(2)} units), signaling the primary optimizer headache.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {flaggedCostBudgetNodes.map((fn, idx) => (
+                    <span
+                      key={idx}
+                      className="px-2.5 py-1 rounded-lg bg-yellow-200/90 border border-yellow-400 text-yellow-950 font-mono text-[11px] font-bold shadow-2xs flex items-center gap-1.5"
+                    >
+                      <AlertTriangle className="w-3 h-3 text-yellow-800" />
+                      <span>{fn.node.nodeType}</span>
+                      <span className="text-yellow-800">({fn.contributionPercent}%)</span>
+                    </span>
+                  ))}
                 </div>
               </div>
             )}

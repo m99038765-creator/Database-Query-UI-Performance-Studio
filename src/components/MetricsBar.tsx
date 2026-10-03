@@ -15,6 +15,7 @@ const useAnimatedCounter = (
   const [displayNumber, setDisplayNumber] = useState<number>(targetValue);
   const [direction, setDirection] = useState<'up' | 'down' | 'idle'>('idle');
   const [isAnimating, setIsAnimating] = useState<boolean>(false);
+  const [updateKey, setUpdateKey] = useState<number>(0);
   const startValRef = useRef<number>(targetValue);
   const startTimeRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -26,6 +27,7 @@ const useAnimatedCounter = (
       const isUp = targetValue > prevTargetRef.current;
       setDirection(isUp ? 'up' : 'down');
       setIsAnimating(true);
+      setUpdateKey((k) => k + 1);
       startValRef.current = displayNumber;
       startTimeRef.current = null;
       prevTargetRef.current = targetValue;
@@ -68,7 +70,7 @@ const useAnimatedCounter = (
     ? displayNumber.toFixed(decimals)
     : Math.round(displayNumber).toLocaleString();
 
-  return { formatted, raw: displayNumber, direction, isAnimating };
+  return { formatted, raw: displayNumber, direction, isAnimating, updateKey };
 };
 
 interface MetricsBarProps {
@@ -135,10 +137,10 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   return (
     <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
       {/* 1. Query Execution Latency */}
-      <div className={`bg-white rounded-xl border p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${isThresholdExceeded ? 'border-rose-300 ring-2 ring-rose-400/20 bg-rose-50/30' : 'border-zinc-200'}`}>
+      <div className={`bg-white rounded-xl border p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${isThresholdExceeded ? 'border-rose-300 ring-2 ring-rose-400/20 bg-rose-50/30' : 'border-zinc-200'} ${animatedLatency.isAnimating ? 'ring-2 ring-indigo-400/30 shadow-sm' : ''}`}>
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
-            <Clock className="w-3.5 h-3.5 text-zinc-400" />
+            <Clock className={`w-3.5 h-3.5 transition-colors duration-300 ${animatedLatency.isAnimating ? 'text-indigo-500 animate-metric-pulse' : 'text-zinc-400'}`} />
             Query Latency
           </span>
           {queryResult?.cacheHit && (
@@ -159,11 +161,22 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
                 : ''
             } ${isQueryFast ? 'text-emerald-600' : 'text-rose-600'}`}
           >
-            <span>{animatedLatency.formatted}</span>
+            <span
+              key={`latency-${animatedLatency.updateKey}`}
+              className={`inline-block transition-transform duration-300 ${
+                animatedLatency.isAnimating
+                  ? animatedLatency.direction === 'down'
+                    ? 'animate-metric-slide-down'
+                    : 'animate-metric-slide-up'
+                  : ''
+              }`}
+            >
+              {animatedLatency.formatted}
+            </span>
             <span className="text-sm font-medium text-zinc-500 ml-0.5">ms</span>
             {animatedLatency.isAnimating && (
               <span
-                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 animate-metric-pulse ${
                   animatedLatency.direction === 'down' ? 'text-emerald-600' : 'text-rose-600'
                 }`}
                 title={animatedLatency.direction === 'down' ? 'Latency Decreasing (Faster)' : 'Latency Increasing (Slower)'}
@@ -200,6 +213,8 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       <div
         id="metric-card-rows-scanned"
         className={`bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${
+          animatedRowsScanned.isAnimating ? 'ring-2 ring-blue-400/30 shadow-sm' : ''
+        } ${
           onOpenBulkImport ? 'cursor-pointer hover:border-blue-300 group' : ''
         }`}
         onClick={onOpenBulkImport}
@@ -207,7 +222,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       >
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
-            <Database className="w-3.5 h-3.5 text-zinc-400 group-hover:text-blue-600 transition-colors" />
+            <Database className={`w-3.5 h-3.5 transition-colors duration-300 ${animatedRowsScanned.isAnimating ? 'text-blue-600 animate-metric-pulse' : 'text-zinc-400 group-hover:text-blue-600'}`} />
             Rows Scanned
           </span>
           {effectiveTotalRecords > 50000 && (
@@ -230,10 +245,21 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
               (queryResult?.rowsScanned ?? 0) < 1000 ? 'text-emerald-600' : 'text-amber-600'
             }`}
           >
-            <span>{animatedRowsScanned.formatted}</span>
+            <span
+              key={`rows-${animatedRowsScanned.updateKey}`}
+              className={`inline-block transition-transform duration-300 ${
+                animatedRowsScanned.isAnimating
+                  ? animatedRowsScanned.direction === 'down'
+                    ? 'animate-metric-slide-down'
+                    : 'animate-metric-slide-up'
+                  : ''
+              }`}
+            >
+              {animatedRowsScanned.formatted}
+            </span>
             {animatedRowsScanned.isAnimating && (
               <span
-                className={`text-[11px] font-bold transition-opacity duration-300 ${
+                className={`text-[11px] font-bold transition-opacity duration-300 animate-metric-pulse ${
                   animatedRowsScanned.direction === 'down' ? 'text-emerald-600' : 'text-amber-600'
                 }`}
                 title={animatedRowsScanned.direction === 'down' ? 'Rows Scanned Decreased' : 'Rows Scanned Increased'}
@@ -242,7 +268,12 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
               </span>
             )}
           </span>
-          <span className="text-xs text-zinc-400 font-mono tabular-nums transition-colors duration-300">
+          <span
+            key={`total-${animatedTotalRecords.updateKey}`}
+            className={`text-xs text-zinc-400 font-mono tabular-nums transition-all duration-300 inline-block ${
+              animatedTotalRecords.isAnimating ? 'animate-metric-pulse text-blue-600 font-semibold' : ''
+            }`}
+          >
             / {animatedTotalRecords.formatted} total
           </span>
         </div>
@@ -266,10 +297,10 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       </div>
 
       {/* 3. UI Frame Rate (FPS) */}
-      <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300">
+      <div className={`bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${animatedFps.isAnimating ? 'ring-2 ring-emerald-400/30 shadow-sm' : ''}`}>
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
-            <Monitor className="w-3.5 h-3.5 text-zinc-400" />
+            <Monitor className={`w-3.5 h-3.5 transition-colors duration-300 ${animatedFps.isAnimating ? 'text-emerald-600 animate-metric-pulse' : 'text-zinc-400'}`} />
             UI Frame Rate
           </span>
           <span
@@ -294,11 +325,22 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
                 : ''
             } ${isFpsGood ? 'text-emerald-600' : 'text-rose-600'}`}
           >
-            <span>{animatedFps.formatted}</span>
+            <span
+              key={`fps-${animatedFps.updateKey}`}
+              className={`inline-block transition-transform duration-300 ${
+                animatedFps.isAnimating
+                  ? animatedFps.direction === 'up'
+                    ? 'animate-metric-slide-up'
+                    : 'animate-metric-slide-down'
+                  : ''
+              }`}
+            >
+              {animatedFps.formatted}
+            </span>
             <span className="text-sm font-medium text-zinc-500 ml-0.5">FPS</span>
             {animatedFps.isAnimating && (
               <span
-                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 animate-metric-pulse ${
                   animatedFps.direction === 'up' ? 'text-emerald-600' : 'text-rose-600'
                 }`}
                 title={animatedFps.direction === 'up' ? 'FPS Improving' : 'FPS Dropping'}
@@ -323,10 +365,10 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       </div>
 
       {/* 4. Active DOM Nodes in Viewport */}
-      <div className="bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300">
+      <div className={`bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden transition-all duration-300 ${animatedDomCount.isAnimating ? 'ring-2 ring-indigo-400/30 shadow-sm' : ''}`}>
         <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
           <span className="font-medium flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5 text-zinc-400" />
+            <Layers className={`w-3.5 h-3.5 transition-colors duration-300 ${animatedDomCount.isAnimating ? 'text-indigo-600 animate-metric-pulse' : 'text-zinc-400'}`} />
             Active DOM Nodes
           </span>
         </div>
@@ -342,11 +384,22 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
                 : ''
             } ${isDomHealthy ? 'text-emerald-600' : 'text-rose-600'}`}
           >
-            <span>{animatedDomCount.formatted}</span>
+            <span
+              key={`dom-${animatedDomCount.updateKey}`}
+              className={`inline-block transition-transform duration-300 ${
+                animatedDomCount.isAnimating
+                  ? animatedDomCount.direction === 'down'
+                    ? 'animate-metric-slide-down'
+                    : 'animate-metric-slide-up'
+                  : ''
+              }`}
+            >
+              {animatedDomCount.formatted}
+            </span>
             <span className="text-sm font-medium text-zinc-500 ml-0.5">elements</span>
             {animatedDomCount.isAnimating && (
               <span
-                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                className={`text-[11px] font-bold ml-1 transition-opacity duration-300 animate-metric-pulse ${
                   animatedDomCount.direction === 'down' ? 'text-emerald-600' : 'text-rose-600'
                 }`}
                 title={animatedDomCount.direction === 'down' ? 'DOM Nodes Reduced (Optimized)' : 'DOM Nodes Increased'}
@@ -371,11 +424,11 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       </div>
 
       {/* 5. Database Connection Pool Status & Auto-Refresh Toggle */}
-      <div className="col-span-2 lg:col-span-1 bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden flex flex-col justify-between transition-all duration-300">
+      <div className={`col-span-2 lg:col-span-1 bg-white rounded-xl border border-zinc-200 p-4 shadow-xs relative overflow-hidden flex flex-col justify-between transition-all duration-300 ${animatedDbConnections.isAnimating ? 'ring-2 ring-indigo-400/30 shadow-sm' : ''}`}>
         <div>
           <div className="flex items-center justify-between text-xs text-zinc-500 mb-1">
             <span className="font-medium flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5 text-zinc-400" />
+              <Zap className={`w-3.5 h-3.5 transition-colors duration-300 ${animatedDbConnections.isAnimating ? 'text-indigo-600 animate-metric-pulse' : 'text-zinc-400'}`} />
               DB Connections
             </span>
             {autoRefreshEnabled && (
@@ -396,13 +449,24 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
                   : ''
               } ${isPoolHealthy ? 'text-emerald-600' : 'text-rose-600'}`}
             >
-              <span>{animatedDbConnections.formatted}</span>
+              <span
+                key={`db-${animatedDbConnections.updateKey}`}
+                className={`inline-block transition-transform duration-300 ${
+                  animatedDbConnections.isAnimating
+                    ? animatedDbConnections.direction === 'down'
+                      ? 'animate-metric-slide-down'
+                      : 'animate-metric-slide-up'
+                    : ''
+                }`}
+              >
+                {animatedDbConnections.formatted}
+              </span>
               <span className="text-xs font-normal text-zinc-500 ml-1">
                 / 25 pooled
               </span>
               {animatedDbConnections.isAnimating && (
                 <span
-                  className={`text-[11px] font-bold ml-1 transition-opacity duration-300 ${
+                  className={`text-[11px] font-bold ml-1 transition-opacity duration-300 animate-metric-pulse ${
                     animatedDbConnections.direction === 'down' ? 'text-emerald-600' : 'text-rose-600'
                   }`}
                   title={animatedDbConnections.direction === 'down' ? 'Connections Released' : 'Connections Acquired'}

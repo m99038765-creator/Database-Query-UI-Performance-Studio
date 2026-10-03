@@ -467,6 +467,9 @@ export function executeQuery(
           nodeType: 'LRU Cache Lookup',
           relationName: 'query_cache_lru',
           cost: 0.01,
+          cpuCost: 0.007,
+          ioCost: 0.0,
+          memoryCost: 0.003,
           actualTimeMs: 0.15,
           rowsScanned: 0,
           rowsReturned: cached.result.records.length,
@@ -595,6 +598,7 @@ export function executeQuery(
 
   // Format Explain Plan Node
   const isIndexedScan = flags.btreeIndexing && IS_INDEX_SYNCHRONIZED && hasStatus && hasCategory;
+  const seqScanTotalCost = Number((2840.0 * (DB_RECORDS.length / 50000)).toFixed(2));
 
   const explainPlan: ExplainPlanNode = isIndexedScan
     ? {
@@ -602,6 +606,9 @@ export function executeQuery(
         relationName: 'transactions',
         indexName: 'idx_orders_status_category',
         cost: 4.82,
+        cpuCost: 2.41,
+        ioCost: 1.45,
+        memoryCost: 0.96,
         actualTimeMs: Number(executionTimeMs.toFixed(2)),
         rowsScanned,
         rowsReturned: records.length,
@@ -613,6 +620,9 @@ export function executeQuery(
                 nodeType: 'Hash Join',
                 relationName: 'order_items',
                 cost: 1.15,
+                cpuCost: 0.52,
+                ioCost: 0.17,
+                memoryCost: 0.46,
                 actualTimeMs: 0.45,
                 rowsScanned: records.length * 3,
                 rowsReturned: records.length * 3,
@@ -624,6 +634,9 @@ export function executeQuery(
                 nodeType: 'Nested Loop',
                 relationName: 'order_items',
                 cost: 145.2,
+                cpuCost: 87.12,
+                ioCost: 43.56,
+                memoryCost: 14.52,
                 actualTimeMs: Number((activeQueriesCount * 4.2).toFixed(2)),
                 rowsScanned: activeQueriesCount * 12,
                 rowsReturned: records.length * 3,
@@ -634,7 +647,10 @@ export function executeQuery(
     : {
         nodeType: 'Seq Scan',
         relationName: 'transactions',
-        cost: 2840.0 * (DB_RECORDS.length / 50000),
+        cost: seqScanTotalCost,
+        cpuCost: Number((seqScanTotalCost * 0.25).toFixed(2)),
+        ioCost: Number((seqScanTotalCost * 0.65).toFixed(2)),
+        memoryCost: Number((seqScanTotalCost * 0.10).toFixed(2)),
         actualTimeMs: Number(executionTimeMs.toFixed(2)),
         rowsScanned,
         rowsReturned: records.length,
@@ -648,6 +664,9 @@ export function executeQuery(
                 nodeType: 'Nested Loop',
                 relationName: 'order_items',
                 cost: 2400.0,
+                cpuCost: 1440.0,
+                ioCost: 720.0,
+                memoryCost: 240.0,
                 actualTimeMs: Number((activeQueriesCount * 4.2).toFixed(2)),
                 rowsScanned: activeQueriesCount * 25,
                 rowsReturned: records.length * 3,

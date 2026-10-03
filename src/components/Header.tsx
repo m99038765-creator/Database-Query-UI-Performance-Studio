@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square, Camera, Flame } from 'lucide-react';
+import { Database, Zap, AlertTriangle, CheckCircle2, Play, RefreshCw, TrendingDown, Table, UploadCloud, Sliders, Sparkles, ArrowRight, Download, RotateCcw, X, CheckSquare, Square, Camera, Flame, Keyboard } from 'lucide-react';
 import { OptimizationFlags, DataTapeEntry } from '../types';
+import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 
 interface HeaderProps {
   flags?: OptimizationFlags;
+  onToggleFlag?: (flag: keyof OptimizationFlags) => void;
   onToggleAll?: (enable: boolean) => void;
   onRunBenchmark?: () => void;
   isBenchmarking?: boolean;
@@ -27,6 +29,7 @@ interface HeaderProps {
   onQuickSnapshot?: () => void;
   showQueryIntensityOverlay?: boolean;
   onToggleQueryIntensityOverlay?: (show: boolean) => void;
+  onOpenShortcutsCheatSheet?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -37,6 +40,7 @@ export const Header: React.FC<HeaderProps> = ({
     virtualizedDOM: true,
     deferredRendering: true,
   },
+  onToggleFlag,
   onToggleAll,
   onRunBenchmark,
   isBenchmarking = false,
@@ -59,7 +63,8 @@ export const Header: React.FC<HeaderProps> = ({
   onExportDiagnosticPackage,
   onQuickSnapshot,
   showQueryIntensityOverlay = false,
-  onToggleQueryIntensityOverlay
+  onToggleQueryIntensityOverlay,
+  onOpenShortcutsCheatSheet
 }) => {
   const currentFlags = flags || {
     batchEagerLoading: true,
@@ -71,6 +76,7 @@ export const Header: React.FC<HeaderProps> = ({
   const allOptimized = Object.values(currentFlags || {}).every(Boolean);
 
   const [showBulkRevertModal, setShowBulkRevertModal] = useState<boolean>(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false);
   const [recentOperations, setRecentOperations] = useState<Array<{ id: string; name: string; type: string; timestamp: string; impact: string }>>([
     { id: 'op-1', name: 'Composite Index: idx_transactions_email_status', type: 'Index Creation', timestamp: '2 mins ago', impact: 'High Gain (240x)' },
     { id: 'op-2', name: 'Composite Index: idx_transactions_category_amount', type: 'Index Creation', timestamp: '5 mins ago', impact: 'High Gain (210x)' },
@@ -482,6 +488,169 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Fix &amp; Optimize</span>
             </button>
           )}
+
+          {/* Global Keyboard Shortcuts Cheat-Sheet Button & Tooltip */}
+          <div className="relative group">
+            <button
+              id="btn-header-keyboard-shortcuts"
+              data-testid="btn-header-keyboard-shortcuts"
+              type="button"
+              onClick={() => {
+                if (onOpenShortcutsCheatSheet) {
+                  onOpenShortcutsCheatSheet();
+                } else {
+                  setShowShortcutsModal(true);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-zinc-300 bg-white hover:bg-zinc-50 text-zinc-700 hover:text-zinc-900 shadow-xs transition-colors cursor-pointer"
+              title="Global Keyboard Shortcuts Cheat Sheet (Press '?' to open)"
+              aria-label="Keyboard Shortcuts Cheat Sheet"
+            >
+              <Keyboard className="w-3.5 h-3.5 text-zinc-500 group-hover:text-amber-600 transition-colors" />
+              <span className="hidden sm:inline">Shortcuts</span>
+              <kbd className="font-mono text-[10px] bg-zinc-100 text-zinc-600 border border-zinc-300 px-1.5 py-0.2 rounded font-bold shadow-2xs group-hover:border-amber-400 group-hover:text-amber-800 transition-colors">
+                ?
+              </kbd>
+            </button>
+
+            {/* Small Cheat-Sheet Tooltip on Hover */}
+            <div
+              id="tooltip-header-shortcuts"
+              data-testid="tooltip-header-shortcuts"
+              role="tooltip"
+              className="absolute top-full right-0 pt-2 z-50 pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 ease-out transform group-hover:translate-y-0 translate-y-1 invisible group-hover:visible shadow-2xl min-w-[340px]"
+            >
+              <div className="bg-zinc-900 text-white rounded-xl p-3.5 shadow-2xl border border-zinc-700/90 text-left">
+                <div className="absolute -top-1.5 right-6 w-3 h-3 bg-zinc-900 border-t border-l border-zinc-700/90 rotate-45" />
+
+                {/* Tooltip Header */}
+                <div className="flex items-center justify-between pb-2 border-b border-zinc-800 mb-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    <span className="font-bold text-xs text-white">Performance Shortcuts Cheat Sheet</span>
+                  </div>
+                  <span className="font-mono text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded border border-zinc-700">
+                    Global Hotkeys
+                  </span>
+                </div>
+
+                {/* Shortcuts List */}
+                <div className="space-y-1.5 text-[11px]">
+                  {/* Ctrl+I: B-Tree Indexing */}
+                  <div className="flex items-center justify-between py-0.5">
+                    <div className="flex items-center gap-2">
+                      <kbd className="font-mono text-[10px] font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-1.5 py-0.5 rounded shadow-2xs">
+                        Ctrl+I
+                      </kbd>
+                      <span className="text-zinc-200 font-medium">B-Tree Indexing</span>
+                    </div>
+                    <span className={`font-mono text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                      currentFlags.btreeIndexing
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        : 'bg-rose-950 text-rose-300 border border-rose-800'
+                    }`}>
+                      {currentFlags.btreeIndexing ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* Ctrl+C: LRU Query Caching */}
+                  <div className="flex items-center justify-between py-0.5">
+                    <div className="flex items-center gap-2">
+                      <kbd className="font-mono text-[10px] font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-1.5 py-0.5 rounded shadow-2xs">
+                        Ctrl+C
+                      </kbd>
+                      <span className="text-zinc-200 font-medium">LRU Query Caching</span>
+                    </div>
+                    <span className={`font-mono text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                      currentFlags.queryCaching
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        : 'bg-rose-950 text-rose-300 border border-rose-800'
+                    }`}>
+                      {currentFlags.queryCaching ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* Ctrl+B: Batch Eager Loading */}
+                  <div className="flex items-center justify-between py-0.5">
+                    <div className="flex items-center gap-2">
+                      <kbd className="font-mono text-[10px] font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-1.5 py-0.5 rounded shadow-2xs">
+                        Ctrl+B
+                      </kbd>
+                      <span className="text-zinc-200 font-medium">Batch Eager Loading</span>
+                    </div>
+                    <span className={`font-mono text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                      currentFlags.batchEagerLoading
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        : 'bg-rose-950 text-rose-300 border border-rose-800'
+                    }`}>
+                      {currentFlags.batchEagerLoading ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* Ctrl+V: DOM Virtualization */}
+                  <div className="flex items-center justify-between py-0.5">
+                    <div className="flex items-center gap-2">
+                      <kbd className="font-mono text-[10px] font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-1.5 py-0.5 rounded shadow-2xs">
+                        Ctrl+V
+                      </kbd>
+                      <span className="text-zinc-200 font-medium">DOM Virtualization</span>
+                    </div>
+                    <span className={`font-mono text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                      currentFlags.virtualizedDOM
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        : 'bg-rose-950 text-rose-300 border border-rose-800'
+                    }`}>
+                      {currentFlags.virtualizedDOM ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  {/* Ctrl+D: Deferred Rendering */}
+                  <div className="flex items-center justify-between py-0.5">
+                    <div className="flex items-center gap-2">
+                      <kbd className="font-mono text-[10px] font-bold bg-zinc-950 text-amber-300 border border-zinc-700 px-1.5 py-0.5 rounded shadow-2xs">
+                        Ctrl+D
+                      </kbd>
+                      <span className="text-zinc-200 font-medium">Deferred Rendering</span>
+                    </div>
+                    <span className={`font-mono text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                      currentFlags.deferredRendering
+                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                        : 'bg-rose-950 text-rose-300 border border-rose-800'
+                    }`}>
+                      {currentFlags.deferredRendering ? 'ACTIVE' : 'OFF'}
+                    </span>
+                  </div>
+
+                  <div className="pt-2 border-t border-zinc-800 space-y-1.5 text-[10px] text-zinc-400">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <kbd className="font-mono text-[9px] font-bold bg-zinc-950 text-zinc-300 border border-zinc-700 px-1.5 py-0.2 rounded">
+                          Ctrl+Shift+O
+                        </kbd>
+                        <span>Toggle All Optimizations</span>
+                      </div>
+                      <span className="font-mono text-[9px] text-amber-400 font-semibold">{allOptimized ? 'Fix All' : 'Simulate'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <kbd className="font-mono text-[9px] font-bold bg-zinc-950 text-zinc-300 border border-zinc-700 px-1.5 py-0.2 rounded">
+                          Ctrl+Shift+B
+                        </kbd>
+                        <span>Benchmark Simulation</span>
+                      </div>
+                      <span className="font-mono text-[9px] text-indigo-400 font-semibold">10 Runs</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tooltip Footer */}
+                <div className="mt-2.5 pt-2 border-t border-zinc-800 flex items-center justify-between text-[10px] text-zinc-400">
+                  <span>Click or press <kbd className="font-mono bg-zinc-800 text-amber-300 px-1 py-0.2 rounded border border-zinc-700">?</kbd> for full details</span>
+                  <span className="text-amber-400 font-medium">⌘ on Mac</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -669,6 +838,16 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
         </div>
+      )}
+      {showShortcutsModal && (
+        <KeyboardShortcutsModal
+          isOpen={showShortcutsModal}
+          onClose={() => setShowShortcutsModal(false)}
+          flags={currentFlags}
+          onToggleFlag={onToggleFlag || (() => {})}
+          onToggleAll={onToggleAll || (() => {})}
+          onOpenBenchmark={onOpenBenchmark}
+        />
       )}
     </header>
   );

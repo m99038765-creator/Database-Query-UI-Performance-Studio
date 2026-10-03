@@ -53,6 +53,10 @@ export interface ExplainPlanNode {
   filter?: string;
   details: string;
   subNodes?: ExplainPlanNode[];
+  // Granular Cost Breakdown Estimates
+  cpuCost?: number;
+  ioCost?: number;
+  memoryCost?: number;
 }
 
 export interface QueryExecutionResult {
@@ -108,6 +112,12 @@ export interface LatencyTrendPoint {
     elapsedSeconds?: number;
     timestamp?: number;
   };
+  // Automated Anomaly Detection Fields (3-Sigma from Moving Average)
+  isOutlier?: boolean;
+  movingAverage?: number;
+  movingStdDev?: number;
+  zScore?: number;
+  anomalyDeviation?: number;
 }
 
 export interface DatabaseMutationHistoryEntry {

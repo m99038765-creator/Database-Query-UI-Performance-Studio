@@ -49,17 +49,75 @@
   animation: pinned-ring-shift 2.4s ease-in-out infinite;
 }
 
-/* Metric count CSS transition animations */
+/* Metric count CSS transition & visual feedback animations */
 @keyframes metric-pop-up {
   0% { transform: scale(1); }
-  50% { transform: scale(1.06); }
+  40% { transform: scale(1.06); }
   100% { transform: scale(1); }
 }
 
 @keyframes metric-pop-down {
   0% { transform: scale(1); }
-  50% { transform: scale(0.96); }
+  40% { transform: scale(0.96); }
   100% { transform: scale(1); }
+}
+
+/* Subtle slide-up transition animation when numeric value increases or updates */
+@keyframes metric-slide-up {
+  0% {
+    opacity: 0.65;
+    transform: translateY(4px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-1.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Subtle slide-down transition animation when numeric value decreases */
+@keyframes metric-slide-down {
+  0% {
+    opacity: 0.65;
+    transform: translateY(-4px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(1.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Subtle pulse animation for numeric value updates */
+@keyframes metric-pulse {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Subtle highlight glow on metric change */
+@keyframes metric-highlight-pulse {
+  0% {
+    background-color: transparent;
+  }
+  30% {
+    background-color: rgba(99, 102, 241, 0.12);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
 
 .animate-metric-up {
@@ -70,7 +128,25 @@
   animation: metric-pop-down 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+.animate-metric-slide-up {
+  animation: metric-slide-up 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-metric-slide-down {
+  animation: metric-slide-down 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-metric-pulse {
+  animation: metric-pulse 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-metric-highlight {
+  animation: metric-highlight-pulse 0.5s ease-out;
+}
+
 .metric-value-transition {
-  transition: color 300ms cubic-bezier(0.4, 0, 0.2, 1), transform 200ms ease-out, opacity 200ms ease-out;
+  transition: color 300ms cubic-bezier(0.4, 0, 0.2, 1), transform 250ms cubic-bezier(0.16, 1, 0.3, 1), opacity 250ms ease-out;
   font-variant-numeric: tabular-nums;
+  display: inline-flex;
+  align-items: baseline;
 }

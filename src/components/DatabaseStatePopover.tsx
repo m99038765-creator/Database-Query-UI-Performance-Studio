@@ -16,7 +16,8 @@ import {
   Check,
   X,
   Sliders,
-  Columns
+  Columns,
+  RotateCcw
 } from 'lucide-react';
 
 interface DatabaseStatePopoverProps {
@@ -29,6 +30,7 @@ interface DatabaseStatePopoverProps {
   currentFlags: OptimizationFlags;
   onApplyFlags: (flags: OptimizationFlags) => void;
   onCompareSnapshot: (index: number) => void;
+  onReplayQuery?: (point: LatencyTrendPoint) => void;
   onClose: () => void;
 }
 
@@ -42,6 +44,7 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
   currentFlags,
   onApplyFlags,
   onCompareSnapshot,
+  onReplayQuery,
   onClose
 }) => {
   const [copied, setCopied] = useState(false);
@@ -201,6 +204,23 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
             {point.correlatedThresholdViolation
               ? `${point.correlatedThresholdViolation.elapsedSeconds}s > ${point.correlatedThresholdViolation.thresholdSeconds}s threshold`
               : 'Threshold Exceeded'}
+          </span>
+        </div>
+      )}
+
+      {/* 3-Sigma Anomaly Outlier Banner */}
+      {point.isOutlier && !point.isHighDurationMutation && (
+        <div
+          id="popover-outlier-anomaly-banner"
+          data-testid="popover-outlier-anomaly-banner"
+          className="px-3.5 py-2 bg-rose-900 border-b border-rose-700 text-rose-100 flex items-center justify-between text-xs font-mono shadow-inner"
+        >
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse inline-block" />
+            <span className="font-bold text-white">⚡ Outlier Tagged (&gt;3σ Deviation)</span>
+          </div>
+          <span className="text-[11px] text-rose-200 font-semibold">
+            {point.zScore ? `${point.zScore.toFixed(2)}σ from Moving Avg` : 'Deviates >3 Std Dev'}
           </span>
         </div>
       )}
@@ -365,6 +385,28 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
                 </span>
               </div>
             )}
+
+            {point.movingAverage !== undefined && (
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500">Local Moving Avg:</span>
+                <span className="font-mono text-zinc-800">
+                  {point.movingAverage.toFixed(2)}ms {point.movingStdDev ? `(±${point.movingStdDev.toFixed(2)}ms)` : ''}
+                </span>
+              </div>
+            )}
+
+            {point.zScore !== undefined && (
+              <div className="flex items-center justify-between">
+                <span className="text-zinc-500">Anomaly Deviation:</span>
+                <span className={`font-mono text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                  point.isOutlier
+                    ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                    : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                }`}>
+                  {point.zScore.toFixed(2)}σ {point.isOutlier ? '(OUTLIER >3σ)' : '(NORMAL)'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -431,6 +473,19 @@ export const DatabaseStatePopover: React.FC<DatabaseStatePopoverProps> = ({
           <Columns className="w-3.5 h-3.5 text-blue-600" />
           <span>Compare in Matrix</span>
         </button>
+
+        {onReplayQuery && (
+          <button
+            id="btn-popover-replay-query"
+            type="button"
+            onClick={() => onReplayQuery(point)}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold border border-indigo-200 shadow-2xs transition-colors cursor-pointer"
+            title="Replay this exact query state and flags to reproduce bottleneck"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Replay Query</span>
+          </button>
+        )}
 
         {flagsDiffer && (
           <button

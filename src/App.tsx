@@ -18,7 +18,8 @@ import { LatencyComparisonView } from './components/LatencyComparisonView';
 import { DatabaseSchemaExplorerView } from './components/DatabaseSchemaExplorerView';
 import { OptimizationWizardModal } from './components/OptimizationWizardModal';
 import { LatencyLegend } from './components/LatencyLegend';
-import { AlertTriangle, X, Flame } from 'lucide-react';
+import { AlertTriangle, X, Flame, Zap } from 'lucide-react';
+import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import {
   exportRecordsToCsv,
   ExportFormat,
@@ -259,6 +260,13 @@ export default function App() {
   const [isHistoricalDataTapeOpen, setIsHistoricalDataTapeOpen] = useState(false);
   const [showPdfPreviewModal, setShowPdfPreviewModal] = useState(false);
   const [isOptimizationWizardOpen, setIsOptimizationWizardOpen] = useState(false);
+  const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
+  const [shortcutToast, setShortcutToast] = useState<{
+    action: string;
+    flagName: string;
+    enabled: boolean;
+    combo: string;
+  } | null>(null);
 
   // PDF Export Sections config
   const [pdfExportSections, setPdfExportSections] = useState<DiagnosticPdfSectionsConfig>(() => ({
@@ -382,6 +390,148 @@ export default function App() {
       return nextFlags;
     });
   };
+
+  // Global Keyboard Shortcuts for Performance Optimizations (e.g. Ctrl+I, Ctrl+C, Ctrl+B, Ctrl+V, Ctrl+D)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement as HTMLElement | null;
+      const isInput = activeEl && (
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.tagName === 'SELECT' ||
+        activeEl.isContentEditable
+      );
+
+      // '?' or 'Shift+/' opens shortcuts cheat sheet (when not typing in an input)
+      if (e.key === '?' && !isInput) {
+        e.preventDefault();
+        setIsShortcutsModalOpen((prev) => !prev);
+        return;
+      }
+
+      // Escape closes shortcuts modal
+      if (e.key === 'Escape' && isShortcutsModalOpen) {
+        e.preventDefault();
+        setIsShortcutsModalOpen(false);
+        return;
+      }
+
+      const isModifier = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+
+      // Trigger shortcut toast helper
+      const notifyShortcut = (combo: string, flagName: string, enabled: boolean) => {
+        setShortcutToast({
+          action: `${flagName} ${enabled ? 'ENABLED' : 'DISABLED'}`,
+          flagName,
+          enabled,
+          combo
+        });
+      };
+
+      // 1. Ctrl+I / ⌘I -> Toggle B-Tree Indexing
+      if (isModifier && key === 'i' && !e.shiftKey && !e.altKey) {
+        if (!isInput) {
+          e.preventDefault();
+          const nextVal = !flags.btreeIndexing;
+          handleToggleFlag('btreeIndexing');
+          notifyShortcut(e.metaKey ? '⌘I' : 'Ctrl+I', 'B-Tree Indexing', nextVal);
+          return;
+        }
+      }
+
+      // 2. Ctrl+C / ⌘C -> Toggle LRU Query Cache (only when no text is highlighted and not in text input)
+      // Also Alt+C unconditionally
+      if ((isModifier && key === 'c' && !e.shiftKey && !e.altKey) || (e.altKey && key === 'c')) {
+        const selectedText = window.getSelection()?.toString();
+        const hasSelection = selectedText && selectedText.trim().length > 0;
+        if (!isInput && !hasSelection) {
+          e.preventDefault();
+          const nextVal = !flags.queryCaching;
+          handleToggleFlag('queryCaching');
+          notifyShortcut(e.metaKey ? '⌘C' : 'Ctrl+C', 'LRU Query Caching', nextVal);
+          return;
+        }
+      }
+
+      // 3. Ctrl+B / ⌘B -> Toggle Batch Eager Loading (N+1 query elimination)
+      if (isModifier && key === 'b' && !e.shiftKey && !e.altKey) {
+        if (!isInput) {
+          e.preventDefault();
+          const nextVal = !flags.batchEagerLoading;
+          handleToggleFlag('batchEagerLoading');
+          notifyShortcut(e.metaKey ? '⌘B' : 'Ctrl+B', 'Batch Eager Loading', nextVal);
+          return;
+        }
+      }
+
+      // 4. Ctrl+V / ⌘V -> Toggle DOM Virtualization (only when not in text input)
+      if (isModifier && key === 'v' && !e.shiftKey && !e.altKey) {
+        if (!isInput) {
+          e.preventDefault();
+          const nextVal = !flags.virtualizedDOM;
+          handleToggleFlag('virtualizedDOM');
+          notifyShortcut(e.metaKey ? '⌘V' : 'Ctrl+V', 'DOM Virtualization', nextVal);
+          return;
+        }
+      }
+
+      // 5. Ctrl+D / ⌘D -> Toggle Deferred Rendering
+      if (isModifier && key === 'd' && !e.shiftKey && !e.altKey) {
+        if (!isInput) {
+          e.preventDefault();
+          const nextVal = !flags.deferredRendering;
+          handleToggleFlag('deferredRendering');
+          notifyShortcut(e.metaKey ? '⌘D' : 'Ctrl+D', 'Deferred Rendering', nextVal);
+          return;
+        }
+      }
+
+      // 6. Ctrl+Shift+O / ⌘Shift+O -> Toggle All Optimizations (Fix All / Simulate Bottlenecks)
+      if (isModifier && (e.shiftKey || e.altKey) && key === 'o') {
+        if (!isInput) {
+          e.preventDefault();
+          const allActive = Object.values(flags).every(Boolean);
+          const nextVal = !allActive;
+          setFlags({
+            batchEagerLoading: nextVal,
+            btreeIndexing: nextVal,
+            queryCaching: nextVal,
+            virtualizedDOM: nextVal,
+            deferredRendering: nextVal
+          });
+          notifyShortcut(
+            e.metaKey ? '⌘Shift+O' : 'Ctrl+Shift+O',
+            nextVal ? 'All Optimizations' : 'Bottleneck Simulation',
+            nextVal
+          );
+          return;
+        }
+      }
+
+      // 7. Ctrl+Shift+B / ⌘Shift+B -> Open Benchmark Modal
+      if (isModifier && e.shiftKey && key === 'b') {
+        if (!isInput) {
+          e.preventDefault();
+          setIsBenchmarkModalOpen(true);
+          notifyShortcut(e.metaKey ? '⌘Shift+B' : 'Ctrl+Shift+B', 'Benchmark Modal', true);
+          return;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [flags, isShortcutsModalOpen]);
+
+  // Auto-dismiss shortcut toast after 2.8 seconds
+  useEffect(() => {
+    if (!shortcutToast) return;
+    const timer = setTimeout(() => {
+      setShortcutToast(null);
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [shortcutToast]);
 
   const handleRunOptimizationSequence = () => {
     if (isSimulatingSequence) return;
@@ -610,6 +760,7 @@ export default function App() {
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col selection:bg-amber-500/30 selection:text-amber-200">
       <Header
         flags={flags}
+        onToggleFlag={handleToggleFlag}
         onToggleAll={(enable) => setFlags({
           batchEagerLoading: enable,
           btreeIndexing: enable,
@@ -644,6 +795,7 @@ export default function App() {
         onQuickSnapshot={handleQuickSnapshot}
         showQueryIntensityOverlay={showQueryIntensityOverlay}
         onToggleQueryIntensityOverlay={setShowQueryIntensityOverlay}
+        onOpenShortcutsCheatSheet={() => setIsShortcutsModalOpen(true)}
       />
 
       <OptimizationControls
@@ -788,6 +940,7 @@ export default function App() {
             trendHistory={trendHistory}
             currentFlags={flags}
             onToggleFlag={handleToggleFlag}
+            onApplyFlags={setFlags}
             onToggleAll={(enable) => setFlags({
               batchEagerLoading: enable,
               btreeIndexing: enable,
@@ -823,6 +976,7 @@ export default function App() {
         trendHistory={trendHistory}
         currentFlags={flags}
         onToggleFlag={handleToggleFlag}
+        onApplyFlags={setFlags}
         onToggleAll={(enable) => setFlags({
           batchEagerLoading: enable,
           btreeIndexing: enable,
@@ -891,6 +1045,62 @@ export default function App() {
         queryResult={queryResult}
         onApplyFlags={(newFlags) => setFlags(newFlags)}
       />
+
+      {/* Global Keyboard Shortcuts Modal */}
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsModalOpen}
+        onClose={() => setIsShortcutsModalOpen(false)}
+        flags={flags}
+        onToggleFlag={handleToggleFlag}
+        onToggleAll={(enable) => setFlags({
+          batchEagerLoading: enable,
+          btreeIndexing: enable,
+          queryCaching: enable,
+          virtualizedDOM: enable,
+          deferredRendering: enable
+        })}
+        onOpenBenchmark={() => setIsBenchmarkModalOpen(true)}
+      />
+
+      {/* Shortcut Execution Feedback Toast */}
+      {shortcutToast && (
+        <div
+          id="toast-shortcut-execution"
+          data-testid="toast-shortcut-execution"
+          className="fixed bottom-6 right-6 z-50 bg-zinc-900/95 backdrop-blur-md border border-zinc-700 text-white px-4 py-2.5 rounded-xl shadow-2xl animate-metric-slide-up flex items-center gap-3 ring-2 ring-amber-400/20"
+        >
+          <div className={`p-1.5 rounded-lg border ${
+            shortcutToast.enabled
+              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+              : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+          }`}>
+            <Zap className="w-4 h-4" />
+          </div>
+          <div className="text-xs">
+            <div className="font-semibold text-zinc-100 flex items-center gap-2">
+              <span>Hotkey Registered</span>
+              <kbd className="font-mono text-[10px] bg-zinc-950 text-amber-300 border border-zinc-700 px-1.5 py-0.2 rounded font-bold shadow-2xs">
+                {shortcutToast.combo}
+              </kbd>
+            </div>
+            <div className="text-zinc-300 text-[11px] mt-0.5">
+              {shortcutToast.flagName}:{' '}
+              <span className={`font-mono font-bold ${
+                shortcutToast.enabled ? 'text-emerald-400' : 'text-rose-400'
+              }`}>
+                {shortcutToast.enabled ? 'ENABLED' : 'DISABLED'}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShortcutToast(null)}
+            className="text-zinc-500 hover:text-white p-1 rounded-md transition-colors cursor-pointer ml-1"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Proactive Optimization Suggestion Toast */}
       {proactiveToast && (
