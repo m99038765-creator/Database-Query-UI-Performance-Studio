@@ -33,7 +33,7 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
   const [selectedBubble, setSelectedBubble] = useState<IndexBubbleNode | null>(null);
   const [filterMode, setFilterMode] = useState<'all' | 'bloated' | 'optimal' | 'write_heavy'>('all');
   const [hoveredNode, setHoveredNode] = useState<IndexBubbleNode | null>(null);
-  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | { x: number; y: number } | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
 
   // Extract all indexes across tables and synthesize storage & read telemetry
   const allNodes: IndexBubbleNode[] = React.useMemo(() => {
@@ -88,16 +88,27 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
   const writeHeavyCount = allNodes.filter((n) => n.status === 'write_heavy').length;
   const totalStorageMb = allNodes.reduce((sum, n) => sum + n.sizeMb, 0).toFixed(1);
 
-  // Render D3 Bubble Chart
+  // Render D3 Bubble Chart with smooth transition animations for resizing and rearranging
   useEffect(() => {
     if (!svgRef.current) return;
     const svg = d3.select(svgRef.current);
-    svg.selectAll('*').remove();
 
     const width = 850;
     const height = 480;
 
     svg.attr('viewBox', `0 0 ${width} ${height}`);
+
+    // Ensure defs exist once
+    if (svg.select('defs').empty()) {
+      const defs = svg.append('defs');
+      const filter = defs.append('filter').attr('id', 'bubble-shadow').attr('x', '-20%').attr('y', '-20%').attr('width', '140%').attr('height', '140%');
+      filter.append('feDropShadow').attr('dx', '0').attr('dy', '3').attr('stdDeviation', '4').attr('flood-opacity', '0.15');
+    }
+
+    let g = svg.select<SVGGElement>('g.chart-group');
+    if (g.empty()) {
+      g = svg.append('g').attr('class', 'chart-group').attr('transform', 'translate(30, 30)');
+    }
 
     const root = d3.hierarchy({ children: filteredNodes } as any)
       .sum((d: any) => Math.max(d.sizeMb, 5))
@@ -110,29 +121,33 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
     const packedRoot = pack(root);
     const descendants = packedRoot.descendants().slice(1); // remove root
 
-    // Scales for color intensity representing read activity
     const minRead = d3.min(allNodes, (d) => d.readCount) || 100;
     const maxRead = d3.max(allNodes, (d) => d.readCount) || 10000;
 
-    // Color interpolation: Low read = muted/bloated red or cool grey, High read = vibrant emerald/amber
     const colorScale = d3.scaleSequential()
       .domain([minRead, maxRead])
       .interpolator(d3.interpolateYlOrRd);
 
-    const g = svg.append('g').attr('transform', 'translate(30, 30)');
+    // Data join with indexName key function for smooth object constancy and transitions
+    const nodeGroups = g.selectAll<SVGGElement, any>('.bubble-node')
+      .data(descendants, (d: any) => d.data.indexName);
 
-    // Add defs for drop shadows and gradients
-    const defs = svg.append('defs');
-    const filter = defs.append('filter').attr('id', 'bubble-shadow').attr('x', '-20%').attr('y', '-20%').attr('width', '140%').attr('height', '140%');
-    filter.append('feDropShadow').attr('dx', '0').attr('dy', '3').attr('stdDeviation', '4').attr('flood-opacity', '0.15');
+    // EXIT transition: smoothly shrink and fade out removed/filtered-out bubbles
+    nodeGroups.exit()
+      .transition()
+      .duration(500)
+      .ease(d3.easeCubicIn)
+      .attr('transform', (d: any) => `translate(${width / 2}, ${height / 2})`)
+      .style('opacity', 0)
+      .remove();
 
-    const nodeGroup = g.selectAll('.bubble-node')
-      .data(descendants)
-      .enter()
+    // ENTER new nodes
+    const enterGroup = nodeGroups.enter()
       .append('g')
       .attr('class', 'bubble-node')
-      .attr('transform', (d: any) => `translate(${d.x}, ${d.y})`)
+      .attr('transform', (d: any) => `translate(${width / 2}, ${height / 2})`)
       .style('cursor', 'pointer')
+      .style('opacity', 0)
       .on('click', (event, d: any) => {
         setSelectedBubble(d.data);
       })
@@ -156,50 +171,61 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
           .attr('transform', 'scale(1)');
       });
 
-    // Bubble Circles
-    nodeGroup.append('circle')
-      .attr('r', (d: any) => d.r)
-      .attr('fill', (d: any) => {
-        if (d.data.status === 'over_sized_under_utilized') {
-          return '#ffe4e6'; // Soft rose tint for bloated under-utilized
-        }
-        return colorScale(d.data.readCount);
-      })
+    enterGroup.append('circle')
+      .attr('r', 0)
+      .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#ffe4e6' : colorScale(d.data.readCount))
       .attr('fill-opacity', (d: any) => d.data.status === 'over_sized_under_utilized' ? 0.95 : 0.88)
       .attr('stroke', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#e11d48' : '#94a3b8')
       .attr('stroke-width', (d: any) => d.data.status === 'over_sized_under_utilized' ? 2.5 : 1.2)
       .attr('filter', 'url(#bubble-shadow)');
 
-    // Inner pulsing warning ring for bloated under-utilized indexes
-    nodeGroup.filter((d: any) => d.data.status === 'over_sized_under_utilized' && d.r > 20)
-      .append('circle')
-      .attr('r', (d: any) => Math.max(d.r - 5, 5))
-      .attr('fill', 'none')
-      .attr('stroke', '#f43f5e')
-      .attr('stroke-width', 1.5)
-      .attr('stroke-dasharray', '3,3')
-      .attr('opacity', 0.8);
-
-    // Index Name Text label (if radius permits)
-    nodeGroup.filter((d: any) => d.r > 22)
-      .append('text')
-      .attr('clip-path', (d: any) => `circle(${d.r}px)`)
+    enterGroup.append('text')
+      .attr('class', 'bubble-title')
       .attr('text-anchor', 'middle')
       .attr('dy', '-0.3em')
+      .attr('opacity', 0);
+
+    enterGroup.append('text')
+      .attr('class', 'bubble-subtitle')
+      .attr('text-anchor', 'middle')
+      .attr('dy', '1.2em')
+      .attr('opacity', 0);
+
+    // MERGE enter + update: smooth D3 transition for position, radius scaling, and color updates
+    const mergedGroups = enterGroup.merge(nodeGroups);
+
+    mergedGroups.transition()
+      .duration(750)
+      .ease(d3.easeCubicOut)
+      .attr('transform', (d: any) => `translate(${d.x}, ${d.y})`)
+      .style('opacity', 1);
+
+    mergedGroups.select('circle')
+      .transition()
+      .duration(750)
+      .ease(d3.easeCubicOut)
+      .attr('r', (d: any) => d.r)
+      .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#ffe4e6' : colorScale(d.data.readCount))
+      .attr('stroke', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#e11d48' : '#94a3b8')
+      .attr('stroke-width', (d: any) => d.data.status === 'over_sized_under_utilized' ? 2.5 : 1.2);
+
+    mergedGroups.select('text.bubble-title')
+      .text((d: any) => d.r > 22 ? d.data.indexName : '')
       .attr('font-size', (d: any) => Math.min(d.r / 3.2, 11) + 'px')
       .attr('font-weight', '700')
       .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#9f1239' : '#1e293b')
-      .text((d: any) => d.data.indexName);
+      .transition()
+      .duration(750)
+      .attr('opacity', (d: any) => d.r > 22 ? 1 : 0);
 
-    // Size & Read stats subtext inside bubble
-    nodeGroup.filter((d: any) => d.r > 28)
-      .append('text')
-      .attr('text-anchor', 'middle')
-      .attr('dy', '1.2em')
+    mergedGroups.select('text.bubble-subtitle')
+      .text((d: any) => d.r > 28 ? `${d.data.sizeMb}MB • ${d.data.readCount.toLocaleString()} reads` : '')
       .attr('font-size', '9px')
       .attr('font-family', 'ui-monospace, monospace')
       .attr('fill', (d: any) => d.data.status === 'over_sized_under_utilized' ? '#be123c' : '#475569')
-      .text((d: any) => `${d.data.sizeMb}MB • ${d.data.readCount.toLocaleString()} reads`);
+      .transition()
+      .duration(750)
+      .attr('opacity', (d: any) => d.r > 28 ? 1 : 0);
 
   }, [filteredNodes, allNodes]);
 
@@ -218,7 +244,7 @@ export const IndexHeatmap: React.FC<IndexHeatmapProps> = ({
             </span>
           </div>
           <p className="text-xs text-indigo-200/90 leading-relaxed max-w-2xl">
-            Interactive D3 bubble chart where bubble size represents index storage cost (MB) and color intensity represents query read frequency. Instantly spot bloated, under-utilized indexes (rose highlights) versus high-efficiency covering indexes.
+            Interactive D3 bubble chart where bubble size represents index storage cost (MB) and color intensity represents query read frequency. Bubbles smoothly resize and rearrange when indexes are pruned or updated.
           </p>
         </div>
 
