@@ -11,6 +11,7 @@ import { IntelligentIndexingAdvisorModal, CoveringIndexPatch, COVERING_INDEX_CAT
 import { IndexImpactMap, IndexImpactMapItem } from './IndexImpactMap';
 import { IndexHealthMonitor } from './IndexHealthMonitor';
 import { IndexStorageHeatmap } from './IndexStorageHeatmap';
+import { IndexHeatmap } from './IndexHeatmap';
 import { GlobalIndexCorrelationChart } from './GlobalIndexCorrelationChart';
 import { IndexChangeHistoryPanel } from './IndexChangeHistoryPanel';
 
@@ -305,7 +306,7 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   const [dependencyPanOffset, setDependencyPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isPanningDependency, setIsPanningDependency] = useState<boolean>(false);
   const [panStartPos, setPanStartPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain' | 'index-dependency' | 'index-health-monitor' | 'index-storage-heatmap'>('explorer');
+  const [activeTab, setActiveTab] = useState<'explorer' | 'dependency-chain' | 'index-dependency' | 'index-health-monitor' | 'index-storage-heatmap' | 'index-heatmap'>('explorer');
   const [showImpactPredictionModal, setShowImpactPredictionModal] = useState<boolean>(false);
   const [selectedPredictionIndex, setSelectedPredictionIndex] = useState<any | null>(null);
   const [simulatedIndexModifications, setSimulatedIndexModifications] = useState<Record<string, 'active' | 'modified' | 'removed'>>({});
@@ -4745,6 +4746,23 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
   };
 
   const renderContent = () => {
+    if (activeTab === 'index-heatmap') {
+      return (
+        <div className="p-6">
+          <IndexHeatmap
+            tables={tables}
+            onRebuildIndex={(idxName) => handleRebuildIndex(idxName)}
+            onDropIndex={(idxName, tblName) => {
+              setRemovedIndexes((prev) => [...prev, idxName]);
+            }}
+            onSuccessNotice={(msg) => {
+              setImportSuccessNotice(msg);
+              setTimeout(() => setImportSuccessNotice(null), 5000);
+            }}
+          />
+        </div>
+      );
+    }
     if (activeTab === 'index-storage-heatmap') {
       return (
         <div className="p-6">
@@ -9661,6 +9679,20 @@ export const DatabaseSchemaExplorerView: React.FC<DatabaseSchemaExplorerViewProp
         >
           <Layers className="w-3.5 h-3.5 text-cyan-600" />
           <span>Index Storage Heatmap</span>
+        </button>
+        <button
+          type="button"
+          id="btn-index-heatmap-tab"
+          data-testid="btn-index-heatmap-tab"
+          onClick={() => setActiveTab('index-heatmap')}
+          className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'index-heatmap'
+              ? 'bg-white text-indigo-700 shadow-xs border border-indigo-200'
+              : 'text-zinc-600 hover:text-zinc-900'
+          }`}
+        >
+          <Flame className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+          <span>Index Heatmap (D3 Bubble)</span>
         </button>
       </div>
 
